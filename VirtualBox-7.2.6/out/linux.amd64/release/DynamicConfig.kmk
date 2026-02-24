@@ -1,0 +1,109 @@
+# Host version: 6.8.0; full: 6.8.0.0
+# Linux - 6.8.0-94-generic - #96~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Fri Jan 16 13:19:05 UTC 2
+# VBOX_GCC_TOOL=GXX3
+VBOX_GCC_VERSION_CC                      ?= $(expr 10000 * 11 + 100 * $(firstword 4 0) + $(firstword 0 0))
+VBOX_GCC_VERSION_CXX                     ?= $(expr 10000 * 11 + 100 * $(firstword 4 0) + $(firstword 0 0))
+VBOX_GCC_PATH_CC                         ?= /usr/bin/gcc
+VBOX_GCC_PATH_CXX                        ?= /usr/bin/g++
+VBOX_GCC_LIBGCC                          ?= /usr/lib/gcc/x86_64-linux-gnu/11/libgcc.a
+VBOX_GCC_Wno-pointer-sign                ?= -Wno-pointer-sign
+VBOX_GCC_Wno-array_bounds                ?= -Wno-array-bounds
+VBOX_GCC_Wextra                          ?= -Wextra
+ifneq ($(VBOX_GCC_VERSION_CC),)
+ if $(VBOX_GCC_VERSION_CC) >= 40500
+  VBOX_GCC_Wlogical-op                   ?= -Wlogical-op
+  VBOX_GCC_Wno-logical-op                ?= $(subst -Wlogical-op,-Wno-logical-op,$(VBOX_GCC_Wlogical-op))
+ endif
+endif
+VBOX_GCC_Wno-address                     ?= -Wno-address
+VBOX_GCC_Wno-delete-non-virtual-dtor     ?= -Wno-delete-non-virtual-dtor
+VBOX_GCC_Wno-non-virtual-dtor            ?= -Wno-non-virtual-dtor
+VBOX_GCC_Wno-int-in-bool-context         ?= -Wno-int-in-bool-context
+VBOX_GCC_Wno-int-to-pointer-cast         ?= -Wno-int-to-pointer-cast
+VBOX_GCC_Wno-invalid-offsetof            ?= -Wno-invalid-offsetof
+VBOX_GCC_Wno-literal-suffix              ?= -Wno-literal-suffix
+VBOX_GCC_Wno-misleading-indentation      ?= -Wno-misleading-indentation
+VBOX_GCC_Wno-missing-field-initializers  ?= -Wno-missing-field-initializers
+VBOX_GCC_Wno-pointer-to-int-cast         ?= -Wno-pointer-to-int-cast
+VBOX_GCC_Wno-variadic-macros             ?= -Wno-variadic-macros
+VBOX_GCC_Wno-vla                         ?= -Wno-vla
+VBOX_GCC_Wno-overlength-strings          ?= -Wno-overlength-strings
+VBOX_GCC_Wno-overloaded-virtual          ?= -Wno-overloaded-virtual
+VBOX_GCC_Wno-ignored-qualifiers          ?= -Wno-ignored-qualifiers
+VBOX_GCC_Wno-multistatement-macros       ?= -Wno-multistatement-macros
+VBOX_GCC_Wno-class-memaccess             ?= -Wno-class-memaccess
+VBOX_GCC_Wno-stringop-overflow           ?= -Wno-stringop-overflow
+VBOX_GCC_Wno-stringop-truncation         ?= -Wno-stringop-truncation
+VBOX_GCC_Wno-cast-function-type          ?= -Wno-cast-function-type
+VBOX_GCC_Wno-deprecated-declarations     ?= -Wno-deprecated-declarations
+VBOX_GCC_Wno-implicit-fallthrough        ?= -Wno-implicit-fallthrough
+VBOX_GCC_Wno-inline                      ?= -Wno-inline
+VBOX_GCC_Wno-unknown-pragmas             ?= -Wno-unknown-pragmas
+VBOX_GCC_Wno-deprecated-copy             ?= -Wno-deprecated-copy
+VBOX_GCC_fno-stack-protector             ?= -fno-stack-protector
+VBOX_GCC_fno-dwarf2-cfi-asm              ?= -fno-dwarf2-cfi-asm
+VBOX_GCC_m64                             ?= -m64
+VBOX_GCC_msse4.1                         ?= -msse4.1
+VBOX_GCC_mavx                            ?= -mavx
+VBOX_GCC_mavx2                           ?= -mavx2
+VBOX_GCC_no-pie                          ?= -no-pie
+VBOX_GCC_fdiagnostics-show-option        ?= -fdiagnostics-show-option
+VBOX_GCC_fdiagnostics-color              ?= -fdiagnostics-color
+VBOX_GCC_fno-printf-return-value         ?= -fno-printf-return-value
+VBOX_GCC_fno-allow-store-data-races      ?= -fno-allow-store-data-races
+VBOX_GCC_fno-stack-clash-protection      ?= -fno-stack-clash-protection
+VBOX_GCC_Wa_cma_nocompress_debug_sections ?= -Wa,--nocompress-debug-sections
+VBOX_GCC_mtune-generic                   ?= -mtune=generic
+VBOX_LD_as_needed                        ?= -Wl,--as-needed
+VBOX_LD_hash_style_sysv                  ?= -Wl,--hash-style=sysv
+VBOX_LD_gc_sections                      ?= -Wl,--gc-sections
+ifneq ($(VBOX_GCC_VERSION_CC),)
+ if $(VBOX_GCC_VERSION_CC) >= 40000
+  VBOX_GCC_fvisibility-hidden            ?= -fvisibility=hidden -DVBOX_HAVE_VISIBILITY_HIDDEN -DRT_USE_VISIBILITY_DEFAULT
+ endif
+endif
+ifneq ($(VBOX_GCC_VERSION_CXX),)
+ if $(VBOX_GCC_VERSION_CXX) >= 40000
+  VBOX_GCC_fvisibility-inlines-hidden    ?= -fvisibility-inlines-hidden
+ endif
+endif
+VBOX_GCC_Wno-unused-parameter            ?= -Wno-unused-parameter
+VBOX_GCC_Wno-language-extension-token    ?= 
+VBOX_GCC_Wno-extended-offsetof           ?= 
+VBOX_GCC_Wno-gnu-folding-constant        ?= 
+VBOX_GCC_Wno-return-type-c-linkage       ?= 
+VBOX_GCC_Wno-string-plus-int             ?= 
+VBOX_GCC_Wno-nested-anon-types           ?= 
+VBOX_GCC_Wno-gnu-anonymous-struct        ?= 
+VBOX_GCC_Wno-c++17-compat-mangling       ?= 
+VBOX_GCC_Wno-nullability-extension       ?= 
+VBOX_GCC_Wno-gnu-statement-expression    ?= 
+VBOX_GCC_Wno-import-preprocessor-directive-pedantic ?= 
+VBOX_GCC_Wno-undefined-var-template      ?= 
+VBOX_GCC_Wno-c11-extensions              ?= 
+VBOX_GCC_Wno-tautological-pointer-compare ?= 
+VBOX_GCC_Wno-deprecated-copy             ?= -Wno-deprecated-copy
+VBOX_GCC_fcf-protection_branch           ?= -fcf-protection=branch
+VBOX_GCC_fcf-protection_check            ?= -fcf-protection=check
+VBOX_GCC_pipe                            ?= -pipe
+VBOX_PATH_GCC_INCS                       ?= /usr/lib/gcc/x86_64-linux-gnu/11/include
+# VBOX_GCC32_TOOL=GCC32
+VBOX_GCC32_PATH_CC                       ?= /usr/bin/gcc
+VBOX_GCC32_PATH_CXX                      ?= /usr/bin/g++
+VBOX_GCC32_VERSION_CC                    ?= $(expr 10000 * 11 + 100 * $(firstword 4 0) + $(firstword 0 0))
+VBOX_GCC32_VERSION_CXX                   ?= $(expr 10000 * 11 + 100 * $(firstword 4 0) + $(firstword 0 0))
+VBOX_GCC32_LIBGCC                        ?= /usr/lib/gcc/x86_64-linux-gnu/11/32/libgcc.a
+VBOX_GCC32_Wno-variadic-macros           ?= -Wno-variadic-macros
+# debug: TOOL_YASM_AS="yasm"
+VBOX_YASM_Wno-segreg-in-64bit            ?= -Wno-segreg-in-64bit
+VBOX_NASM_allow_64_bit                   ?= --allow-64-bit
+VBOX_GCC_SANITIZER_SO_FILES            := \
+
+VBOX_HAVE_FLEX                           ?= /usr/bin/flex
+VBOX_HAVE_BISON                          ?= /usr/bin/bison
+VBOX_PYLINT_VERSION                      := 
+VBOX_JAVA_VERSION                        := 
+#/usr/bin/xsltproc
+VBOX_XSLTPROC_VERSION                    := 10134
+VBOX_XSLTPROC_LIBXML_VERSION             := 20913
+VBOX_BLD_PYTHON_VERSION                  := 3.10.12

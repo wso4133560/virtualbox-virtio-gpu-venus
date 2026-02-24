@@ -1,0 +1,7 @@
+define AUTO_CMD_DEP_/home/tanglin/workspace2/virtualbox/VirtualBox-7.2.6/out/linux.amd64/release/obj/VirtualBox_stripped.xidl.ts_PREV_CMDS
+
+@/usr/bin/xsltproc -o /home/tanglin/workspace2/virtualbox/VirtualBox-7.2.6/out/linux.amd64/release/obj/VirtualBox_stripped.xidl.ts-tmp /home/tanglin/workspace2/virtualbox/VirtualBox-7.2.6/src/VBox/Main/idl/docstrip.xsl /home/tanglin/workspace2/virtualbox/VirtualBox-7.2.6/src/VBox/Main/idl/VirtualBox.xidl
+@/home/tanglin/workspace2/virtualbox/VirtualBox-7.2.6/kBuild/bin/linux.amd64/kmk_sed  -e 's/ *$//g'  -e '/^$/d' --output /home/tanglin/workspace2/virtualbox/VirtualBox-7.2.6/out/linux.amd64/release/obj/VirtualBox_stripped.xidl.ts /home/tanglin/workspace2/virtualbox/VirtualBox-7.2.6/out/linux.amd64/release/obj/VirtualBox_stripped.xidl.ts-tmp
+@kmk_builtin_rm -- /home/tanglin/workspace2/virtualbox/VirtualBox-7.2.6/out/linux.amd64/release/obj/VirtualBox_stripped.xidl.ts-tmp
+@kmk_builtin_cp --changed -fv -- /home/tanglin/workspace2/virtualbox/VirtualBox-7.2.6/out/linux.amd64/release/obj/VirtualBox_stripped.xidl.ts /home/tanglin/workspace2/virtualbox/VirtualBox-7.2.6/out/linux.amd64/release/obj/VirtualBox_stripped.xidl
+endef

@@ -1,0 +1,9 @@
+define AUTO_CMD_DEP_/home/tanglin/workspace2/virtualbox/VirtualBox-7.2.6/out/linux.amd64/release/vboxapiwrap.kmk.ts_PREV_CMDS
+
+@kmk_builtin_rm -f /home/tanglin/workspace2/virtualbox/VirtualBox-7.2.6/out/linux.amd64/release/vboxapiwrap.kmk.ts
+@kmk_builtin_mkdir -p /home/tanglin/workspace2/virtualbox/VirtualBox-7.2.6/out/linux.amd64/release
+@/usr/bin/xsltproc --stringparam KBUILD_HOST linux \
+		 \
+		-o /home/tanglin/workspace2/virtualbox/VirtualBox-7.2.6/out/linux.amd64/release/vboxapiwrap.kmk.ts /home/tanglin/workspace2/virtualbox/VirtualBox-7.2.6/src/VBox/Main/idl/apiwrap-server-filelist.xsl /home/tanglin/workspace2/virtualbox/VirtualBox-7.2.6/out/linux.amd64/release/obj/VirtualBox_stripped.xidl
+@kmk_builtin_cp --changed -fv /home/tanglin/workspace2/virtualbox/VirtualBox-7.2.6/out/linux.amd64/release/vboxapiwrap.kmk.ts /home/tanglin/workspace2/virtualbox/VirtualBox-7.2.6/out/linux.amd64/release/vboxapiwrap.kmk
+endef
