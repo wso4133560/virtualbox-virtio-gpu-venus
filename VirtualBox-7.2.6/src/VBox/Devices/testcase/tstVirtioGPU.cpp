@@ -156,7 +156,7 @@ static void tstPost(PVIRTIOCORE pCore, unsigned uQueue, uint32_t cbSend, uint32_
 }
 
 static void tstPostCommand(PVIRTIOCORE pCore, unsigned uQueue, uint32_t uType,
-                           const void *pvBody, size_t cbBody, uint32_t cbReturn)
+                           const void *pvBody, size_t cbBody, uint32_t cbReturn, uint32_t uCtxId = 0)
 {
     PVIRTQUEUE pQ = &pCore->aVirtqueues[uQueue];
     VIRTQ_DESC_T *pDesc = (VIRTQ_DESC_T *)&g_abRam[pQ->GCPhysVirtqDesc];
@@ -170,6 +170,7 @@ static void tstPostCommand(PVIRTIOCORE pCore, unsigned uQueue, uint32_t uType,
     VIRTIOGPUCTRLHDR Req;
     RT_ZERO(Req);
     Req.uType = uType;
+    Req.uCtxId = uCtxId;
     memcpy(&g_abRam[0x4000], &Req, sizeof(Req));
     if (cbBody)
         memcpy(&g_abRam[0x4000 + sizeof(Req)], pvBody, cbBody);
@@ -389,6 +390,31 @@ int main(int argc, char **argv)
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && !pGpu->aResources[0].fUsed && pGpu->cbAllocated == 0);
 
+    RTTestSub(g_hTest, "context create/destroy and saved state");
+    struct { uint32_t cchName, fInit; char szName[64]; } ContextCreate = { 4, 0, "test" };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_CTX_CREATE, &ContextCreate, sizeof(ContextCreate), 24, 42);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && virtioGpuR3FindContext(pGpu, 42));
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_CTX_CREATE, &ContextCreate, sizeof(ContextCreate), 24, 42);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_ERR_INVALID_PARAMETER);
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_CTX_DESTROY, NULL, 0, 24, 42);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && !virtioGpuR3FindContext(pGpu, 42));
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_CTX_CREATE, &ContextCreate, sizeof(ContextCreate), 24, 42);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+
     RTTestSub(g_hTest, "short packets and unsupported commands");
     struct { uint32_t cbSend, cbReturn, uType, fFlags, cbUsed, uResponse; } aCases[] =
     {
@@ -509,6 +535,10 @@ int main(int argc, char **argv)
     virtioGpuR3Reset(pDev);
     pGpu->Virtio.fDeviceStatus = VIRTIO_STATUS_DRIVER_OK;
     pGpu->Config.fEventsRead = 1;
+    pGpu->aContexts[0].fUsed = true;
+    pGpu->aContexts[0].uContextId = 77;
+    pGpu->aContexts[0].cchName = 4;
+    memcpy(pGpu->aContexts[0].szName, "save", 5);
     tstInitQueue(&pGpu->Virtio, 0);
     tstInitQueue(&pGpu->Virtio, 1);
     tstPost(&pGpu->Virtio, 0, 24, 408);
@@ -520,6 +550,8 @@ int main(int argc, char **argv)
     Ssm.off = 0;
     RTTESTI_CHECK_RC(virtioGpuR3LoadExec(pDev, pSSM, VIRTIOGPU_SAVED_STATE_VERSION, SSM_PASS_FINAL), VINF_SUCCESS);
     RTTESTI_CHECK(Ssm.off == Ssm.cb && pGpu->Config.fEventsRead == 1);
+    RTTESTI_CHECK(virtioGpuR3FindContext(pGpu, 77) && pGpu->aContexts[0].cchName == 4
+                  && !memcmp(pGpu->aContexts[0].szName, "save", 4));
     RTTESTI_CHECK(pGpu->Virtio.aVirtqueues[0].fAttached && pGpu->Virtio.aVirtqueues[1].fAttached);
     virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, 0) == 408);

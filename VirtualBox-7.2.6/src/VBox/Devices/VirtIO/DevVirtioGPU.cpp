@@ -29,8 +29,9 @@
 # error "VirtIO-GPU currently runs entirely in ring 3."
 #endif
 
-#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(3)
+#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(4)
 #define VIRTIOGPU_MAX_RESOURCES 256
+#define VIRTIOGPU_MAX_CONTEXTS 64
 #define VIRTIOGPU_MAX_BACKING_ENTRIES 64
 #define VIRTIOGPU_MAX_RESOURCE_BYTES (UINT64_C(256) * _1M)
 
@@ -64,11 +65,21 @@ typedef struct VIRTIOGPUSCANOUT
     uint64_t uFlushSequence;
 } VIRTIOGPUSCANOUT;
 
+typedef struct VIRTIOGPUCONTEXT
+{
+    bool fUsed;
+    uint32_t uContextId;
+    uint32_t cchName;
+    char szName[64];
+} VIRTIOGPUCONTEXT;
+typedef VIRTIOGPUCONTEXT *PVIRTIOGPUCONTEXT;
+
 typedef struct VIRTIOGPU
 {
     VIRTIOCORE      Virtio;  /* Must stay first for the common transport. */
     VIRTIOGPUCONFIG Config;
     VIRTIOGPURESOURCE aResources[VIRTIOGPU_MAX_RESOURCES];
+    VIRTIOGPUCONTEXT aContexts[VIRTIOGPU_MAX_CONTEXTS];
     VIRTIOGPUSCANOUT aScanouts[VIRTIOGPU_MAX_SCANOUTS];
     uint64_t cbAllocated;
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
@@ -160,6 +171,16 @@ static PVIRTIOGPURESOURCE virtioGpuR3FindResource(PVIRTIOGPU pThis, uint32_t uRe
     return NULL;
 }
 
+static PVIRTIOGPUCONTEXT virtioGpuR3FindContext(PVIRTIOGPU pThis, uint32_t uContextId)
+{
+    if (!uContextId)
+        return NULL;
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aContexts); ++i)
+        if (pThis->aContexts[i].fUsed && pThis->aContexts[i].uContextId == uContextId)
+            return &pThis->aContexts[i];
+    return NULL;
+}
+
 static void virtioGpuR3FreeResources(PVIRTIOGPU pThis)
 {
     for (unsigned i = 0; i < RT_ELEMENTS(pThis->aResources); ++i)
@@ -172,6 +193,7 @@ static void virtioGpuR3FreeResources(PVIRTIOGPU pThis)
     }
     for (unsigned i = 0; i < RT_ELEMENTS(pThis->aScanouts); ++i)
         RT_ZERO(pThis->aScanouts[i]);
+    RT_ZERO(pThis->aContexts);
     pThis->cbAllocated = 0;
 }
 
@@ -773,6 +795,50 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                 }
                 break;
             }
+            case VIRTIOGPU_CMD_CTX_CREATE:
+            {
+                struct { uint32_t cchName; uint32_t fInit; char szName[64]; } Cmd;
+                RT_ZERO(Cmd);
+                if (!Req.uCtxId || virtioGpuR3FindContext(pThis, Req.uCtxId)
+                    || pBuf->cbPhysSend < sizeof(Cmd)
+                    || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Cmd, sizeof(Cmd)))
+                    || Cmd.cchName > sizeof(Cmd.szName) || Cmd.fInit != 0)
+                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                else
+                {
+                    PVIRTIOGPUCONTEXT pCtx = NULL;
+                    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aContexts); ++i)
+                        if (!pThis->aContexts[i].fUsed) { pCtx = &pThis->aContexts[i]; break; }
+                    if (!pCtx)
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_OUT_OF_MEMORY;
+                    else
+                    {
+                        pCtx->fUsed = true;
+                        pCtx->uContextId = Req.uCtxId;
+                        pCtx->cchName = Cmd.cchName;
+                        memcpy(pCtx->szName, Cmd.szName, sizeof(pCtx->szName));
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
+                    }
+                }
+                break;
+            }
+            case VIRTIOGPU_CMD_CTX_DESTROY:
+            {
+                if (!Req.uCtxId)
+                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                else
+                {
+                    PVIRTIOGPUCONTEXT pCtx = virtioGpuR3FindContext(pThis, Req.uCtxId);
+                    if (!pCtx)
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                    else
+                    {
+                        RT_ZERO(*pCtx);
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
+                    }
+                }
+                break;
+            }
             case VIRTIOGPU_CMD_RESOURCE_ATTACH_BACKING:
             {
                 struct { uint32_t id, count; } Cmd;
@@ -1008,6 +1074,17 @@ static DECLCALLBACK(int) virtioGpuR3SaveExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutMem(pSSM, pRes->pbPixels, pRes->cbPixels);
         }
     }
+    for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aContexts); ++i)
+    {
+        rc = pDevIns->pHlpR3->pfnSSMPutBool(pSSM, pThis->aContexts[i].fUsed);
+        if (RT_SUCCESS(rc) && pThis->aContexts[i].fUsed)
+        {
+            PVIRTIOGPUCONTEXT pCtx = &pThis->aContexts[i];
+            rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, pCtx->uContextId);
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, pCtx->cchName);
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutMem(pSSM, pCtx->szName, sizeof(pCtx->szName));
+        }
+    }
     for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aScanouts); ++i)
         rc = pDevIns->pHlpR3->pfnSSMPutMem(pSSM, &pThis->aScanouts[i], sizeof(pThis->aScanouts[i]));
     if (RT_SUCCESS(rc))
@@ -1082,6 +1159,24 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
                 RTMemFree(pRes->pbPixels);
                 RT_ZERO(*pRes);
             }
+        }
+    }
+    for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aContexts); ++i)
+    {
+        bool fUsed = false;
+        rc = pDevIns->pHlpR3->pfnSSMGetBool(pSSM, &fUsed);
+        if (RT_SUCCESS(rc) && fUsed)
+        {
+            PVIRTIOGPUCONTEXT pCtx = &pThis->aContexts[i];
+            pCtx->fUsed = true;
+            rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &pCtx->uContextId);
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &pCtx->cchName);
+            if (RT_SUCCESS(rc) && (pCtx->cchName > sizeof(pCtx->szName) || !pCtx->uContextId
+                                   || virtioGpuR3FindContext(pThis, pCtx->uContextId) != pCtx))
+                rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetMem(pSSM, pCtx->szName, sizeof(pCtx->szName));
+            if (RT_FAILURE(rc))
+                RT_ZERO(*pCtx);
         }
     }
     for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aScanouts); ++i)
