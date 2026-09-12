@@ -422,13 +422,19 @@ int main(int argc, char **argv)
         aBatch[i].cbBuffer = 4;
         aBatch[i].uData = i;
     }
-    uint64_t const tsStart = RTTimeNanoTS();
+    uint64_t const tsSingleStart = RTTimeNanoTS();
+    for (unsigned i = 0; i < RT_ELEMENTS(aBatch); ++i)
+        RTTESTI_CHECK_RC(virtioGpuR3VulkanFillBuffer(pGpu, &pGpu->aResources[0], aBatch[i].offBuffer,
+                                                     aBatch[i].cbBuffer, aBatch[i].uData), VINF_SUCCESS);
+    uint64_t const cSingleNs = RTTimeNanoTS() - tsSingleStart;
+    uint64_t const tsBatchStart = RTTimeNanoTS();
     RTTESTI_CHECK_RC(virtioGpuR3VulkanFillBufferBatch(pGpu, &pGpu->aResources[0], aBatch, RT_ELEMENTS(aBatch)), VINF_SUCCESS);
+    uint64_t const cBatchNs = RTTimeNanoTS() - tsBatchStart;
     for (unsigned i = 0; i < RT_ELEMENTS(aBatch); ++i)
         RTTESTI_CHECK(*(uint32_t *)(pGpu->aResources[0].pbPixels + i * 4) == i);
-    uint64_t const cNs = RTTimeNanoTS() - tsStart;
-    RTTestIPrintf(RTTESTLVL_ALWAYS, "persistent Vulkan fill: 8 fills in one submission: %llu ns (%llu ns/fill)\n",
-                  (unsigned long long)cNs, (unsigned long long)(cNs / 8));
+    RTTestIPrintf(RTTESTLVL_ALWAYS, "persistent Vulkan fill: single=%llu ns (%llu ns/fill), batch=%llu ns (%llu ns/fill)\n",
+                  (unsigned long long)cSingleNs, (unsigned long long)(cSingleNs / 8),
+                  (unsigned long long)cBatchNs, (unsigned long long)(cBatchNs / 8));
     RTTestSub(g_hTest, "Venus vkCmdFillBuffer serialization boundary");
     uint8_t abCommand[44] = { 0 };
     uint32_t uCommandType = 118;
