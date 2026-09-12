@@ -45,6 +45,11 @@ typedef struct VIRTIOGPURESOURCE
     uint64_t cbPixels;
     uint8_t *pbPixels;
     VIRTIOGPUMEMENTRY aBacking[VIRTIOGPU_MAX_BACKING_ENTRIES];
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    VkBuffer hVkBuffer;
+    VkDeviceMemory hVkMemory;
+    bool fVulkanBuffer;
+#endif
 } VIRTIOGPURESOURCE;
 typedef VIRTIOGPURESOURCE *PVIRTIOGPURESOURCE;
 
@@ -92,6 +97,12 @@ typedef struct VIRTIOGPUCC
     R3PTRTYPE(PPDMIDISPLAYCONNECTOR) pDrv;
 } VIRTIOGPUCC;
 typedef VIRTIOGPUCC *PVIRTIOGPUCC;
+
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+static int virtioGpuR3VulkanResourceCreate(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes);
+static void virtioGpuR3VulkanResourceDestroy(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes);
+static int virtioGpuR3VulkanResourceSync(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes);
+#endif
 
 static DECLCALLBACK(int) virtioGpuR3DevCapRead(PPDMDEVINS pDevIns, uint32_t offCap, void *pvBuf, uint32_t cbRead)
 {
@@ -152,6 +163,9 @@ static void virtioGpuR3FreeResources(PVIRTIOGPU pThis)
 {
     for (unsigned i = 0; i < RT_ELEMENTS(pThis->aResources); ++i)
     {
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+        virtioGpuR3VulkanResourceDestroy(pThis, &pThis->aResources[i]);
+#endif
         RTMemFree(pThis->aResources[i].pbPixels);
         RT_ZERO(pThis->aResources[i]);
     }
@@ -426,6 +440,113 @@ cleanup:
     return rc;
 # undef VK_DEV_PROC
 }
+
+static int virtioGpuR3VulkanResourceCreate(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes)
+{
+    pRes->hVkBuffer = VK_NULL_HANDLE;
+    pRes->hVkMemory = VK_NULL_HANDLE;
+    pRes->fVulkanBuffer = false;
+    if (!pThis->fVulkanMemory || pThis->hVkDevice == VK_NULL_HANDLE)
+        return VINF_SUCCESS;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr =
+        (PFN_vkGetDeviceProcAddr)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetDeviceProcAddr");
+    if (!pfnGetDeviceProcAddr)
+        return VERR_NOT_FOUND;
+# define VK_RES_PROC(type, name) (type)pfnGetDeviceProcAddr(pThis->hVkDevice, name)
+    PFN_vkCreateBuffer pfnCreateBuffer = VK_RES_PROC(PFN_vkCreateBuffer, "vkCreateBuffer");
+    PFN_vkDestroyBuffer pfnDestroyBuffer = VK_RES_PROC(PFN_vkDestroyBuffer, "vkDestroyBuffer");
+    PFN_vkGetBufferMemoryRequirements pfnGetRequirements = VK_RES_PROC(PFN_vkGetBufferMemoryRequirements, "vkGetBufferMemoryRequirements");
+    PFN_vkAllocateMemory pfnAllocateMemory = VK_RES_PROC(PFN_vkAllocateMemory, "vkAllocateMemory");
+    PFN_vkFreeMemory pfnFreeMemory = VK_RES_PROC(PFN_vkFreeMemory, "vkFreeMemory");
+    PFN_vkBindBufferMemory pfnBindBufferMemory = VK_RES_PROC(PFN_vkBindBufferMemory, "vkBindBufferMemory");
+    PFN_vkMapMemory pfnMapMemory = VK_RES_PROC(PFN_vkMapMemory, "vkMapMemory");
+    PFN_vkUnmapMemory pfnUnmapMemory = VK_RES_PROC(PFN_vkUnmapMemory, "vkUnmapMemory");
+    if (!pfnCreateBuffer || !pfnDestroyBuffer || !pfnGetRequirements || !pfnAllocateMemory || !pfnFreeMemory
+        || !pfnBindBufferMemory || !pfnMapMemory || !pfnUnmapMemory)
+        return VERR_NOT_FOUND;
+    VkBufferCreateInfo BufferInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, pRes->cbPixels,
+                                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                      VK_SHARING_MODE_EXCLUSIVE, 0, NULL };
+    VkMemoryRequirements MemReq;
+    RT_ZERO(MemReq);
+    VkMemoryAllocateInfo AllocInfo;
+    RT_ZERO(AllocInfo);
+    if (pfnCreateBuffer(pThis->hVkDevice, &BufferInfo, NULL, &pRes->hVkBuffer) != VK_SUCCESS)
+        return VERR_NOT_SUPPORTED;
+    pfnGetRequirements(pThis->hVkDevice, pRes->hVkBuffer, &MemReq);
+    uint32_t iMemoryType = UINT32_MAX;
+    for (uint32_t i = 0; i < pThis->VkMemoryProperties.memoryTypeCount; ++i)
+        if ((MemReq.memoryTypeBits & RT_BIT_32(i))
+            && (pThis->VkMemoryProperties.memoryTypes[i].propertyFlags
+                & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+                == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+        {
+            iMemoryType = i;
+            break;
+        }
+    if (iMemoryType == UINT32_MAX)
+        goto resource_cleanup;
+    AllocInfo = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, MemReq.size, iMemoryType };
+    if (pfnAllocateMemory(pThis->hVkDevice, &AllocInfo, NULL, &pRes->hVkMemory) != VK_SUCCESS
+        || pfnBindBufferMemory(pThis->hVkDevice, pRes->hVkBuffer, pRes->hVkMemory, 0) != VK_SUCCESS)
+        goto resource_cleanup;
+    pRes->fVulkanBuffer = true;
+    if (RT_FAILURE(virtioGpuR3VulkanResourceSync(pThis, pRes)))
+        goto resource_cleanup;
+    return VINF_SUCCESS;
+resource_cleanup:
+    if (pRes->hVkMemory != VK_NULL_HANDLE)
+        pfnFreeMemory(pThis->hVkDevice, pRes->hVkMemory, NULL);
+    if (pRes->hVkBuffer != VK_NULL_HANDLE)
+        pfnDestroyBuffer(pThis->hVkDevice, pRes->hVkBuffer, NULL);
+    pRes->hVkMemory = VK_NULL_HANDLE;
+    pRes->hVkBuffer = VK_NULL_HANDLE;
+    return VERR_NOT_SUPPORTED;
+# undef VK_RES_PROC
+}
+
+static void virtioGpuR3VulkanResourceDestroy(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes)
+{
+    if (!pRes->fVulkanBuffer || pThis->hVkDevice == VK_NULL_HANDLE || !pThis->pfnVkGetInstanceProcAddr)
+        return;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr =
+        (PFN_vkGetDeviceProcAddr)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetDeviceProcAddr");
+    if (pfnGetDeviceProcAddr)
+    {
+        PFN_vkDestroyBuffer pfnDestroyBuffer = (PFN_vkDestroyBuffer)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkDestroyBuffer");
+        PFN_vkFreeMemory pfnFreeMemory = (PFN_vkFreeMemory)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkFreeMemory");
+        if (pRes->hVkBuffer != VK_NULL_HANDLE && pfnDestroyBuffer)
+            pfnDestroyBuffer(pThis->hVkDevice, pRes->hVkBuffer, NULL);
+        if (pRes->hVkMemory != VK_NULL_HANDLE && pfnFreeMemory)
+            pfnFreeMemory(pThis->hVkDevice, pRes->hVkMemory, NULL);
+    }
+    pRes->hVkBuffer = VK_NULL_HANDLE;
+    pRes->hVkMemory = VK_NULL_HANDLE;
+    pRes->fVulkanBuffer = false;
+}
+
+static int virtioGpuR3VulkanResourceSync(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes)
+{
+    if (!pRes->fVulkanBuffer || !pRes->pbPixels || !pThis->pfnVkGetInstanceProcAddr)
+        return VINF_SUCCESS;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr =
+        (PFN_vkGetDeviceProcAddr)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetDeviceProcAddr");
+    PFN_vkMapMemory pfnMapMemory = pfnGetDeviceProcAddr
+        ? (PFN_vkMapMemory)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkMapMemory") : NULL;
+    PFN_vkUnmapMemory pfnUnmapMemory = pfnGetDeviceProcAddr
+        ? (PFN_vkUnmapMemory)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkUnmapMemory") : NULL;
+    if (!pfnMapMemory || !pfnUnmapMemory)
+        return VERR_NOT_FOUND;
+    void *pv = NULL;
+    int rc = pfnMapMemory(pThis->hVkDevice, pRes->hVkMemory, 0, pRes->cbPixels, 0, &pv) == VK_SUCCESS
+           ? VINF_SUCCESS : VERR_NOT_SUPPORTED;
+    if (RT_SUCCESS(rc))
+    {
+        memcpy(pv, pRes->pbPixels, (size_t)pRes->cbPixels);
+        pfnUnmapMemory(pThis->hVkDevice, pRes->hVkMemory);
+    }
+    return rc;
+}
 #endif
 
 static bool virtioGpuR3RectValid(PVIRTIOGPURESOURCE pRes, uint32_t x, uint32_t y, uint32_t w, uint32_t h)
@@ -538,7 +659,22 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                         pRes->fUsed = true; pRes->uResourceId = Cmd.id; pRes->uFormat = Cmd.format;
                         pRes->uWidth = Cmd.width; pRes->uHeight = Cmd.height; pRes->cbPixels = cbPixels;
                         pThis->cbAllocated += cbPixels;
-                        Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
+                        int rcBackend = VINF_SUCCESS;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                        rcBackend = virtioGpuR3VulkanResourceCreate(pThis, pRes);
+#endif
+                        if (RT_FAILURE(rcBackend))
+                        {
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                            virtioGpuR3VulkanResourceDestroy(pThis, pRes);
+#endif
+                            RTMemFree(pRes->pbPixels);
+                            pThis->cbAllocated -= pRes->cbPixels;
+                            RT_ZERO(*pRes);
+                            Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_OUT_OF_MEMORY;
+                        }
+                        else
+                            Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
                     }
                 }
                 break;
@@ -557,7 +693,11 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                     {
                         for (unsigned i=0; i<VIRTIOGPU_MAX_SCANOUTS; ++i)
                             if (pThis->aScanouts[i].uResourceId == Cmd.id) RT_ZERO(pThis->aScanouts[i]);
-                        RTMemFree(pRes->pbPixels); pThis->cbAllocated -= pRes->cbPixels; RT_ZERO(*pRes);
+                        RTMemFree(pRes->pbPixels);
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                        virtioGpuR3VulkanResourceDestroy(pThis, pRes);
+#endif
+                        pThis->cbAllocated -= pRes->cbPixels; RT_ZERO(*pRes);
                         Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
                     }
                 }
@@ -634,6 +774,12 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                             uint64_t const src = Cmd.off + (uint64_t)(Cmd.y + y) * stride + (uint64_t)Cmd.x * 4;
                             uint8_t * const pbDst = pRes->pbPixels + ((uint64_t)(Cmd.y + y) * pRes->uWidth + Cmd.x) * 4;
                             rcReq = virtioGpuR3ReadGuest(pDevIns, pVirtio, pRes, src, pbDst, (size_t)cbRow);
+                        }
+                        if (RT_SUCCESS(rcReq))
+                        {
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                            rcReq = virtioGpuR3VulkanResourceSync(pThis, pRes);
+#endif
                         }
                         Resp.Hdr.uType = RT_SUCCESS(rcReq) ? VIRTIOGPU_RESP_OK_NODATA : VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
                     }
@@ -852,6 +998,10 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
                 {
                     pThis->cbAllocated += pRes->cbPixels;
                     rc = pDevIns->pHlpR3->pfnSSMGetMem(pSSM, pRes->pbPixels, pRes->cbPixels);
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                    if (RT_SUCCESS(rc))
+                        rc = virtioGpuR3VulkanResourceCreate(pThis, pRes);
+#endif
                 }
             }
             if (RT_FAILURE(rc))

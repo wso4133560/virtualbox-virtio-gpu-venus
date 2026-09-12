@@ -233,7 +233,6 @@ int main(int argc, char **argv)
     RTTestSub(g_hTest, "host Vulkan queue execution probe");
     rc = virtioGpuR3VulkanProbeQueue(pGpu);
     RTTESTI_CHECK_RC(rc, VINF_SUCCESS);
-    virtioGpuR3VulkanTerm(pGpu);
 #endif
     pDev->u32Version = PDM_DEVINS_VERSION;
     pDev->pReg = &g_DeviceVirtioGPU;
@@ -313,6 +312,11 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && pGpu->aResources[0].fUsed && pGpu->aResources[0].cbPixels == 16);
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    RTTESTI_CHECK(pGpu->aResources[0].fVulkanBuffer
+                  && pGpu->aResources[0].hVkBuffer != VK_NULL_HANDLE
+                  && pGpu->aResources[0].hVkMemory != VK_NULL_HANDLE);
+#endif
 
     uint8_t abPixels[16] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
     memcpy(&g_abRam[0x6000], abPixels, sizeof(abPixels));
@@ -524,6 +528,9 @@ int main(int argc, char **argv)
             RTLdrClose(hMod);
         }
     }
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    virtioGpuR3VulkanTerm(pGpu);
+#endif
     RTMemFree(pGpu);
     RTMemFree(pDev);
     return RTTestSummaryAndDestroy(g_hTest);
