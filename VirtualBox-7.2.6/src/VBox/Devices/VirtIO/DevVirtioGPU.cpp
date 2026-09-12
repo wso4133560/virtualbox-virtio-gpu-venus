@@ -640,6 +640,7 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
     RT_ZERO(Req);
     RT_ZERO(Resp);
     size_t cbResp = 0;
+    bool fPreserveResponse = false;
     int rcReq = virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Req, sizeof(Req));
     uint32_t uResponse = RT_FAILURE(rcReq) || (RT_SUCCESS(rcReq) && (Req.uFlags & ~VIRTIOGPU_FLAG_FENCE))
                         ? VIRTIOGPU_RESP_ERR_INVALID_PARAMETER : VIRTIOGPU_RESP_ERR_UNSPEC;
@@ -669,6 +670,38 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                 else
                     Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
                 break;
+            case VIRTIOGPU_CMD_GET_CAPSET_INFO:
+            {
+                VIRTIOGPUCAPSETINFO Cmd;
+                RT_ZERO(Cmd);
+                if (pBuf->cbPhysSend < sizeof(Cmd)
+                    || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Cmd, sizeof(Cmd)))
+                    || Cmd.uCapsetIndex >= pThis->Config.cCapsets
+                    || pBuf->cbPhysReturn < sizeof(VIRTIOGPUCAPSETINFORESP))
+                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                else
+                {
+                    VIRTIOGPUCAPSETINFORESP CapResp;
+                    RT_ZERO(CapResp);
+                    CapResp.Hdr = Resp.Hdr;
+                    CapResp.Hdr.uType = VIRTIOGPU_RESP_OK_CAPSET_INFO;
+                    memcpy(&Resp, &CapResp, sizeof(CapResp));
+                    cbResp = sizeof(CapResp);
+                    fPreserveResponse = true;
+                }
+                break;
+            }
+            case VIRTIOGPU_CMD_GET_CAPSET:
+            {
+                VIRTIOGPUGETCAPSET Cmd;
+                RT_ZERO(Cmd);
+                if (pBuf->cbPhysSend < sizeof(Cmd)
+                    || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Cmd, sizeof(Cmd))))
+                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                else
+                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                break;
+            }
             case VIRTIOGPU_CMD_RESOURCE_CREATE_2D:
             {
                 struct { uint32_t id, format, width, height; } Cmd;
@@ -1068,7 +1101,7 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                 break;
         }
     }
-    if (pBuf->cbPhysReturn >= sizeof(Resp.Hdr))
+    if (pBuf->cbPhysReturn >= sizeof(Resp.Hdr) && !fPreserveResponse)
     {
         uint32_t uFinal=Resp.Hdr.uType;
         virtioGpuR3Response(&Resp,&Req,uFinal);

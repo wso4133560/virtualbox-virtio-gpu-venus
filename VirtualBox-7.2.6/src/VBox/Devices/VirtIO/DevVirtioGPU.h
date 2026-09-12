@@ -92,6 +92,25 @@ typedef struct VIRTIOGPUSUBMIT3D
     uint32_t cResources;
 } VIRTIOGPUSUBMIT3D;
 
+typedef struct VIRTIOGPUCAPSETINFO
+{
+    uint32_t uCapsetIndex;
+} VIRTIOGPUCAPSETINFO;
+
+typedef struct VIRTIOGPUCAPSETINFORESP
+{
+    VIRTIOGPUCTRLHDR Hdr;
+    uint32_t uCapsetId;
+    uint32_t uMaxVersion;
+    uint32_t cbMaxSize;
+} VIRTIOGPUCAPSETINFORESP;
+
+typedef struct VIRTIOGPUGETCAPSET
+{
+    uint32_t uCapsetId;
+    uint32_t uCapsetVersion;
+} VIRTIOGPUGETCAPSET;
+
 typedef struct VIRTIOGPUTRANSFERTOHOST2D
 {
     VIRTIOGPUCTRLHDR Hdr;
@@ -142,6 +161,9 @@ AssertCompileSize(VIRTIOGPURESOURCEATTACHBACKING, 32);
 AssertCompileSize(VIRTIOGPURESOURCEDETACHBACKING, 32);
 AssertCompileSize(VIRTIOGPURESOURCECREATEBLOB, 32);
 AssertCompileSize(VIRTIOGPUSUBMIT3D, 8);
+AssertCompileSize(VIRTIOGPUCAPSETINFO, 4);
+AssertCompileSize(VIRTIOGPUCAPSETINFORESP, 36);
+AssertCompileSize(VIRTIOGPUGETCAPSET, 8);
 AssertCompileSize(VIRTIOGPUTRANSFERTOHOST2D, 56);
 AssertCompileSize(VIRTIOGPURESOURCEFLUSH, 48);
 AssertCompileSize(VIRTIOGPUDISPLAYONE, 24);
