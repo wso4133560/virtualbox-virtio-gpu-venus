@@ -157,7 +157,8 @@ run-struct-tests: $(VBOX_DEVICES_TEST_OUT_DIR)/tstDeviceStructSize.run
 ifdef VBOX_WITH_VIRTIO_GPU
  PROGRAMS += tstVirtioGPU
  tstVirtioGPU_TEMPLATE = VBoxR3AutoTest
- tstVirtioGPU_DEFS = IN_VBOXDD VBOX_WITH_VIRTIO VBOX_WITH_VIRTIO_GPU
+tstVirtioGPU_DEFS = IN_VBOXDD VBOX_WITH_VIRTIO VBOX_WITH_VIRTIO_GPU VBOX_WITH_VIRTIO_GPU_VENUS
+tstVirtioGPU_INCS = $(PATH_ROOT)/src/libs/dxvk-2.6.2/include/vulkan/include
  tstVirtioGPU_SOURCES = tstVirtioGPU.cpp
 endif
 

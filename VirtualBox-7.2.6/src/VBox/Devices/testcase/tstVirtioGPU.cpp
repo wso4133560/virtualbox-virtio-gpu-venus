@@ -222,6 +222,13 @@ int main(int argc, char **argv)
         RTTestFailed(g_hTest, "Out of memory");
         return RTTestSummaryAndDestroy(g_hTest);
     }
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    RTTestSub(g_hTest, "host Vulkan instance and physical device probe");
+    rc = virtioGpuR3VulkanInit(pGpu);
+    RTTESTI_CHECK_RC(rc, VINF_SUCCESS);
+    RTTESTI_CHECK(pGpu->fVulkanLoader && pGpu->fVulkanDevice && pGpu->hVkPhysicalDevice != VK_NULL_HANDLE);
+    virtioGpuR3VulkanTerm(pGpu);
+#endif
     pDev->u32Version = PDM_DEVINS_VERSION;
     pDev->pReg = &g_DeviceVirtioGPU;
     pDev->pvInstanceDataR3 = pGpu;

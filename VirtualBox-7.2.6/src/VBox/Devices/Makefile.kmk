@@ -164,8 +164,9 @@ if !defined(VBOX_ONLY_EXTPACKS) && "$(intersects $(KBUILD_TARGET_ARCH),$(VBOX_SU
  VBoxDD_SDKS.win         = ReorderCompilerIncs $(VBOX_WINPSDK) $(VBOX_WINDDK) VBoxNtDll
  Storage/DrvHostDVD.cpp_SDKS.win = ReorderCompilerIncs $(VBOX_WINDDK)
  VBoxDD_INCS             = \
- 	build \
- 	$(VBOX_GRAPHICS_INCS)
+  build \
+  $(VBOX_GRAPHICS_INCS) \
+  $(if $(VBOX_WITH_VIRTIO_GPU_VENUS),$(PATH_ROOT)/src/libs/dxvk-2.6.2/include/vulkan/include,)
 
  VBoxDD_DEFS             = \
  	VBOX_HGCM_HOST_CODE \

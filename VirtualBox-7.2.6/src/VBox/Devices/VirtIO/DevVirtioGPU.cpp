@@ -14,6 +14,9 @@
 #ifdef RT_OS_WINDOWS
 # include <iprt/win/windows.h>
 #endif
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+# include <vulkan/vulkan.h>
+#endif
 #include <VBox/log.h>
 #include <VBox/pci.h>
 #include <VBox/vmm/pdmdev.h>
@@ -64,8 +67,13 @@ typedef struct VIRTIOGPU
     uint64_t cbAllocated;
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     RTLDRMOD hVulkan;
-    PFNRT pfnVkGetInstanceProcAddr;
+    PFN_vkGetInstanceProcAddr pfnVkGetInstanceProcAddr;
+    VkInstance hVkInstance;
+    VkPhysicalDevice hVkPhysicalDevice;
+    VkPhysicalDeviceProperties VkProperties;
+    uint32_t uVkApiVersion;
     bool fVulkanLoader;
+    bool fVulkanDevice;
 #endif
 } VIRTIOGPU;
 typedef VIRTIOGPU *PVIRTIOGPU;
@@ -145,6 +153,92 @@ static void virtioGpuR3FreeResources(PVIRTIOGPU pThis)
         RT_ZERO(pThis->aScanouts[i]);
     pThis->cbAllocated = 0;
 }
+
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+static int virtioGpuR3VulkanInit(PVIRTIOGPU pThis)
+{
+    pThis->hVulkan = NIL_RTLDRMOD;
+    pThis->pfnVkGetInstanceProcAddr = NULL;
+    pThis->hVkInstance = VK_NULL_HANDLE;
+    pThis->hVkPhysicalDevice = VK_NULL_HANDLE;
+    pThis->uVkApiVersion = VK_API_VERSION_1_0;
+    pThis->fVulkanLoader = false;
+    pThis->fVulkanDevice = false;
+    char szVulkanPath[RTPATH_MAX] = "vulkan-1.dll";
+# ifdef RT_OS_WINDOWS
+    char szSystemDir[RTPATH_MAX];
+    UINT cchSystemDir = GetSystemDirectoryA(szSystemDir, sizeof(szSystemDir));
+    if (cchSystemDir && cchSystemDir < sizeof(szSystemDir) - sizeof("\\vulkan-1.dll"))
+    {
+        RTStrCopy(szVulkanPath, sizeof(szVulkanPath), szSystemDir);
+        RTStrCat(szVulkanPath, sizeof(szVulkanPath), "\\vulkan-1.dll");
+    }
+# endif
+    int rc = RTLdrLoad(szVulkanPath, &pThis->hVulkan);
+    if (RT_FAILURE(rc))
+        return rc;
+    rc = RTLdrGetSymbol(pThis->hVulkan, "vkGetInstanceProcAddr", (void **)&pThis->pfnVkGetInstanceProcAddr);
+    if (RT_FAILURE(rc) || !pThis->pfnVkGetInstanceProcAddr)
+        return VERR_NOT_FOUND;
+    pThis->fVulkanLoader = true;
+    PFN_vkEnumerateInstanceVersion pfnEnumerateInstanceVersion =
+        (PFN_vkEnumerateInstanceVersion)pThis->pfnVkGetInstanceProcAddr(VK_NULL_HANDLE, "vkEnumerateInstanceVersion");
+    if (pfnEnumerateInstanceVersion)
+        pfnEnumerateInstanceVersion(&pThis->uVkApiVersion);
+    PFN_vkCreateInstance pfnCreateInstance =
+        (PFN_vkCreateInstance)pThis->pfnVkGetInstanceProcAddr(VK_NULL_HANDLE, "vkCreateInstance");
+    if (!pfnCreateInstance)
+        return VERR_NOT_FOUND;
+    VkApplicationInfo AppInfo = { VK_STRUCTURE_TYPE_APPLICATION_INFO, NULL, "VirtualBox VirtIO-GPU", 1,
+                                  "VirtualBox", 1, pThis->uVkApiVersion };
+    VkInstanceCreateInfo CreateInfo = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, NULL, 0, &AppInfo, 0, NULL, 0, NULL };
+    VkResult vkrc = pfnCreateInstance(&CreateInfo, NULL, &pThis->hVkInstance);
+    if (vkrc != VK_SUCCESS)
+        return VERR_NOT_SUPPORTED;
+    PFN_vkEnumeratePhysicalDevices pfnEnumeratePhysicalDevices =
+        (PFN_vkEnumeratePhysicalDevices)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkEnumeratePhysicalDevices");
+    PFN_vkGetPhysicalDeviceProperties pfnGetPhysicalDeviceProperties =
+        (PFN_vkGetPhysicalDeviceProperties)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetPhysicalDeviceProperties");
+    if (!pfnEnumeratePhysicalDevices || !pfnGetPhysicalDeviceProperties)
+        return VERR_NOT_FOUND;
+    uint32_t cDevices = 0;
+    vkrc = pfnEnumeratePhysicalDevices(pThis->hVkInstance, &cDevices, NULL);
+    if (vkrc != VK_SUCCESS || !cDevices)
+        return VERR_NOT_SUPPORTED;
+    VkPhysicalDevice aDevices[8];
+    uint32_t cDevicesFetch = RT_MIN(cDevices, (uint32_t)RT_ELEMENTS(aDevices));
+    vkrc = pfnEnumeratePhysicalDevices(pThis->hVkInstance, &cDevicesFetch, aDevices);
+    if (vkrc != VK_SUCCESS || !cDevicesFetch)
+        return VERR_NOT_SUPPORTED;
+    pThis->hVkPhysicalDevice = aDevices[0];
+    RT_ZERO(pThis->VkProperties);
+    pfnGetPhysicalDeviceProperties(pThis->hVkPhysicalDevice, &pThis->VkProperties);
+    pThis->fVulkanDevice = true;
+    LogRel(("virtio-gpu: Vulkan host device '%s', API %u.%u.%u\n", pThis->VkProperties.deviceName,
+            VK_VERSION_MAJOR(pThis->VkProperties.apiVersion), VK_VERSION_MINOR(pThis->VkProperties.apiVersion),
+            VK_VERSION_PATCH(pThis->VkProperties.apiVersion)));
+    return VINF_SUCCESS;
+}
+
+static void virtioGpuR3VulkanTerm(PVIRTIOGPU pThis)
+{
+    if (pThis->hVkInstance != VK_NULL_HANDLE && pThis->pfnVkGetInstanceProcAddr)
+    {
+        PFN_vkDestroyInstance pfnDestroyInstance =
+            (PFN_vkDestroyInstance)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkDestroyInstance");
+        if (pfnDestroyInstance)
+            pfnDestroyInstance(pThis->hVkInstance, NULL);
+    }
+    pThis->hVkInstance = VK_NULL_HANDLE;
+    pThis->hVkPhysicalDevice = VK_NULL_HANDLE;
+    if (pThis->hVulkan != NIL_RTLDRMOD)
+        RTLdrClose(pThis->hVulkan);
+    pThis->hVulkan = NIL_RTLDRMOD;
+    pThis->pfnVkGetInstanceProcAddr = NULL;
+    pThis->fVulkanLoader = false;
+    pThis->fVulkanDevice = false;
+}
+#endif
 
 static bool virtioGpuR3RectValid(PVIRTIOGPURESOURCE pRes, uint32_t x, uint32_t y, uint32_t w, uint32_t h)
 {
@@ -605,33 +699,11 @@ static DECLCALLBACK(int) virtioGpuR3Construct(PPDMDEVINS pDevIns, int iInstance,
     PVIRTIOGPUCC pThisCC = PDMDEVINS_2_DATA_CC(pDevIns, PVIRTIOGPUCC);
     pThis->Config.cScanouts = 1;
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
-    pThis->hVulkan = NIL_RTLDRMOD;
-    pThis->pfnVkGetInstanceProcAddr = NULL;
-    pThis->fVulkanLoader = false;
-    char szVulkanPath[RTPATH_MAX] = "vulkan-1.dll";
-# ifdef RT_OS_WINDOWS
-    char szSystemDir[RTPATH_MAX];
-    UINT cchSystemDir = GetSystemDirectoryA(szSystemDir, sizeof(szSystemDir));
-    if (cchSystemDir && cchSystemDir < sizeof(szSystemDir) - sizeof("\\vulkan-1.dll"))
+    int rcVulkan = virtioGpuR3VulkanInit(pThis);
+    if (RT_FAILURE(rcVulkan))
     {
-        RTStrCopy(szVulkanPath, sizeof(szVulkanPath), szSystemDir);
-        RTStrCat(szVulkanPath, sizeof(szVulkanPath), "\\vulkan-1.dll");
-    }
-# endif
-    int rcVulkan = RTLdrLoad(szVulkanPath, &pThis->hVulkan);
-    if (RT_SUCCESS(rcVulkan))
-        rcVulkan = RTLdrGetSymbol(pThis->hVulkan, "vkGetInstanceProcAddr", (void **)&pThis->pfnVkGetInstanceProcAddr);
-    if (RT_SUCCESS(rcVulkan) && pThis->pfnVkGetInstanceProcAddr)
-    {
-        pThis->fVulkanLoader = true;
-        LogRel(("virtio-gpu: Vulkan loader available (Venus backend probe)\n"));
-    }
-    else
-    {
-        if (pThis->hVulkan != NIL_RTLDRMOD)
-            RTLdrClose(pThis->hVulkan);
-        pThis->hVulkan = NIL_RTLDRMOD;
-        LogRel(("virtio-gpu: Vulkan loader unavailable, using software path\n"));
+        LogRel(("virtio-gpu: Vulkan host probe failed (%Rrc), using software path\n", rcVulkan));
+        virtioGpuR3VulkanTerm(pThis);
     }
 #endif
     pThisCC->Virtio.pfnStatusChanged = virtioGpuR3StatusChanged;
@@ -671,8 +743,7 @@ static DECLCALLBACK(int) virtioGpuR3Destruct(PPDMDEVINS pDevIns)
     PVIRTIOGPUCC pThisCC = PDMDEVINS_2_DATA_CC(pDevIns, PVIRTIOGPUCC);
     virtioGpuR3FreeResources(pThis);
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
-    if (pThis->hVulkan != NIL_RTLDRMOD)
-        RTLdrClose(pThis->hVulkan);
+    virtioGpuR3VulkanTerm(pThis);
 #endif
     virtioCoreR3Term(pDevIns, &pThis->Virtio, &pThisCC->Virtio);
     return VINF_SUCCESS;
