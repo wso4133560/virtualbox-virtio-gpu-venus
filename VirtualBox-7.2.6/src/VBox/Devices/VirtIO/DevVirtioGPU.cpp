@@ -94,6 +94,9 @@ typedef struct VIRTIOGPU
     VkPhysicalDevice hVkPhysicalDevice;
     VkDevice hVkDevice;
     VkQueue hVkQueue;
+    VkCommandPool hVkSubmitPool;
+    VkCommandBuffer hVkSubmitCommandBuffer;
+    VkFence hVkSubmitFence;
     uint32_t uVkQueueFamily;
     VkPhysicalDeviceProperties VkProperties;
     VkPhysicalDeviceMemoryProperties VkMemoryProperties;
@@ -102,6 +105,7 @@ typedef struct VIRTIOGPU
     bool fVulkanDevice;
     bool fVulkanQueue;
     bool fVulkanMemory;
+    bool fVulkanSubmit;
 #endif
 } VIRTIOGPU;
 typedef VIRTIOGPU *PVIRTIOGPU;
@@ -219,6 +223,9 @@ static int virtioGpuR3VulkanInit(PVIRTIOGPU pThis)
     pThis->hVkPhysicalDevice = VK_NULL_HANDLE;
     pThis->hVkDevice = VK_NULL_HANDLE;
     pThis->hVkQueue = VK_NULL_HANDLE;
+    pThis->hVkSubmitPool = VK_NULL_HANDLE;
+    pThis->hVkSubmitCommandBuffer = VK_NULL_HANDLE;
+    pThis->hVkSubmitFence = VK_NULL_HANDLE;
     pThis->uVkQueueFamily = UINT32_MAX;
     RT_ZERO(pThis->VkMemoryProperties);
     pThis->uVkApiVersion = VK_API_VERSION_1_0;
@@ -226,6 +233,7 @@ static int virtioGpuR3VulkanInit(PVIRTIOGPU pThis)
     pThis->fVulkanDevice = false;
     pThis->fVulkanQueue = false;
     pThis->fVulkanMemory = false;
+    pThis->fVulkanSubmit = false;
     char szVulkanPath[RTPATH_MAX] = "vulkan-1.dll";
 # ifdef RT_OS_WINDOWS
     char szSystemDir[RTPATH_MAX];
@@ -320,6 +328,28 @@ static int virtioGpuR3VulkanInit(PVIRTIOGPU pThis)
     pThis->fVulkanQueue = pThis->hVkQueue != VK_NULL_HANDLE;
     if (!pThis->fVulkanQueue)
         return VERR_NOT_SUPPORTED;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr =
+        (PFN_vkGetDeviceProcAddr)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetDeviceProcAddr");
+    PFN_vkCreateCommandPool pfnCreateCommandPool = pfnGetDeviceProcAddr
+        ? (PFN_vkCreateCommandPool)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkCreateCommandPool") : NULL;
+    PFN_vkAllocateCommandBuffers pfnAllocateCommandBuffers = pfnGetDeviceProcAddr
+        ? (PFN_vkAllocateCommandBuffers)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkAllocateCommandBuffers") : NULL;
+    PFN_vkCreateFence pfnCreateFence = pfnGetDeviceProcAddr
+        ? (PFN_vkCreateFence)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkCreateFence") : NULL;
+    if (!pfnCreateCommandPool || !pfnAllocateCommandBuffers || !pfnCreateFence)
+        return VERR_NOT_FOUND;
+    VkCommandPoolCreateInfo PoolInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, NULL,
+                                         VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, pThis->uVkQueueFamily };
+    if (pfnCreateCommandPool(pThis->hVkDevice, &PoolInfo, NULL, &pThis->hVkSubmitPool) != VK_SUCCESS)
+        return VERR_NOT_SUPPORTED;
+    VkCommandBufferAllocateInfo AllocInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, NULL,
+                                              pThis->hVkSubmitPool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1 };
+    if (pfnAllocateCommandBuffers(pThis->hVkDevice, &AllocInfo, &pThis->hVkSubmitCommandBuffer) != VK_SUCCESS)
+        return VERR_NOT_SUPPORTED;
+    VkFenceCreateInfo FenceInfo = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, NULL, 0 };
+    if (pfnCreateFence(pThis->hVkDevice, &FenceInfo, NULL, &pThis->hVkSubmitFence) != VK_SUCCESS)
+        return VERR_NOT_SUPPORTED;
+    pThis->fVulkanSubmit = true;
     VkDeviceSize cbDeviceLocal = 0;
     for (uint32_t i = 0; i < pThis->VkMemoryProperties.memoryHeapCount; ++i)
         if (pThis->VkMemoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
@@ -336,6 +366,25 @@ static void virtioGpuR3VulkanTerm(PVIRTIOGPU pThis)
 {
     if (pThis->hVkDevice != VK_NULL_HANDLE && pThis->pfnVkGetInstanceProcAddr)
     {
+        PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr =
+            (PFN_vkGetDeviceProcAddr)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetDeviceProcAddr");
+        PFN_vkDestroyFence pfnDestroyFence = pfnGetDeviceProcAddr
+            ? (PFN_vkDestroyFence)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkDestroyFence") : NULL;
+        PFN_vkFreeCommandBuffers pfnFreeCommandBuffers = pfnGetDeviceProcAddr
+            ? (PFN_vkFreeCommandBuffers)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkFreeCommandBuffers") : NULL;
+        PFN_vkDestroyCommandPool pfnDestroyCommandPool = pfnGetDeviceProcAddr
+            ? (PFN_vkDestroyCommandPool)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkDestroyCommandPool") : NULL;
+        if (pfnDestroyFence && pThis->hVkSubmitFence != VK_NULL_HANDLE)
+            pfnDestroyFence(pThis->hVkDevice, pThis->hVkSubmitFence, NULL);
+        if (pfnFreeCommandBuffers && pThis->hVkSubmitCommandBuffer != VK_NULL_HANDLE
+            && pThis->hVkSubmitPool != VK_NULL_HANDLE)
+            pfnFreeCommandBuffers(pThis->hVkDevice, pThis->hVkSubmitPool, 1, &pThis->hVkSubmitCommandBuffer);
+        if (pfnDestroyCommandPool && pThis->hVkSubmitPool != VK_NULL_HANDLE)
+            pfnDestroyCommandPool(pThis->hVkDevice, pThis->hVkSubmitPool, NULL);
+        pThis->hVkSubmitFence = VK_NULL_HANDLE;
+        pThis->hVkSubmitCommandBuffer = VK_NULL_HANDLE;
+        pThis->hVkSubmitPool = VK_NULL_HANDLE;
+        pThis->fVulkanSubmit = false;
         PFN_vkDestroyDevice pfnDestroyDevice =
             (PFN_vkDestroyDevice)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkDestroyDevice");
         if (pfnDestroyDevice)
@@ -587,7 +636,7 @@ static int virtioGpuR3VulkanResourceSync(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pR
 static int virtioGpuR3VulkanFillBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes,
                                        uint64_t off, uint64_t cb, uint32_t uData)
 {
-    if (!pRes->fVulkanBuffer || !pThis->fVulkanQueue || off > pRes->cbPixels
+    if (!pRes->fVulkanBuffer || !pThis->fVulkanQueue || !pThis->fVulkanSubmit || off > pRes->cbPixels
         || cb > pRes->cbPixels - off || !cb || (off & 3) || (cb & 3))
         return VERR_INVALID_PARAMETER;
     PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr =
@@ -595,43 +644,30 @@ static int virtioGpuR3VulkanFillBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes
     if (!pfnGetDeviceProcAddr)
         return VERR_NOT_FOUND;
 # define VK_FILL_PROC(type, name) (type)pfnGetDeviceProcAddr(pThis->hVkDevice, name)
-    PFN_vkCreateCommandPool pfnCreateCommandPool = VK_FILL_PROC(PFN_vkCreateCommandPool, "vkCreateCommandPool");
-    PFN_vkDestroyCommandPool pfnDestroyCommandPool = VK_FILL_PROC(PFN_vkDestroyCommandPool, "vkDestroyCommandPool");
-    PFN_vkAllocateCommandBuffers pfnAllocateCommandBuffers = VK_FILL_PROC(PFN_vkAllocateCommandBuffers, "vkAllocateCommandBuffers");
-    PFN_vkFreeCommandBuffers pfnFreeCommandBuffers = VK_FILL_PROC(PFN_vkFreeCommandBuffers, "vkFreeCommandBuffers");
+    PFN_vkResetCommandBuffer pfnResetCommandBuffer = VK_FILL_PROC(PFN_vkResetCommandBuffer, "vkResetCommandBuffer");
     PFN_vkBeginCommandBuffer pfnBeginCommandBuffer = VK_FILL_PROC(PFN_vkBeginCommandBuffer, "vkBeginCommandBuffer");
     PFN_vkEndCommandBuffer pfnEndCommandBuffer = VK_FILL_PROC(PFN_vkEndCommandBuffer, "vkEndCommandBuffer");
     PFN_vkCmdFillBuffer pfnCmdFillBuffer = VK_FILL_PROC(PFN_vkCmdFillBuffer, "vkCmdFillBuffer");
-    PFN_vkCreateFence pfnCreateFence = VK_FILL_PROC(PFN_vkCreateFence, "vkCreateFence");
-    PFN_vkDestroyFence pfnDestroyFence = VK_FILL_PROC(PFN_vkDestroyFence, "vkDestroyFence");
+    PFN_vkResetFences pfnResetFences = VK_FILL_PROC(PFN_vkResetFences, "vkResetFences");
     PFN_vkQueueSubmit pfnQueueSubmit = VK_FILL_PROC(PFN_vkQueueSubmit, "vkQueueSubmit");
     PFN_vkWaitForFences pfnWaitForFences = VK_FILL_PROC(PFN_vkWaitForFences, "vkWaitForFences");
     PFN_vkMapMemory pfnMapMemory = VK_FILL_PROC(PFN_vkMapMemory, "vkMapMemory");
     PFN_vkUnmapMemory pfnUnmapMemory = VK_FILL_PROC(PFN_vkUnmapMemory, "vkUnmapMemory");
-    if (!pfnCreateCommandPool || !pfnDestroyCommandPool || !pfnAllocateCommandBuffers || !pfnFreeCommandBuffers
-        || !pfnBeginCommandBuffer || !pfnEndCommandBuffer || !pfnCmdFillBuffer || !pfnCreateFence
-        || !pfnDestroyFence || !pfnQueueSubmit || !pfnWaitForFences || !pfnMapMemory || !pfnUnmapMemory)
+    if (!pfnResetCommandBuffer || !pfnBeginCommandBuffer || !pfnEndCommandBuffer || !pfnCmdFillBuffer
+        || !pfnResetFences || !pfnQueueSubmit || !pfnWaitForFences || !pfnMapMemory || !pfnUnmapMemory)
         return VERR_NOT_FOUND;
-    VkCommandPool hPool = VK_NULL_HANDLE;
-    VkCommandBuffer hCmd = VK_NULL_HANDLE;
-    VkFence hFence = VK_NULL_HANDLE;
-    VkCommandPoolCreateInfo PoolInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, NULL, 0, pThis->uVkQueueFamily };
-    VkCommandBufferAllocateInfo AllocCmd = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, NULL, VK_NULL_HANDLE,
-                                             VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1 };
+    VkCommandBuffer hCmd = pThis->hVkSubmitCommandBuffer;
+    VkFence hFence = pThis->hVkSubmitFence;
     VkCommandBufferBeginInfo BeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
                                            VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, NULL };
-    VkFenceCreateInfo FenceInfo = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, NULL, 0 };
     VkSubmitInfo SubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, 0, NULL, NULL, 1, &hCmd, 0, NULL };
     int rc = VERR_NOT_SUPPORTED;
-    if (pfnCreateCommandPool(pThis->hVkDevice, &PoolInfo, NULL, &hPool) != VK_SUCCESS)
+    if (pfnResetFences(pThis->hVkDevice, 1, &hFence) != VK_SUCCESS)
         goto cleanup;
-    AllocCmd.commandPool = hPool;
-    if (pfnAllocateCommandBuffers(pThis->hVkDevice, &AllocCmd, &hCmd) != VK_SUCCESS
-        || pfnBeginCommandBuffer(hCmd, &BeginInfo) != VK_SUCCESS)
+    if (pfnResetCommandBuffer(hCmd, 0) != VK_SUCCESS || pfnBeginCommandBuffer(hCmd, &BeginInfo) != VK_SUCCESS)
         goto cleanup;
     pfnCmdFillBuffer(hCmd, pRes->hVkBuffer, off, cb, uData);
     if (pfnEndCommandBuffer(hCmd) != VK_SUCCESS
-        || pfnCreateFence(pThis->hVkDevice, &FenceInfo, NULL, &hFence) != VK_SUCCESS
         || pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, hFence) != VK_SUCCESS
         || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
         goto cleanup;
@@ -646,9 +682,6 @@ static int virtioGpuR3VulkanFillBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes
     pfnUnmapMemory(pThis->hVkDevice, pRes->hVkMemory);
     rc = VINF_SUCCESS;
 cleanup:
-    if (hFence != VK_NULL_HANDLE) pfnDestroyFence(pThis->hVkDevice, hFence, NULL);
-    if (hCmd != VK_NULL_HANDLE) pfnFreeCommandBuffers(pThis->hVkDevice, hPool, 1, &hCmd);
-    if (hPool != VK_NULL_HANDLE) pfnDestroyCommandPool(pThis->hVkDevice, hPool, NULL);
     return rc;
 # undef VK_FILL_PROC
 }
