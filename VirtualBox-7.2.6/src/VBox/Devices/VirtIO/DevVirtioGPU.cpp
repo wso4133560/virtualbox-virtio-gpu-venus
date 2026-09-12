@@ -34,6 +34,7 @@
 #define VIRTIOGPU_MAX_CONTEXTS 64
 #define VIRTIOGPU_MAX_CONTEXT_RESOURCES 64
 #define VIRTIOGPU_MAX_SUBMIT_BYTES (UINT32_C(1) * _1M)
+#define VIRTIOGPU_VK_CMD_FILL_BUFFER UINT32_C(118)
 #define VIRTIOGPU_MAX_BACKING_ENTRIES 64
 #define VIRTIOGPU_MAX_RESOURCE_BYTES (UINT64_C(256) * _1M)
 
@@ -651,6 +652,33 @@ cleanup:
     return rc;
 # undef VK_FILL_PROC
 }
+
+typedef struct VIRTIOGPUFILLCMD
+{
+    uint64_t uCommandBuffer;
+    uint64_t uBuffer;
+    uint64_t offBuffer;
+    uint64_t cbBuffer;
+    uint32_t uData;
+} VIRTIOGPUFILLCMD;
+
+static bool virtioGpuR3DecodeFillBuffer(const uint8_t *pbCommand, size_t cbCommand, VIRTIOGPUFILLCMD *pFill)
+{
+    if (!pbCommand || !pFill || cbCommand != 44)
+        return false;
+    uint32_t uCommandType = 0;
+    uint32_t fCommand = 0;
+    memcpy(&uCommandType, pbCommand, sizeof(uCommandType));
+    memcpy(&fCommand, pbCommand + 4, sizeof(fCommand));
+    if (uCommandType != VIRTIOGPU_VK_CMD_FILL_BUFFER || fCommand)
+        return false;
+    memcpy(&pFill->uCommandBuffer, pbCommand + 8, sizeof(pFill->uCommandBuffer));
+    memcpy(&pFill->uBuffer, pbCommand + 16, sizeof(pFill->uBuffer));
+    memcpy(&pFill->offBuffer, pbCommand + 24, sizeof(pFill->offBuffer));
+    memcpy(&pFill->cbBuffer, pbCommand + 32, sizeof(pFill->cbBuffer));
+    memcpy(&pFill->uData, pbCommand + 40, sizeof(pFill->uData));
+    return pFill->uCommandBuffer != 0 && pFill->uBuffer != 0;
+}
 #endif
 
 static bool virtioGpuR3RectValid(PVIRTIOGPURESOURCE pRes, uint32_t x, uint32_t y, uint32_t w, uint32_t h)
@@ -1007,6 +1035,7 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                 VIRTIOGPUSUBMIT3D Cmd;
                 RT_ZERO(Cmd);
                 PVIRTIOGPUCONTEXT pCtx = virtioGpuR3FindContext(pThis, Req.uCtxId);
+                uint8_t *pbCommand = NULL;
                 if (!pCtx || pBuf->cbPhysSend < sizeof(Cmd)
                     || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Cmd, sizeof(Cmd)))
                     || Cmd.cbCommand > VIRTIOGPU_MAX_SUBMIT_BYTES || Cmd.cResources > VIRTIOGPU_MAX_CONTEXT_RESOURCES
@@ -1024,13 +1053,12 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                             rcReq = VERR_INVALID_PARAMETER;
                     if (RT_SUCCESS(rcReq) && Cmd.cbCommand)
                     {
-                        uint8_t *pbCommand = (uint8_t *)RTMemAlloc(Cmd.cbCommand);
+                        pbCommand = (uint8_t *)RTMemAlloc(Cmd.cbCommand);
                         if (!pbCommand)
                             rcReq = VERR_NO_MEMORY;
                         else
                         {
                             rcReq = virtioGpuR3Read(pDevIns, pVirtio, pBuf, pbCommand, Cmd.cbCommand);
-                            RTMemFree(pbCommand);
                         }
                     }
                     if (RT_FAILURE(rcReq))
@@ -1038,8 +1066,27 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                     else if (Cmd.cbCommand == 0)
                         Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
                     else
-                        /* The full Venus serialization decoder is the next backend milestone. */
-                        Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
+                    {
+                        VIRTIOGPUFILLCMD Fill;
+                        PVIRTIOGPURESOURCE pRes = NULL;
+                        if (!virtioGpuR3DecodeFillBuffer(pbCommand, Cmd.cbCommand, &Fill)
+                            || Fill.uBuffer > UINT32_MAX
+                            || !(pRes = virtioGpuR3FindResource(pThis, (uint32_t)Fill.uBuffer))
+                            || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)Fill.uBuffer))
+                            Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
+                        else
+                        {
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                            Resp.Hdr.uType = RT_SUCCESS(virtioGpuR3VulkanFillBuffer(pThis, pRes,
+                                                                                     Fill.offBuffer, Fill.cbBuffer,
+                                                                                     Fill.uData))
+                                           ? VIRTIOGPU_RESP_OK_NODATA : VIRTIOGPU_RESP_ERR_UNSPEC;
+#else
+                            Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
+#endif
+                        }
+                    }
+                    RTMemFree(pbCommand);
                 }
                 break;
             }

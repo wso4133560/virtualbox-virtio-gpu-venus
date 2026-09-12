@@ -402,6 +402,24 @@ int main(int argc, char **argv)
     RTTestSub(g_hTest, "Vulkan fill command execution and readback");
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     RTTESTI_CHECK_RC(virtioGpuR3VulkanFillBuffer(pGpu, &pGpu->aResources[0], 0, 4, UINT32_C(0x5a5a5a5a)), VINF_SUCCESS);
+    RTTestSub(g_hTest, "Venus vkCmdFillBuffer serialization boundary");
+    uint8_t abCommand[44] = { 0 };
+    uint32_t uCommandType = 118;
+    uint64_t uCommandBuffer = 42;
+    uint64_t uBuffer = 9;
+    uint64_t cbBuffer = 4;
+    uint32_t uData = UINT32_C(0xa5a5a5a5);
+    memcpy(abCommand + 0, &uCommandType, sizeof(uCommandType));
+    memcpy(abCommand + 8, &uCommandBuffer, sizeof(uCommandBuffer));
+    memcpy(abCommand + 16, &uBuffer, sizeof(uBuffer));
+    memcpy(abCommand + 32, &cbBuffer, sizeof(cbBuffer));
+    memcpy(abCommand + 40, &uData, sizeof(uData));
+    VIRTIOGPUFILLCMD Fill;
+    RTTESTI_CHECK(virtioGpuR3DecodeFillBuffer(abCommand, sizeof(abCommand), &Fill)
+                  && Fill.uCommandBuffer == uCommandBuffer && Fill.uBuffer == uBuffer
+                  && Fill.cbBuffer == cbBuffer && Fill.uData == uData);
+    abCommand[4] = 1;
+    RTTESTI_CHECK(!virtioGpuR3DecodeFillBuffer(abCommand, sizeof(abCommand), &Fill));
 #endif
     Unref.id = 9;
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
@@ -439,13 +457,18 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
-    struct { VIRTIOGPUSUBMIT3D Hdr; uint32_t uResourceId; uint32_t auCommand[1]; } SubmitCommand = { { 4, 1 }, 9, { 0 } };
+    struct { VIRTIOGPUSUBMIT3D Hdr; uint32_t uResourceId; uint8_t abCommand[44]; } SubmitCommand = { { 44, 1 }, 9, { 0 } };
+    memcpy(SubmitCommand.abCommand + 0, &uCommandType, sizeof(uCommandType));
+    memcpy(SubmitCommand.abCommand + 8, &uCommandBuffer, sizeof(uCommandBuffer));
+    memcpy(SubmitCommand.abCommand + 16, &uBuffer, sizeof(uBuffer));
+    memcpy(SubmitCommand.abCommand + 32, &cbBuffer, sizeof(cbBuffer));
+    memcpy(SubmitCommand.abCommand + 40, &uData, sizeof(uData));
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SUBMIT_3D, &SubmitCommand, sizeof(SubmitCommand), 24, 42);
     virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
-    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_ERR_UNSPEC);
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_CTX_DETACH_RESOURCE, &uContextResource,
                    sizeof(uContextResource), 24, 42);
