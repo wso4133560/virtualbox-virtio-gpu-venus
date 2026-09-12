@@ -402,6 +402,13 @@ int main(int argc, char **argv)
     RTTestSub(g_hTest, "Vulkan fill command execution and readback");
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     RTTESTI_CHECK_RC(virtioGpuR3VulkanFillBuffer(pGpu, &pGpu->aResources[0], 0, 4, UINT32_C(0x5a5a5a5a)), VINF_SUCCESS);
+    VIRTIOGPURESOURCECREATEBLOB BlobCopy = { 10, 0, 0, 0, UINT64_C(0x5678), 64 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_CREATE_BLOB, &BlobCopy, sizeof(BlobCopy), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    RTTESTI_CHECK_RC(virtioGpuR3VulkanCopyBuffer(pGpu, &pGpu->aResources[0], &pGpu->aResources[1], 0, 0, 4), VINF_SUCCESS);
+    RTTESTI_CHECK(*(uint32_t *)pGpu->aResources[1].pvVkMapped == UINT32_C(0x5a5a5a5a));
     RTTestSub(g_hTest, "Venus vkCmdFillBuffer serialization boundary");
     uint8_t abCommand[44] = { 0 };
     uint32_t uCommandType = 118;
@@ -427,7 +434,13 @@ int main(int argc, char **argv)
     virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
-    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && !pGpu->aResources[0].fUsed && pGpu->cbAllocated == 0);
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && !pGpu->aResources[0].fUsed && pGpu->cbAllocated == 64);
+    Unref.id = 10;
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_UNREF, &Unref, sizeof(Unref), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    RTTESTI_CHECK(!pGpu->aResources[1].fUsed && pGpu->cbAllocated == 0);
 
     RTTestSub(g_hTest, "context create/destroy and saved state");
     struct { uint32_t cchName, fInit; char szName[64]; } ContextCreate = { 4, 0, "test" };
