@@ -48,7 +48,7 @@ static DECLCALLBACK(void) tstIrq(PPDMDEVINS pDevIns, PPDMPCIDEV pPci, int iIrq, 
 /* An in-memory SSM sink exercises the device's actual save/load callbacks. */
 struct TSTSSM
 {
-    uint8_t ab[8192];
+    uint8_t ab[1 << 20];
     size_t off;
     size_t cb;
 };
@@ -133,6 +133,29 @@ static void tstPost(PVIRTIOCORE pCore, unsigned uQueue, uint32_t cbSend, uint32_
     Req.uCtxId = 73;
     Req.uPadding = UINT32_MAX;
     memcpy(&g_abRam[0x4000], &Req, sizeof(Req));
+    memset(&g_abRam[0x5000], 0xa5, 1024);
+    *(uint16_t *)&g_abRam[pQ->GCPhysVirtqAvail + 4 + (pQ->uAvailIdxShadow % 8) * 2] = 0;
+    *(uint16_t *)&g_abRam[pQ->GCPhysVirtqAvail + 2] = pQ->uAvailIdxShadow + 1;
+}
+
+static void tstPostCommand(PVIRTIOCORE pCore, unsigned uQueue, uint32_t uType,
+                           const void *pvBody, size_t cbBody, uint32_t cbReturn)
+{
+    PVIRTQUEUE pQ = &pCore->aVirtqueues[uQueue];
+    VIRTQ_DESC_T *pDesc = (VIRTQ_DESC_T *)&g_abRam[pQ->GCPhysVirtqDesc];
+    pDesc[0].GCPhysBuf = 0x4000;
+    pDesc[0].cb = (uint32_t)(sizeof(VIRTIOGPUCTRLHDR) + cbBody);
+    pDesc[0].fFlags = VIRTQ_DESC_F_NEXT;
+    pDesc[0].uDescIdxNext = 1;
+    pDesc[1].GCPhysBuf = 0x5000;
+    pDesc[1].cb = cbReturn;
+    pDesc[1].fFlags = VIRTQ_DESC_F_WRITE;
+    VIRTIOGPUCTRLHDR Req;
+    RT_ZERO(Req);
+    Req.uType = uType;
+    memcpy(&g_abRam[0x4000], &Req, sizeof(Req));
+    if (cbBody)
+        memcpy(&g_abRam[0x4000 + sizeof(Req)], pvBody, cbBody);
     memset(&g_abRam[0x5000], 0xa5, 1024);
     *(uint16_t *)&g_abRam[pQ->GCPhysVirtqAvail + 4 + (pQ->uAvailIdxShadow % 8) * 2] = 0;
     *(uint16_t *)&g_abRam[pQ->GCPhysVirtqAvail + 2] = pQ->uAvailIdxShadow + 1;
@@ -227,6 +250,64 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(Resp.Hdr.uPadding == 0 && Resp.aScanouts[0].fEnabled == 0);
     RTTESTI_CHECK(g_abRam[0x5000 + 408] == 0xa5);
     RTTESTI_CHECK(g_cIrqs > 0);
+
+    RTTestSub(g_hTest, "2D resource, backing transfer and scanout flush");
+    struct { uint32_t id, format, width, height; } Create = { 7, VIRTIOGPU_FORMAT_B8G8R8X8_UNORM, 2, 2 };
+    uint16_t uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_CREATE_2D, &Create, sizeof(Create), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && pGpu->aResources[0].fUsed && pGpu->aResources[0].cbPixels == 16);
+
+    uint8_t abPixels[16] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
+    memcpy(&g_abRam[0x6000], abPixels, sizeof(abPixels));
+    struct { uint32_t id, count; VIRTIOGPUMEMENTRY Entry; } Attach = { 7, 1, { 0x6000, 16, 0 } };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_ATTACH_BACKING, &Attach, sizeof(Attach), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && pGpu->aResources[0].cBacking == 1);
+
+    struct { uint32_t x, y, w, h; uint64_t off; uint32_t id, padding; } Transfer = { 0, 0, 2, 2, 0, 7, 0 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_TRANSFER_TO_HOST_2D, &Transfer, sizeof(Transfer), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && !memcmp(pGpu->aResources[0].pbPixels, abPixels, sizeof(abPixels)));
+
+    struct { uint32_t x, y, w, h, scanout, id; } Scanout = { 0, 0, 2, 2, 0, 7 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SET_SCANOUT, &Scanout, sizeof(Scanout), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && pGpu->aScanouts[0].uResourceId == 7);
+
+    struct { uint32_t x, y, w, h, id, padding; } Flush = { 0, 0, 2, 2, 7, 0 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_FLUSH, &Flush, sizeof(Flush), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && pGpu->aScanouts[0].uFlushSequence == 1);
+
+    struct { uint32_t id, padding; } Detach = { 7, 0 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_DETACH_BACKING, &Detach, sizeof(Detach), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && pGpu->aResources[0].cBacking == 0);
+    struct { uint32_t id, padding; } Unref = { 7, 0 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_UNREF, &Unref, sizeof(Unref), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && !pGpu->aResources[0].fUsed && pGpu->cbAllocated == 0);
 
     RTTestSub(g_hTest, "short packets and unsupported commands");
     struct { uint32_t cbSend, cbReturn, uType, fFlags, cbUsed, uResponse; } aCases[] =
@@ -351,13 +432,13 @@ int main(int argc, char **argv)
     tstInitQueue(&pGpu->Virtio, 0);
     tstInitQueue(&pGpu->Virtio, 1);
     tstPost(&pGpu->Virtio, 0, 24, 408);
-    TSTSSM Ssm;
+    static TSTSSM Ssm;
     RT_ZERO(Ssm);
     PSSMHANDLE pSSM = (PSSMHANDLE)&Ssm;
     RTTESTI_CHECK_RC(virtioGpuR3SaveExec(pDev, pSSM), VINF_SUCCESS);
     virtioGpuR3Reset(pDev);
     Ssm.off = 0;
-    RTTESTI_CHECK_RC(virtioGpuR3LoadExec(pDev, pSSM, 1, SSM_PASS_FINAL), VINF_SUCCESS);
+    RTTESTI_CHECK_RC(virtioGpuR3LoadExec(pDev, pSSM, VIRTIOGPU_SAVED_STATE_VERSION, SSM_PASS_FINAL), VINF_SUCCESS);
     RTTESTI_CHECK(Ssm.off == Ssm.cb && pGpu->Config.fEventsRead == 1);
     RTTESTI_CHECK(pGpu->Virtio.aVirtqueues[0].fAttached && pGpu->Virtio.aVirtqueues[1].fAttached);
     virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
@@ -365,7 +446,7 @@ int main(int argc, char **argv)
     RTTESTI_CHECK_RC(virtioGpuR3LoadExec(pDev, pSSM, 42, SSM_PASS_FINAL), VERR_SSM_UNSUPPORTED_DATA_UNIT_VERSION);
     Ssm.off = 0;
     Ssm.cb--;
-    RTTESTI_CHECK_RC(virtioGpuR3LoadExec(pDev, pSSM, 1, SSM_PASS_FINAL), VERR_BUFFER_UNDERFLOW);
+    RTTESTI_CHECK_RC(virtioGpuR3LoadExec(pDev, pSSM, VIRTIOGPU_SAVED_STATE_VERSION, SSM_PASS_FINAL), VERR_BUFFER_UNDERFLOW);
 
     if (argc == 2)
     {
