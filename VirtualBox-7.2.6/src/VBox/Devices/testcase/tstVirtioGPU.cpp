@@ -4,6 +4,7 @@
 #include <iprt/test.h>
 #include <iprt/mem.h>
 #include <iprt/ldr.h>
+#include <iprt/time.h>
 #include <VBox/version.h>
 #include "../VirtIO/VirtioCore.cpp"
 #include "../VirtIO/DevVirtioGPU.cpp"
@@ -409,6 +410,13 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     RTTESTI_CHECK_RC(virtioGpuR3VulkanCopyBuffer(pGpu, &pGpu->aResources[0], &pGpu->aResources[1], 0, 0, 4), VINF_SUCCESS);
     RTTESTI_CHECK(*(uint32_t *)pGpu->aResources[1].pvVkMapped == UINT32_C(0x5a5a5a5a));
+    RTTestSub(g_hTest, "persistent Vulkan submission throughput");
+    uint64_t const tsStart = RTTimeNanoTS();
+    for (unsigned i = 0; i < 8; ++i)
+        RTTESTI_CHECK_RC(virtioGpuR3VulkanFillBuffer(pGpu, &pGpu->aResources[0], 0, 4, i), VINF_SUCCESS);
+    uint64_t const cNs = RTTimeNanoTS() - tsStart;
+    RTTestIPrintf(RTTESTLVL_ALWAYS, "persistent Vulkan fill: 8 submissions in %llu ns (%llu ns/op)\n",
+                  (unsigned long long)cNs, (unsigned long long)(cNs / 8));
     RTTestSub(g_hTest, "Venus vkCmdFillBuffer serialization boundary");
     uint8_t abCommand[44] = { 0 };
     uint32_t uCommandType = 118;
