@@ -65,6 +65,9 @@ extern const PDMDEVREG g_DeviceE1000;
 #endif
 #ifdef VBOX_WITH_VIRTIO
 extern const PDMDEVREG g_DeviceVirtioNet;
+# ifdef VBOX_WITH_VIRTIO_GPU
+extern const PDMDEVREG g_DeviceVirtioGPU;
+# endif
 #endif
 extern const PDMDEVREG g_DeviceDP8390;
 extern const PDMDEVREG g_Device3C501;

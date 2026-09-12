@@ -320,14 +320,8 @@ DECLINLINE(uint16_t) virtioCoreVirtqAvailCnt(PPDMDEVINS pDevIns, PVIRTIOCORE pVi
 {
     uint16_t uIdxActual = virtioReadAvailRingIdx(pDevIns, pVirtio, pVirtq);
     uint16_t uIdxShadow = pVirtq->uAvailIdxShadow;
-    uint16_t uIdxDelta;
-
-    if (uIdxActual < uIdxShadow)
-        uIdxDelta = (uIdxActual + pVirtq->uQueueSize) - uIdxShadow;
-    else
-        uIdxDelta = uIdxActual - uIdxShadow;
-
-    return uIdxDelta;
+    /* Ring indices wrap at 2^16, independently of the queue capacity. */
+    return (uint16_t)(uIdxActual - uIdxShadow);
 }
 /**
  * Get count of new (e.g. pending) elements in available ring.
@@ -1061,6 +1055,10 @@ DECLHIDDEN(int) virtioCoreR3VirtqAvailBufGet(PPDMDEVINS pDevIns, PVIRTIOCORE pVi
         AssertMsgReturn((pVirtio->fDeviceStatus & VIRTIO_STATUS_DRIVER_OK) && pVirtq->uEnable,
             ("Guest driver not in ready state.\n"), VERR_INVALID_STATE);
 
+    if (!pVirtq->uQueueSize || pVirtq->uQueueSize > VIRTQ_SIZE || uHeadIdx >= pVirtq->uQueueSize)
+        return VERR_INVALID_PARAMETER;
+    pVirtqBuf->cbPhysSend = pVirtqBuf->cbPhysReturn = 0;
+    pVirtqBuf->pSgPhysSend = pVirtqBuf->pSgPhysReturn = NULL;
     uint16_t uDescIdx = uHeadIdx;
 
     Log6Func(("%s DESC CHAIN: (head idx = %u)\n", pVirtio->aVirtqueues[uVirtq].szName, uHeadIdx));
@@ -1086,64 +1084,40 @@ DECLHIDDEN(int) virtioCoreR3VirtqAvailBufGet(PPDMDEVINS pDevIns, PVIRTIOCORE pVi
     PVIRTIOSGSEG paSegsIn  = pVirtqBuf->aSegsIn;
     PVIRTIOSGSEG paSegsOut = pVirtqBuf->aSegsOut;
 
+#ifdef VIRTIO_REL_INFO_DUMP
+    /* Preserve the existing diagnostic recovery injection. */
+    if (ASMAtomicCmpXchgBool(&pVirtio->fTestRecovery, false, true))
+    {
+        pVirtq->uEnable = false;
+        return VERR_INVALID_STATE;
+    }
+#endif
+    uint32_t cDescs = 0;
+    bool fSeenWrite = false;
     do
     {
         PVIRTIOSGSEG pSeg;
-        /*
-         * Malicious guests may go beyond paSegsIn or paSegsOut boundaries by linking
-         * several descriptors into a loop. Since there is no legitimate way to get a sequences of
-         * linked descriptors exceeding the total number of descriptors in the ring (see @bugref{8620}),
-         * the following aborts I/O if breach and employs a simple log throttling algorithm to notify.
-         */
-#ifdef VIRTIO_REL_INFO_DUMP
-        if (cSegsIn + cSegsOut >= pVirtq->uQueueSize || ASMAtomicCmpXchgBool(&pVirtio->fTestRecovery, false, true))
-        {
-            static volatile uint32_t s_cMessages  = 0;
-            if (ASMAtomicIncU32(&s_cMessages) <= 10)
-            {
-                LogRel(("Too many linked descriptors; check if the guest arranges descriptors in a loop "
-                        "(cSegsIn=%u cSegsOut=%u uQueueSize=%u uDescIdx=%u uHeadIdx=%u uAvailIdxShadow=%u queue=%s).\n",
-                        cSegsIn, cSegsOut, pVirtq->uQueueSize, uDescIdx, pVirtqBuf->uHeadIdx, pVirtq->uAvailIdxShadow, pVirtq->szName));
-                virtioCoreDumpTraceBufToRelLog(pVirtio->hTraceBuf);
-                dbgVirtioDump(pDevIns);
-            }
-            /* Disable the queue to prevent its operation until it is re-initialized. */
-            pVirtq->uEnable = false;
-            return VERR_INVALID_STATE;
-        }
-#else /* !VIRTIO_REL_INFO_DUMP */
-        if (cSegsIn + cSegsOut >= pVirtq->uQueueSize)
-        {
-            static volatile uint32_t s_cMessages  = 0;
-            static volatile uint32_t s_cThreshold = 1;
-            if (ASMAtomicIncU32(&s_cMessages) == ASMAtomicReadU32(&s_cThreshold))
-            {
-                LogRelMax(64, ("Too many linked descriptors; check if the guest arranges descriptors in a loop "
-                               "(cSegsIn=%u cSegsOut=%u uQueueSize=%u uDescIdx=%u uHeadIdx=%u uAvailIdxShadow=%u queue=%s).\n",
-                               cSegsIn, cSegsOut, pVirtq->uQueueSize, uDescIdx, pVirtqBuf->uHeadIdx, pVirtq->uAvailIdxShadow, pVirtq->szName));
-                if (ASMAtomicReadU32(&s_cMessages) != 1)
-                    LogRelMax(64, ("(the above error has occured %u times so far)\n", ASMAtomicReadU32(&s_cMessages)));
-                ASMAtomicWriteU32(&s_cThreshold, ASMAtomicReadU32(&s_cThreshold) * 10);
-            }
-            break;
-        }
-#endif /* !VIRTIO_REL_INFO_DUMP */
-        /* Check if the limit has been reached for input chain (see section 2.4.4.1 of virtio 1.0 spec). */
-        if (cSegsIn >= RT_ELEMENTS(pVirtqBuf->aSegsIn))
-        {
-            LogRelMax(64, ("Too many input descriptors (cSegsIn=%u).\n", cSegsIn));
-            break;
-        }
-        /* Check if the limit has been reached for output chain (see section 2.4.4.1 of virtio 1.0 spec). */
-        if (cSegsOut >= RT_ELEMENTS(pVirtqBuf->aSegsOut))
-        {
-            LogRelMax(64, ("Too many output descriptors (cSegsOut=%u).\n", cSegsOut));
-            break;
-        }
+        if (++cDescs > pVirtq->uQueueSize || uDescIdx >= pVirtq->uQueueSize)
+            return VERR_INVALID_PARAMETER;
         RT_UNTRUSTED_VALIDATED_FENCE();
-
-        virtioReadDesc(pDevIns, pVirtio, pVirtq, uDescIdx, &desc);
-
+        int rc = virtioCoreGCPhysRead(pVirtio, pDevIns,
+                                     pVirtq->GCPhysVirtqDesc + sizeof(VIRTQ_DESC_T) * uDescIdx, &desc, sizeof(desc));
+        if (RT_FAILURE(rc))
+            return rc;
+        /* Indirect descriptors are not offered by this core. Do not parse one as payload. */
+        if (desc.fFlags & ~(VIRTQ_DESC_F_WRITE | VIRTQ_DESC_F_NEXT))
+            return VERR_INVALID_PARAMETER;
+        if (!(desc.fFlags & VIRTQ_DESC_F_WRITE) && fSeenWrite)
+            return VERR_INVALID_PARAMETER;
+        fSeenWrite |= !!(desc.fFlags & VIRTQ_DESC_F_WRITE);
+        if (desc.GCPhysBuf > UINT64_MAX - desc.cb || (uint64_t)cbIn + cbOut + desc.cb > UINT32_MAX)
+            return VERR_INVALID_PARAMETER;
+        /* Empty segments are legal but cannot be handed to the copy helpers. */
+        if (!desc.cb)
+        {
+            uDescIdx = desc.uDescIdxNext;
+            continue;
+        }
         if (desc.fFlags & VIRTQ_DESC_F_WRITE)
         {
             Log6Func(("%s IN  idx=%-4u seg=%-3u addr=%RGp cb=%u\n", pVirtq->szName, uDescIdx, cSegsIn, desc.GCPhysBuf, desc.cb));
@@ -1268,7 +1242,9 @@ DECLHIDDEN(int) virtioCoreR3VirtqUsedBufPut(PPDMDEVINS pDevIns, PVIRTIOCORE pVir
         {
             cbCopy = RT_MIN(pSgVirtReturn->cbSegLeft,  pSgPhysReturn->cbSegLeft);
             AssertReturn(cbCopy > 0, VERR_INVALID_PARAMETER);
-            virtioCoreGCPhysWrite(pVirtio, pDevIns, (RTGCPHYS)pSgPhysReturn->GCPhysCur, pSgVirtReturn->pvSegCur, cbCopy);
+            int rc = virtioCoreGCPhysWrite(pVirtio, pDevIns, (RTGCPHYS)pSgPhysReturn->GCPhysCur, pSgVirtReturn->pvSegCur, cbCopy);
+            if (RT_FAILURE(rc))
+                return rc;
             RTSgBufAdvance(pSgVirtReturn, cbCopy);
             virtioCoreGCPhysChainAdvance(pSgPhysReturn, cbCopy);
             cbRemain -= cbCopy;
@@ -1571,7 +1547,7 @@ static void virtioResetVirtq(PVIRTIOCORE pVirtio, uint16_t uVirtq)
     Assert(uVirtq < RT_ELEMENTS(pVirtio->aVirtqueues));
     PVIRTQUEUE pVirtq = &pVirtio->aVirtqueues[uVirtq];
 
-    pVirtq->uQueueSize       = VIRTQ_SIZE;
+    pVirtq->uQueueSize       = uVirtq < pVirtio->cVirtqs ? VIRTQ_SIZE : 0;
     pVirtq->uEnable          = false;
     pVirtq->uNotifyOffset    = uVirtq;
     pVirtq->fUsedRingEvent   = false;
@@ -1756,6 +1732,12 @@ static int virtioCommonCfgAccessed(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, PVIR
     uint16_t uVirtq = pVirtio->uVirtqSelect;
     int rc = VINF_SUCCESS;
     uint64_t val;
+    if (uOffsetOfAccess >= RT_UOFFSETOF(VIRTIO_PCI_COMMON_CFG_T, uQueueSize) && uVirtq >= pVirtio->cVirtqs)
+    {
+        if (!fWrite)
+            memset(pv, 0, cb);
+        return VINF_SUCCESS;
+    }
 #ifdef VIRTIO_REL_INFO_DUMP
     if (ASMAtomicReadBool(&pVirtio->fRecovering))
     {
@@ -1866,7 +1848,7 @@ static int virtioCommonCfgAccessed(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, PVIR
             Log2Func(("Guest attempted to write readonly virtio_pci_common_cfg.num_queues\n"));
             return VINF_SUCCESS;
         }
-        *(uint16_t *)pv = VIRTQ_MAX_COUNT;
+        *(uint16_t *)pv = pVirtio->cVirtqs;
         VIRTIO_DEV_CONFIG_LOG_ACCESS(uNumVirtqs, VIRTIO_PCI_COMMON_CFG_T, uOffsetOfAccess);
     }
     else
@@ -1896,9 +1878,7 @@ static int virtioCommonCfgAccessed(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, PVIR
             uint16_t uVirtqNew = *(uint16_t *)pv;
 
             if (uVirtqNew < RT_ELEMENTS(pVirtio->aVirtqueues))
-                VIRTIO_DEV_CONFIG_ACCESS( uVirtqSelect,               VIRTIO_PCI_COMMON_CFG_T, uOffsetOfAccess, pVirtio);
-            else
-                LogFunc(("... WARNING: Guest attempted to write invalid virtq selector (ignoring)\n"));
+                pVirtio->uVirtqSelect = uVirtqNew;
         }
         else
             VIRTIO_DEV_CONFIG_ACCESS(     uVirtqSelect,               VIRTIO_PCI_COMMON_CFG_T, uOffsetOfAccess, pVirtio);
@@ -1914,7 +1894,11 @@ static int virtioCommonCfgAccessed(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, PVIR
         VIRTIO_DEV_CONFIG_ACCESS_INDEXED( GCPhysVirtqUsed,   uVirtq,  VIRTIO_PCI_COMMON_CFG_T, uOffsetOfAccess, pVirtio->aVirtqueues);
     else
     if (VIRTIO_DEV_CONFIG_MATCH_MEMBER(   uQueueSize,                 VIRTIO_PCI_COMMON_CFG_T, uOffsetOfAccess))
-        VIRTIO_DEV_CONFIG_ACCESS_INDEXED( uQueueSize,        uVirtq,  VIRTIO_PCI_COMMON_CFG_T, uOffsetOfAccess, pVirtio->aVirtqueues);
+    {
+        if (fWrite && (*(uint16_t *)pv == 0 || *(uint16_t *)pv > VIRTQ_SIZE))
+            return VINF_SUCCESS;
+        VIRTIO_DEV_CONFIG_ACCESS_INDEXED( uQueueSize, uVirtq, VIRTIO_PCI_COMMON_CFG_T, uOffsetOfAccess, pVirtio->aVirtqueues);
+    }
     else
     if (VIRTIO_DEV_CONFIG_MATCH_MEMBER(   uEnable,                    VIRTIO_PCI_COMMON_CFG_T, uOffsetOfAccess))
         VIRTIO_DEV_CONFIG_ACCESS_INDEXED( uEnable,           uVirtq,  VIRTIO_PCI_COMMON_CFG_T, uOffsetOfAccess, pVirtio->aVirtqueues);
@@ -3288,7 +3272,7 @@ static int virtioR3MmioTransportInit(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, PV
 /** API Function: See header file */
 DECLHIDDEN(int) virtioCoreR3Init(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, PVIRTIOCORECC pVirtioCC, PVIRTIOPCIPARAMS pPciParams,
                                  const char *pcszInstance, uint64_t fDevSpecificFeatures, uint32_t fOfferLegacy,
-                                 void *pvDevSpecificCfg, uint16_t cbDevSpecificCfg)
+                                 void *pvDevSpecificCfg, uint16_t cbDevSpecificCfg, uint8_t cVirtqs)
 {
     /*
      * Virtio state must be the first member of shared device instance data,
@@ -3297,6 +3281,8 @@ DECLHIDDEN(int) virtioCoreR3Init(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, PVIRTI
     AssertLogRelReturn(pVirtio == PDMINS_2_DATA(pDevIns, PVIRTIOCORE), VERR_STATE_CHANGED);
     AssertLogRelReturn(pVirtioCC == PDMINS_2_DATA_CC(pDevIns, PVIRTIOCORECC), VERR_STATE_CHANGED);
 
+    AssertReturn(cVirtqs > 0 && cVirtqs <= VIRTQ_MAX_COUNT, VERR_OUT_OF_RANGE);
+    pVirtio->cVirtqs = cVirtqs;
     pVirtio->pDevInsR3 = pDevIns;
 
     /*

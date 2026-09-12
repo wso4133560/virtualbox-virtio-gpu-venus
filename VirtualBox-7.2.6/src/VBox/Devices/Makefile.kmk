@@ -610,6 +610,11 @@ if !defined(VBOX_ONLY_EXTPACKS) && "$(intersects $(KBUILD_TARGET_ARCH),$(VBOX_SU
   VBoxDD_SOURCES        += \
   	VirtIO/VirtioCore.cpp \
   	Network/DevVirtioNet.cpp
+  ifdef VBOX_WITH_VIRTIO_GPU
+   VBoxDD_DEFS          += VBOX_WITH_VIRTIO_GPU
+   VBoxDD_SOURCES       += \
+	VirtIO/DevVirtioGPU.cpp
+  endif
  endif
 
  ifdef VBOX_WITH_UDPTUNNEL

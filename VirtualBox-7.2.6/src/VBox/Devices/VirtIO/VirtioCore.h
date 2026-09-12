@@ -463,6 +463,7 @@ typedef struct VIRTIOCORE
     uint32_t                    fOfferLegacy;                     /**< Set at init call from dev-specific code   */
     uint16_t                    uIrqMmio;                         /**< The interrupt number when Virtio-over-MMIO is used */
     uint8_t                     uDeviceType;                      /**< The implemented device type for Virtio-over-MMIO   */
+    uint8_t                     cVirtqs;                          /**< Queues implemented by this device (host setting). */
 #ifdef VIRTIO_REL_INFO_DUMP
     bool                        fRecovering;
     bool                        fTestRecovery;
@@ -632,10 +633,12 @@ typedef CTX_SUFF(VIRTIOCORE) VIRTIOCORECC;
  * @param   cbDevSpecificCfg        Size of virtio_pci_device_cap device-specific struct
  * @param   pvDevSpecificCfg        Address of client's dev-specific
  *                                  configuration struct.
+ * @param   cVirtqs                Number of queues implemented by the device. Defaults to the
+ *                                  historical core limit for existing devices.
  */
 DECLHIDDEN(int) virtioCoreR3Init(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, PVIRTIOCORECC pVirtioCC,
                                  PVIRTIOPCIPARAMS pPciParams, const char *pcszInstance,
-                                 uint64_t fDevSpecificFeatures, uint32_t fOfferLegacy, void *pvDevSpecificCfg, uint16_t cbDevSpecificCfg);
+                                 uint64_t fDevSpecificFeatures, uint32_t fOfferLegacy, void *pvDevSpecificCfg, uint16_t cbDevSpecificCfg, uint8_t cVirtqs = VIRTQ_MAX_COUNT);
 /**
  * Initiate orderly reset procedure. This is an exposed API for clients that might need it.
  * Invoked by client to reset the device and driver (see VirtIO 1.0 section 2.1.1/2.1.2)

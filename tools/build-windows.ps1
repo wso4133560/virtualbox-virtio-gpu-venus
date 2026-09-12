@@ -12,7 +12,8 @@ param(
     [string]$XsltprocPath,
     [switch]$CheckOnly,
     [switch]$ConfigureOnly,
-    [switch]$WithoutHardening
+    [switch]$WithoutHardening,
+    [switch]$EnableVirtioGpu
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
@@ -126,6 +127,7 @@ $local = @(
     'VBOX_SVN_REV = $(VBOX_SVN_REV_VERSION_FALLBACK)'
 )
 if ($WithoutHardening) { $local += 'VBOX_WITHOUT_HARDENING := 1' }
+if ($EnableVirtioGpu) { $local += 'VBOX_WITH_VIRTIO_GPU := 1' }
 [IO.File]::WriteAllLines($localConfig, $local, [Text.UTF8Encoding]::new($false))
 if ($ConfigureOnly) { Write-Host "Windows configuration: $buildRoot"; return }
 # Match the bundled libxml2 Makefile.kmk source list. Upstream configure.js
