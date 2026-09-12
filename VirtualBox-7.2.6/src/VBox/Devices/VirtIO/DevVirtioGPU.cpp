@@ -56,7 +56,11 @@ typedef struct VIRTIOGPURESOURCE
     VkBuffer hVkBuffer;
     VkDeviceMemory hVkMemory;
     void *pvVkMapped;
+    VkImage hVkImage;
+    VkDeviceMemory hVkImageMemory;
+    VkImageLayout enmVkImageLayout;
     bool fVulkanBuffer;
+    bool fVulkanImage;
 #endif
 } VIRTIOGPURESOURCE;
 typedef VIRTIOGPURESOURCE *PVIRTIOGPURESOURCE;
@@ -529,12 +533,83 @@ cleanup:
 # undef VK_DEV_PROC
 }
 
+static int virtioGpuR3VulkanImageCreate(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes)
+{
+    if (pRes->fBlob || !pThis->fVulkanMemory || !pRes->uWidth || !pRes->uHeight)
+        return VERR_INVALID_PARAMETER;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr =
+        (PFN_vkGetDeviceProcAddr)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetDeviceProcAddr");
+    if (!pfnGetDeviceProcAddr)
+        return VERR_NOT_FOUND;
+# define VK_IMAGE_PROC(type, name) (type)pfnGetDeviceProcAddr(pThis->hVkDevice, name)
+    PFN_vkCreateImage pfnCreateImage = VK_IMAGE_PROC(PFN_vkCreateImage, "vkCreateImage");
+    PFN_vkDestroyImage pfnDestroyImage = VK_IMAGE_PROC(PFN_vkDestroyImage, "vkDestroyImage");
+    PFN_vkGetImageMemoryRequirements pfnGetRequirements = VK_IMAGE_PROC(PFN_vkGetImageMemoryRequirements, "vkGetImageMemoryRequirements");
+    PFN_vkAllocateMemory pfnAllocateMemory = VK_IMAGE_PROC(PFN_vkAllocateMemory, "vkAllocateMemory");
+    PFN_vkFreeMemory pfnFreeMemory = VK_IMAGE_PROC(PFN_vkFreeMemory, "vkFreeMemory");
+    PFN_vkBindImageMemory pfnBindImageMemory = VK_IMAGE_PROC(PFN_vkBindImageMemory, "vkBindImageMemory");
+    if (!pfnCreateImage || !pfnDestroyImage || !pfnGetRequirements || !pfnAllocateMemory || !pfnFreeMemory
+        || !pfnBindImageMemory)
+        return VERR_NOT_FOUND;
+    VkImageCreateInfo ImageInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, 0, VK_IMAGE_TYPE_2D,
+                                    VK_FORMAT_B8G8R8A8_UNORM, { pRes->uWidth, pRes->uHeight, 1 }, 1, 1,
+                                    VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL,
+                                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                                    | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                                    VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED };
+    if (pfnCreateImage(pThis->hVkDevice, &ImageInfo, NULL, &pRes->hVkImage) != VK_SUCCESS)
+        return VERR_NOT_SUPPORTED;
+    VkMemoryRequirements MemReq;
+    RT_ZERO(MemReq);
+    pfnGetRequirements(pThis->hVkDevice, pRes->hVkImage, &MemReq);
+    uint32_t iMemoryType = UINT32_MAX;
+    uint32_t iFallbackMemoryType = UINT32_MAX;
+    for (uint32_t i = 0; i < pThis->VkMemoryProperties.memoryTypeCount; ++i)
+        if (MemReq.memoryTypeBits & RT_BIT_32(i))
+        {
+            if (iFallbackMemoryType == UINT32_MAX)
+                iFallbackMemoryType = i;
+            if (pThis->VkMemoryProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+            {
+                iMemoryType = i;
+                break;
+            }
+        }
+    if (iMemoryType == UINT32_MAX)
+        iMemoryType = iFallbackMemoryType;
+    if (iMemoryType == UINT32_MAX)
+    {
+        pfnDestroyImage(pThis->hVkDevice, pRes->hVkImage, NULL);
+        pRes->hVkImage = VK_NULL_HANDLE;
+        return VERR_NOT_SUPPORTED;
+    }
+    VkMemoryAllocateInfo AllocInfo = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, MemReq.size, iMemoryType };
+    if (pfnAllocateMemory(pThis->hVkDevice, &AllocInfo, NULL, &pRes->hVkImageMemory) != VK_SUCCESS
+        || pfnBindImageMemory(pThis->hVkDevice, pRes->hVkImage, pRes->hVkImageMemory, 0) != VK_SUCCESS)
+    {
+        if (pRes->hVkImageMemory != VK_NULL_HANDLE)
+            pfnFreeMemory(pThis->hVkDevice, pRes->hVkImageMemory, NULL);
+        pfnDestroyImage(pThis->hVkDevice, pRes->hVkImage, NULL);
+        pRes->hVkImageMemory = VK_NULL_HANDLE;
+        pRes->hVkImage = VK_NULL_HANDLE;
+        return VERR_NOT_SUPPORTED;
+    }
+    pRes->enmVkImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    pRes->fVulkanImage = true;
+    return VINF_SUCCESS;
+# undef VK_IMAGE_PROC
+}
+
 static int virtioGpuR3VulkanResourceCreate(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes)
 {
     pRes->hVkBuffer = VK_NULL_HANDLE;
     pRes->hVkMemory = VK_NULL_HANDLE;
     pRes->pvVkMapped = NULL;
+    pRes->hVkImage = VK_NULL_HANDLE;
+    pRes->hVkImageMemory = VK_NULL_HANDLE;
+    pRes->enmVkImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     pRes->fVulkanBuffer = false;
+    pRes->fVulkanImage = false;
     if (!pThis->fVulkanMemory || pThis->hVkDevice == VK_NULL_HANDLE)
         return VINF_SUCCESS;
     PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr =
@@ -593,6 +668,13 @@ static int virtioGpuR3VulkanResourceCreate(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE 
         goto resource_cleanup;
     pRes->fVulkanBuffer = true;
     memcpy(pRes->pvVkMapped, pRes->pbPixels, (size_t)pRes->cbPixels);
+    if (!pRes->fBlob)
+    {
+        int const rcImage = virtioGpuR3VulkanImageCreate(pThis, pRes);
+        if (RT_FAILURE(rcImage))
+            LogRel2(("virtio-gpu: image backing unavailable for resource %u (%Rrc); using buffer backing\n",
+                     pRes->uResourceId, rcImage));
+    }
     return VINF_SUCCESS;
 resource_cleanup:
     if (pRes->pvVkMapped != NULL && pfnUnmapMemory)
@@ -617,28 +699,86 @@ static void virtioGpuR3VulkanResourceDestroy(PVIRTIOGPU pThis, PVIRTIOGPURESOURC
     if (pfnGetDeviceProcAddr)
     {
         PFN_vkDestroyBuffer pfnDestroyBuffer = (PFN_vkDestroyBuffer)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkDestroyBuffer");
+        PFN_vkDestroyImage pfnDestroyImage = (PFN_vkDestroyImage)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkDestroyImage");
         PFN_vkFreeMemory pfnFreeMemory = (PFN_vkFreeMemory)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkFreeMemory");
         PFN_vkUnmapMemory pfnUnmapMemory = (PFN_vkUnmapMemory)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkUnmapMemory");
         if (pRes->pvVkMapped != NULL && pfnUnmapMemory)
             pfnUnmapMemory(pThis->hVkDevice, pRes->hVkMemory);
         if (pRes->hVkBuffer != VK_NULL_HANDLE && pfnDestroyBuffer)
             pfnDestroyBuffer(pThis->hVkDevice, pRes->hVkBuffer, NULL);
+        if (pRes->hVkImage != VK_NULL_HANDLE && pfnDestroyImage)
+            pfnDestroyImage(pThis->hVkDevice, pRes->hVkImage, NULL);
         if (pRes->hVkMemory != VK_NULL_HANDLE && pfnFreeMemory)
             pfnFreeMemory(pThis->hVkDevice, pRes->hVkMemory, NULL);
+        if (pRes->hVkImageMemory != VK_NULL_HANDLE && pfnFreeMemory)
+            pfnFreeMemory(pThis->hVkDevice, pRes->hVkImageMemory, NULL);
     }
     pRes->hVkBuffer = VK_NULL_HANDLE;
     pRes->hVkMemory = VK_NULL_HANDLE;
     pRes->pvVkMapped = NULL;
+    pRes->hVkImage = VK_NULL_HANDLE;
+    pRes->hVkImageMemory = VK_NULL_HANDLE;
+    pRes->enmVkImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     pRes->fVulkanBuffer = false;
+    pRes->fVulkanImage = false;
+}
+
+static int virtioGpuR3VulkanResourceSyncImage(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes)
+{
+    if (!pRes->fVulkanImage || !pRes->fVulkanBuffer || !pThis->fVulkanQueue || !pThis->fVulkanSubmit)
+        return VINF_SUCCESS;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr =
+        (PFN_vkGetDeviceProcAddr)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetDeviceProcAddr");
+    if (!pfnGetDeviceProcAddr)
+        return VERR_NOT_FOUND;
+# define VK_IMAGE_SYNC_PROC(type, name) (type)pfnGetDeviceProcAddr(pThis->hVkDevice, name)
+    PFN_vkResetCommandBuffer pfnResetCommandBuffer = VK_IMAGE_SYNC_PROC(PFN_vkResetCommandBuffer, "vkResetCommandBuffer");
+    PFN_vkBeginCommandBuffer pfnBeginCommandBuffer = VK_IMAGE_SYNC_PROC(PFN_vkBeginCommandBuffer, "vkBeginCommandBuffer");
+    PFN_vkEndCommandBuffer pfnEndCommandBuffer = VK_IMAGE_SYNC_PROC(PFN_vkEndCommandBuffer, "vkEndCommandBuffer");
+    PFN_vkCmdPipelineBarrier pfnCmdPipelineBarrier = VK_IMAGE_SYNC_PROC(PFN_vkCmdPipelineBarrier, "vkCmdPipelineBarrier");
+    PFN_vkCmdCopyBufferToImage pfnCmdCopyBufferToImage = VK_IMAGE_SYNC_PROC(PFN_vkCmdCopyBufferToImage, "vkCmdCopyBufferToImage");
+    PFN_vkResetFences pfnResetFences = VK_IMAGE_SYNC_PROC(PFN_vkResetFences, "vkResetFences");
+    PFN_vkQueueSubmit pfnQueueSubmit = VK_IMAGE_SYNC_PROC(PFN_vkQueueSubmit, "vkQueueSubmit");
+    PFN_vkWaitForFences pfnWaitForFences = VK_IMAGE_SYNC_PROC(PFN_vkWaitForFences, "vkWaitForFences");
+    if (!pfnResetCommandBuffer || !pfnBeginCommandBuffer || !pfnEndCommandBuffer || !pfnCmdPipelineBarrier
+        || !pfnCmdCopyBufferToImage || !pfnResetFences || !pfnQueueSubmit || !pfnWaitForFences)
+        return VERR_NOT_FOUND;
+    VkCommandBuffer hCmd = pThis->hVkSubmitCommandBuffer;
+    VkFence hFence = pThis->hVkSubmitFence;
+    VkCommandBufferBeginInfo BeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
+                                           VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, NULL };
+    VkSubmitInfo SubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, 0, NULL, NULL, 1, &hCmd, 0, NULL };
+    VkImageMemoryBarrier Barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL,
+                                     pRes->enmVkImageLayout == VK_IMAGE_LAYOUT_UNDEFINED ? (VkAccessFlags)0 : VK_ACCESS_TRANSFER_WRITE_BIT,
+                                     VK_ACCESS_TRANSFER_WRITE_BIT, pRes->enmVkImageLayout,
+                                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED,
+                                     VK_QUEUE_FAMILY_IGNORED, pRes->hVkImage,
+                                     { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+    VkBufferImageCopy Region = { 0, 0, 0, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+                                 { 0, 0, 0 }, { pRes->uWidth, pRes->uHeight, 1 } };
+    if (pfnResetFences(pThis->hVkDevice, 1, &hFence) != VK_SUCCESS
+        || pfnResetCommandBuffer(hCmd, 0) != VK_SUCCESS
+        || pfnBeginCommandBuffer(hCmd, &BeginInfo) != VK_SUCCESS)
+        return VERR_NOT_SUPPORTED;
+    pfnCmdPipelineBarrier(hCmd, pRes->enmVkImageLayout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                                                                                       : VK_PIPELINE_STAGE_TRANSFER_BIT,
+                          VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &Barrier);
+    pfnCmdCopyBufferToImage(hCmd, pRes->hVkBuffer, pRes->hVkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &Region);
+    if (pfnEndCommandBuffer(hCmd) != VK_SUCCESS
+        || pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, hFence) != VK_SUCCESS
+        || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
+        return VERR_NOT_SUPPORTED;
+    pRes->enmVkImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    return VINF_SUCCESS;
+# undef VK_IMAGE_SYNC_PROC
 }
 
 static int virtioGpuR3VulkanResourceSync(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes)
 {
-    RT_NOREF(pThis);
     if (!pRes->fVulkanBuffer || !pRes->pbPixels || !pRes->pvVkMapped)
         return VINF_SUCCESS;
     memcpy(pRes->pvVkMapped, pRes->pbPixels, (size_t)pRes->cbPixels);
-    return VINF_SUCCESS;
+    return virtioGpuR3VulkanResourceSyncImage(pThis, pRes);
 }
 
 static int virtioGpuR3VulkanFillBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes,

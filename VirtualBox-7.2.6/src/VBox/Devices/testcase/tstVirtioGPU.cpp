@@ -335,6 +335,9 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(pGpu->aResources[0].fVulkanBuffer
                   && pGpu->aResources[0].hVkBuffer != VK_NULL_HANDLE
                   && pGpu->aResources[0].hVkMemory != VK_NULL_HANDLE);
+    RTTESTI_CHECK(pGpu->aResources[0].fVulkanImage
+                  && pGpu->aResources[0].hVkImage != VK_NULL_HANDLE
+                  && pGpu->aResources[0].hVkImageMemory != VK_NULL_HANDLE);
 #endif
 
     uint8_t abPixels[16] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
