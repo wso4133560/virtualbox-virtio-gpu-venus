@@ -7010,6 +7010,9 @@
     <const name="QemuRamFB" value="4">
       <desc>QEMU RAM based framebuffer based device.</desc>
     </const>
+    <const name="VirtioGPU" value="5">
+      <desc>VirtIO-GPU device with optional Venus backend.</desc>
+    </const>
   </enum>
 
   <enum

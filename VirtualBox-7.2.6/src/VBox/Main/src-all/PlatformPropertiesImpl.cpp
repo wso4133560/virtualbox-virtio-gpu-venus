@@ -693,7 +693,8 @@ HRESULT PlatformProperties::getSupportedGfxControllerTypes(std::vector<GraphicsC
             {
                 GraphicsControllerType_Null,
                 GraphicsControllerType_VBoxVGA,
-                GraphicsControllerType_VBoxSVGA
+                GraphicsControllerType_VBoxSVGA,
+                GraphicsControllerType_VirtioGPU
 #ifdef VBOX_WITH_VMSVGA
               , GraphicsControllerType_VMSVGA
 #endif
@@ -709,6 +710,7 @@ HRESULT PlatformProperties::getSupportedGfxControllerTypes(std::vector<GraphicsC
             {
                 GraphicsControllerType_Null,
                 GraphicsControllerType_QemuRamFB
+              , GraphicsControllerType_VirtioGPU
 #ifdef VBOX_WITH_VMSVGA
               , GraphicsControllerType_VBoxSVGA
               , GraphicsControllerType_VMSVGA
@@ -869,6 +871,7 @@ int PlatformProperties::s_getSupportedGraphicsControllerFeatures(PlatformArchite
 
                 case GraphicsControllerType_VBoxVGA:
                 case GraphicsControllerType_QemuRamFB:
+                case GraphicsControllerType_VirtioGPU:
                     /* None supported. */
                     return VINF_SUCCESS;
 

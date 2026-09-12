@@ -199,6 +199,7 @@ HRESULT GraphicsAdapter::setGraphicsControllerType(GraphicsControllerType_T aGra
         case GraphicsControllerType_VBoxSVGA:
 #endif
         case GraphicsControllerType_QemuRamFB:
+        case GraphicsControllerType_VirtioGPU:
             break;
         default:
             return setError(E_INVALIDARG, tr("The graphics controller type (%d) is invalid"), aGraphicsControllerType);

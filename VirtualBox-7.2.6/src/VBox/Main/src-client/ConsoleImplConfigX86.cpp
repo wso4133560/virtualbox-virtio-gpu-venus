@@ -1456,6 +1456,18 @@ int Console::i_configConstructorX86(PUVM pUVM, PVM pVM, PCVMMR3VTABLE pVMM, Auto
                 if (FAILED(vrc))
                     return vrc;
                 break;
+#ifdef VBOX_WITH_VIRTIO_GPU
+            case GraphicsControllerType_VirtioGPU:
+            {
+                PCFGMNODE pVirtioGpuDev = NULL;
+                PCFGMNODE pVirtioGpuInst = NULL;
+                InsertConfigNode(pDevices, "virtio-gpu", &pVirtioGpuDev);
+                InsertConfigNode(pVirtioGpuDev, "0", &pVirtioGpuInst);
+                vrc = pBusMgr->assignPCIDevice("virtio-gpu", pVirtioGpuInst);
+                if (FAILED(vrc))
+                    return vrc;
+                break;
+            }
             default:
                 AssertMsgFailed(("Invalid graphicsController=%d\n", enmGraphicsController));
                 return pVMM->pfnVMR3SetError(pUVM, VERR_INVALID_PARAMETER, RT_SRC_POS,

@@ -574,6 +574,7 @@ static DECLCALLBACK(int) virtioGpuR3Destruct(PPDMDEVINS pDevIns)
     PDMDEV_CHECK_VERSIONS_RETURN_QUIET(pDevIns);
     PVIRTIOGPU pThis = PDMDEVINS_2_DATA(pDevIns, PVIRTIOGPU);
     PVIRTIOGPUCC pThisCC = PDMDEVINS_2_DATA_CC(pDevIns, PVIRTIOGPUCC);
+    virtioGpuR3FreeResources(pThis);
     virtioCoreR3Term(pDevIns, &pThis->Virtio, &pThisCC->Virtio);
     return VINF_SUCCESS;
 }
