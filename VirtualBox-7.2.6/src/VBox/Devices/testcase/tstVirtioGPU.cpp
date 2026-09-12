@@ -509,6 +509,29 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
+    struct { VIRTIOGPUSUBMIT3D Hdr; uint32_t uResourceId; uint8_t abCommand[52]; } SubmitUpdate = { { 52, 1 }, 9, { 0 } };
+    uint32_t uUpdateType = 117;
+    uint64_t uUpdateCommandBuffer = 42;
+    uint64_t uUpdateBuffer = 9;
+    uint64_t offUpdate = 8;
+    uint64_t cbUpdate = 4;
+    uint64_t uUpdateArraySize = 4;
+    uint32_t uUpdateData = UINT32_C(0x13579bdf);
+    memcpy(SubmitUpdate.abCommand + 0, &uUpdateType, sizeof(uUpdateType));
+    memcpy(SubmitUpdate.abCommand + 8, &uUpdateCommandBuffer, sizeof(uUpdateCommandBuffer));
+    memcpy(SubmitUpdate.abCommand + 16, &uUpdateBuffer, sizeof(uUpdateBuffer));
+    memcpy(SubmitUpdate.abCommand + 24, &offUpdate, sizeof(offUpdate));
+    memcpy(SubmitUpdate.abCommand + 32, &cbUpdate, sizeof(cbUpdate));
+    memcpy(SubmitUpdate.abCommand + 40, &uUpdateArraySize, sizeof(uUpdateArraySize));
+    memcpy(SubmitUpdate.abCommand + 48, &uUpdateData, sizeof(uUpdateData));
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SUBMIT_3D, &SubmitUpdate, sizeof(SubmitUpdate), 24, 42);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA
+                  && *(uint32_t *)((uint8_t *)pGpu->aResources[0].pvVkMapped + 8) == uUpdateData
+                  && *(uint32_t *)(pGpu->aResources[0].pbPixels + 8) == uUpdateData);
     struct { VIRTIOGPUSUBMIT3D Hdr; uint32_t uResourceId; uint8_t abCommand[44]; } SubmitCommand = { { 44, 1 }, 9, { 0 } };
     memcpy(SubmitCommand.abCommand + 0, &uCommandType, sizeof(uCommandType));
     memcpy(SubmitCommand.abCommand + 8, &uCommandBuffer, sizeof(uCommandBuffer));

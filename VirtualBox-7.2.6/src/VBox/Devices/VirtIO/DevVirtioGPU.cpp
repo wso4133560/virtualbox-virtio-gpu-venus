@@ -36,6 +36,7 @@
 #define VIRTIOGPU_MAX_SUBMIT_BYTES (UINT32_C(1) * _1M)
 #define VIRTIOGPU_VK_CMD_FILL_BUFFER UINT32_C(118)
 #define VIRTIOGPU_VK_CMD_COPY_BUFFER UINT32_C(112)
+#define VIRTIOGPU_VK_CMD_UPDATE_BUFFER UINT32_C(117)
 #define VIRTIOGPU_MAX_BACKING_ENTRIES 64
 #define VIRTIOGPU_MAX_RESOURCE_BYTES (UINT64_C(256) * _1M)
 
@@ -752,6 +753,15 @@ typedef struct VIRTIOGPUCOPYCMD
     uint64_t cbCopy;
 } VIRTIOGPUCOPYCMD;
 
+typedef struct VIRTIOGPUUPDATECMD
+{
+    uint64_t uCommandBuffer;
+    uint64_t uBuffer;
+    uint64_t offBuffer;
+    uint64_t cbData;
+    const uint8_t *pbData;
+} VIRTIOGPUUPDATECMD;
+
 static bool virtioGpuR3DecodeFillBuffer(const uint8_t *pbCommand, size_t cbCommand, VIRTIOGPUFILLCMD *pFill)
 {
     if (!pbCommand || !pFill || cbCommand != 44)
@@ -790,6 +800,72 @@ static bool virtioGpuR3DecodeCopyBuffer(const uint8_t *pbCommand, size_t cbComma
     memcpy(&pCopy->cbCopy, pbCommand + 56, sizeof(pCopy->cbCopy));
     return pCopy->uCommandBuffer != 0 && pCopy->uSrcBuffer != 0 && pCopy->uDstBuffer != 0
         && pCopy->cRegions == 1 && pCopy->cbRegions == 24;
+}
+
+static bool virtioGpuR3DecodeUpdateBuffer(const uint8_t *pbCommand, size_t cbCommand, VIRTIOGPUUPDATECMD *pUpdate)
+{
+    if (!pbCommand || !pUpdate || cbCommand < 48)
+        return false;
+    uint32_t uCommandType = 0;
+    uint32_t fCommand = 0;
+    uint64_t cbArray = 0;
+    memcpy(&uCommandType, pbCommand, sizeof(uCommandType));
+    memcpy(&fCommand, pbCommand + 4, sizeof(fCommand));
+    if (uCommandType != VIRTIOGPU_VK_CMD_UPDATE_BUFFER || fCommand)
+        return false;
+    memcpy(&pUpdate->uCommandBuffer, pbCommand + 8, sizeof(pUpdate->uCommandBuffer));
+    memcpy(&pUpdate->uBuffer, pbCommand + 16, sizeof(pUpdate->uBuffer));
+    memcpy(&pUpdate->offBuffer, pbCommand + 24, sizeof(pUpdate->offBuffer));
+    memcpy(&pUpdate->cbData, pbCommand + 32, sizeof(pUpdate->cbData));
+    memcpy(&cbArray, pbCommand + 40, sizeof(cbArray));
+    if (!pUpdate->uCommandBuffer || !pUpdate->uBuffer || !pUpdate->cbData || pUpdate->cbData > UINT32_C(65536)
+        || (pUpdate->cbData & 3) || cbArray != pUpdate->cbData
+        || cbCommand != 48 + (size_t)((pUpdate->cbData + 3) & ~UINT64_C(3)))
+        return false;
+    pUpdate->pbData = pbCommand + 48;
+    return true;
+}
+
+static int virtioGpuR3VulkanUpdateBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes,
+                                          uint64_t off, const uint8_t *pbData, uint64_t cbData)
+{
+    if (!pRes->fVulkanBuffer || !pThis->fVulkanQueue || !pThis->fVulkanSubmit || !pbData || !cbData
+        || off > pRes->cbPixels || cbData > pRes->cbPixels - off)
+        return VERR_INVALID_PARAMETER;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr =
+        (PFN_vkGetDeviceProcAddr)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetDeviceProcAddr");
+    if (!pfnGetDeviceProcAddr)
+        return VERR_NOT_FOUND;
+# define VK_UPDATE_PROC(type, name) (type)pfnGetDeviceProcAddr(pThis->hVkDevice, name)
+    PFN_vkResetCommandBuffer pfnResetCommandBuffer = VK_UPDATE_PROC(PFN_vkResetCommandBuffer, "vkResetCommandBuffer");
+    PFN_vkBeginCommandBuffer pfnBeginCommandBuffer = VK_UPDATE_PROC(PFN_vkBeginCommandBuffer, "vkBeginCommandBuffer");
+    PFN_vkEndCommandBuffer pfnEndCommandBuffer = VK_UPDATE_PROC(PFN_vkEndCommandBuffer, "vkEndCommandBuffer");
+    PFN_vkCmdUpdateBuffer pfnCmdUpdateBuffer = VK_UPDATE_PROC(PFN_vkCmdUpdateBuffer, "vkCmdUpdateBuffer");
+    PFN_vkResetFences pfnResetFences = VK_UPDATE_PROC(PFN_vkResetFences, "vkResetFences");
+    PFN_vkQueueSubmit pfnQueueSubmit = VK_UPDATE_PROC(PFN_vkQueueSubmit, "vkQueueSubmit");
+    PFN_vkWaitForFences pfnWaitForFences = VK_UPDATE_PROC(PFN_vkWaitForFences, "vkWaitForFences");
+    if (!pfnResetCommandBuffer || !pfnBeginCommandBuffer || !pfnEndCommandBuffer || !pfnCmdUpdateBuffer
+        || !pfnResetFences || !pfnQueueSubmit || !pfnWaitForFences)
+        return VERR_NOT_FOUND;
+    VkCommandBuffer hCmd = pThis->hVkSubmitCommandBuffer;
+    VkFence hFence = pThis->hVkSubmitFence;
+    VkCommandBufferBeginInfo BeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
+                                           VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, NULL };
+    VkSubmitInfo SubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, 0, NULL, NULL, 1, &hCmd, 0, NULL };
+    if (pfnResetFences(pThis->hVkDevice, 1, &hFence) != VK_SUCCESS
+        || pfnResetCommandBuffer(hCmd, 0) != VK_SUCCESS
+        || pfnBeginCommandBuffer(hCmd, &BeginInfo) != VK_SUCCESS)
+        return VERR_NOT_SUPPORTED;
+    pfnCmdUpdateBuffer(hCmd, pRes->hVkBuffer, off, cbData, pbData);
+    if (pfnEndCommandBuffer(hCmd) != VK_SUCCESS
+        || pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, hFence) != VK_SUCCESS
+        || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
+        return VERR_NOT_SUPPORTED;
+    if (memcmp((uint8_t *)pRes->pvVkMapped + off, pbData, (size_t)cbData) != 0)
+        return VERR_MISMATCH;
+    memcpy(pRes->pbPixels + off, pbData, (size_t)cbData);
+    return VINF_SUCCESS;
+# undef VK_UPDATE_PROC
 }
 
 static int virtioGpuR3VulkanCopyBufferBatch(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pSrc,
@@ -1285,7 +1361,28 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                         Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
                     else
                     {
-                        if (Cmd.cbCommand > 64 && Cmd.cbCommand % 64 == 0
+                        VIRTIOGPUUPDATECMD Update;
+                        PVIRTIOGPURESOURCE pUpdateRes = NULL;
+                        if (virtioGpuR3DecodeUpdateBuffer(pbCommand, Cmd.cbCommand, &Update))
+                        {
+                            if (Update.uBuffer > UINT32_MAX
+                                || !(pUpdateRes = virtioGpuR3FindResource(pThis, (uint32_t)Update.uBuffer))
+                                || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)Update.uBuffer))
+                                Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
+                            else
+                            {
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                                Resp.Hdr.uType = RT_SUCCESS(virtioGpuR3VulkanUpdateBuffer(pThis, pUpdateRes,
+                                                                                             Update.offBuffer,
+                                                                                             Update.pbData,
+                                                                                             Update.cbData))
+                                               ? VIRTIOGPU_RESP_OK_NODATA : VIRTIOGPU_RESP_ERR_UNSPEC;
+#else
+                                Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
+#endif
+                            }
+                        }
+                        else if (Cmd.cbCommand > 64 && Cmd.cbCommand % 64 == 0
                             && Cmd.cbCommand / 64 <= 256)
                         {
                             uint32_t const cCopy = Cmd.cbCommand / 64;
@@ -1326,7 +1423,7 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                                 break;
                             }
                         }
-                        if (Cmd.cbCommand > sizeof(uint32_t) * 11 && Cmd.cbCommand % 44 == 0
+                        else if (Cmd.cbCommand > sizeof(uint32_t) * 11 && Cmd.cbCommand % 44 == 0
                             && Cmd.cbCommand / 44 <= 256)
                         {
                             uint32_t const cFill = Cmd.cbCommand / 44;
@@ -1362,48 +1459,51 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                                 break;
                             }
                         }
-                        VIRTIOGPUFILLCMD Fill;
-                        PVIRTIOGPURESOURCE pRes = NULL;
-                        if (virtioGpuR3DecodeFillBuffer(pbCommand, Cmd.cbCommand, &Fill))
-                        {
-                            if (Fill.uBuffer > UINT32_MAX
-                                || !(pRes = virtioGpuR3FindResource(pThis, (uint32_t)Fill.uBuffer))
-                                || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)Fill.uBuffer))
-                                Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
-                            else
-                            {
-#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
-                                Resp.Hdr.uType = RT_SUCCESS(virtioGpuR3VulkanFillBuffer(pThis, pRes,
-                                                                                         Fill.offBuffer, Fill.cbBuffer,
-                                                                                         Fill.uData))
-                                               ? VIRTIOGPU_RESP_OK_NODATA : VIRTIOGPU_RESP_ERR_UNSPEC;
-#else
-                                Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
-#endif
-                            }
-                        }
                         else
                         {
-                            VIRTIOGPUCOPYCMD Copy;
-                            PVIRTIOGPURESOURCE pSrc = NULL;
-                            PVIRTIOGPURESOURCE pDst = NULL;
-                            if (!virtioGpuR3DecodeCopyBuffer(pbCommand, Cmd.cbCommand, &Copy)
-                                || Copy.uSrcBuffer > UINT32_MAX || Copy.uDstBuffer > UINT32_MAX
-                                || !(pSrc = virtioGpuR3FindResource(pThis, (uint32_t)Copy.uSrcBuffer))
-                                || !(pDst = virtioGpuR3FindResource(pThis, (uint32_t)Copy.uDstBuffer))
-                                || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)Copy.uSrcBuffer)
-                                || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)Copy.uDstBuffer))
-                                Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
+                            VIRTIOGPUFILLCMD Fill;
+                            PVIRTIOGPURESOURCE pRes = NULL;
+                            if (virtioGpuR3DecodeFillBuffer(pbCommand, Cmd.cbCommand, &Fill))
+                            {
+                                if (Fill.uBuffer > UINT32_MAX
+                                    || !(pRes = virtioGpuR3FindResource(pThis, (uint32_t)Fill.uBuffer))
+                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)Fill.uBuffer))
+                                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
+                                else
+                                {
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                                    Resp.Hdr.uType = RT_SUCCESS(virtioGpuR3VulkanFillBuffer(pThis, pRes,
+                                                                                             Fill.offBuffer, Fill.cbBuffer,
+                                                                                             Fill.uData))
+                                                   ? VIRTIOGPU_RESP_OK_NODATA : VIRTIOGPU_RESP_ERR_UNSPEC;
+#else
+                                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
+#endif
+                                }
+                            }
                             else
                             {
+                                VIRTIOGPUCOPYCMD Copy;
+                                PVIRTIOGPURESOURCE pSrc = NULL;
+                                PVIRTIOGPURESOURCE pDst = NULL;
+                                if (!virtioGpuR3DecodeCopyBuffer(pbCommand, Cmd.cbCommand, &Copy)
+                                    || Copy.uSrcBuffer > UINT32_MAX || Copy.uDstBuffer > UINT32_MAX
+                                    || !(pSrc = virtioGpuR3FindResource(pThis, (uint32_t)Copy.uSrcBuffer))
+                                    || !(pDst = virtioGpuR3FindResource(pThis, (uint32_t)Copy.uDstBuffer))
+                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)Copy.uSrcBuffer)
+                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)Copy.uDstBuffer))
+                                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
+                                else
+                                {
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
-                                Resp.Hdr.uType = RT_SUCCESS(virtioGpuR3VulkanCopyBuffer(pThis, pSrc, pDst,
-                                                                                          Copy.offSrc, Copy.offDst,
-                                                                                          Copy.cbCopy))
-                                               ? VIRTIOGPU_RESP_OK_NODATA : VIRTIOGPU_RESP_ERR_UNSPEC;
+                                    Resp.Hdr.uType = RT_SUCCESS(virtioGpuR3VulkanCopyBuffer(pThis, pSrc, pDst,
+                                                                                              Copy.offSrc, Copy.offDst,
+                                                                                              Copy.cbCopy))
+                                                   ? VIRTIOGPU_RESP_OK_NODATA : VIRTIOGPU_RESP_ERR_UNSPEC;
 #else
-                                Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
+                                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
 #endif
+                                }
                             }
                         }
                     }
