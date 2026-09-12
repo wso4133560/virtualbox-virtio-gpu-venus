@@ -1,0 +1,4 @@
+/.build/
+/VirtualBox-7.2.6/out/win.amd64/
+/VirtualBox-7.2.6/env.bat
+/VirtualBox-7.2.6/src/libs/libxml2-2.13.8/win32/rcVersion.h

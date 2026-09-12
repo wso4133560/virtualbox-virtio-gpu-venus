@@ -135,11 +135,10 @@ sub LogInit
    LogPrint "#"
 
 
-   ' the environment
-   LogPrint "# Environment:"
-   dim objEnv
-   for each strVar in g_objShell.Environment("PROCESS")
-      LogPrint "#   " & strVar
+   ' Record build inputs without copying unrelated credentials into configure.log.
+   LogPrint "# Build environment:"
+   for each strVar in Array("PATH", "INCLUDE", "LIB", "LIBPATH", "KBUILD_PATH", "KBUILD_DEVTOOLS", "WindowsSdkDir", "VCToolsInstallDir")
+      LogPrint "#   " & strVar & "=" & EnvGet(strVar)
    next
    LogPrint "#"
 end sub
@@ -823,13 +822,13 @@ class VisualCPPState
          end if
 
          ' Check that it's a supported version
-         ' VS2022 may localize cl.exe output; its path identifies the supported 17.x toolchain.
-         if strVer = "" and InStr(1, LCase(strClExe), "2022") > 0 then strVer = "17.0"
+         ' The executable version is locale independent (VS2022 uses cl 19.3x/19.4x).
+         if strVer = "" then strVer = g_objFileSys.GetFileVersion(DosSlashes(strClExe))
          checkClExe = True
          if InStr(1, strVer, "16.") = 1 then
             m_strVersion = "VCC100"
          elseif InStr(1, strVer, "17.") = 1 then
-            m_strVersion = "VCC143"
+            m_strVersion = "VCC110"
             LogPrint "The Visual C++ compiler ('" & strClExe & "') version isn't really supported, but may work: " & strVer
          elseif InStr(1, strVer, "18.") = 1 then
             m_strVersion = "VCC120"
@@ -842,8 +841,10 @@ class VisualCPPState
             LogPrint "The Visual C++ compiler ('" & strClExe & "') version isn't really supported, but may work: " & strVer
          elseif InStr(1, strVer, "19.2") = 1 then
             m_strVersion = "VCC142"
+         elseif InStr(1, strVer, "19.3") = 1 or InStr(1, strVer, "19.4") = 1 then
+            m_strVersion = "VCC143"
          else
-            LogPrint "The Visual C++ compiler we found ('" & strClExe & "') isn't in the 10.0-19.2x range (" & strVer & ")."
+            LogPrint "The Visual C++ compiler we found ('" & strClExe & "') isn't in the supported 16.0-19.4x range (" & strVer & ")."
             LogPrint "Check the build requirements and select the appropriate compiler version."
             checkClExe = False
             exit function
@@ -2135,6 +2136,7 @@ sub usage
    Print "  --disable-SDL           Disables the SDL frontend."
    Print "  --disable-UDPTunnel"
    Print "  --disable-pylint        Disable use of pylint."
+   Print "  --disable-additions     Skip Guest Additions and their legacy WDK 7.1 check."
    Print ""
    Print "Locations:"
    Print "  --with-kBuild=PATH      Where kBuild is to be found."
@@ -2215,6 +2217,7 @@ function Main
    blnOptDisableCOM = False
    blnOptDisableUDPTunnel = False
    blnOptDisableSDL = False
+   blnOptDisableAdditions = False
    for i = 1 to Wscript.Arguments.Count
       dim str, strArg, strPath
 
@@ -2318,6 +2321,8 @@ function Main
             blnOptDisableSDL = False
          case "--disable-pylint"
             blnOptDisablePylint = True
+         case "--disable-additions"
+            blnOptDisableAdditions = True
          case "--enable-pylint"
             blnOptDisablePylint = False
 
@@ -2376,7 +2381,11 @@ function Main
    end if
    CheckSourcePath
    CheckForkBuild       strOptkBuild
-   CheckForWinDDK       strOptDDK
+   if blnOptDisableAdditions then
+      CfgPrintAssign "VBOX_WITHOUT_ADDITIONS", "1"
+   else
+      CheckForWinDDK    strOptDDK
+   end if
    CheckForVisualCPP    strOptVC, strOptVCCommon
    CheckForSDK10        strOptSDK10, strOptSDK10Version
    CheckForMidl         strOptMidl

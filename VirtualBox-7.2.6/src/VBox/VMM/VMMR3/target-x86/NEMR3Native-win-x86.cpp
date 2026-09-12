@@ -985,7 +985,11 @@ static int nemR3WinInitCheckCapabilities(PVM pVM, PRTERRINFO pErrInfo)
     NEM_LOG_REL_CPU_FEATURE(IbrsSupport);
     NEM_LOG_REL_CPU_FEATURE(StibpSupport);
     NEM_LOG_REL_CPU_FEATURE(IbpbSupport);
+# if WDK_NTDDI_VERSION >= MY_NTDDI_WIN11_26100
+    NEM_LOG_REL_CPU_FEATURE(UnrestrictedGuestSupport);
+# else
     NEM_LOG_REL_CPU_FEATURE(Reserved2);
+# endif
     NEM_LOG_REL_CPU_FEATURE(SsbdSupport);
     NEM_LOG_REL_CPU_FEATURE(FastShortRepMovSupport);
     NEM_LOG_REL_CPU_FEATURE(Reserved3);

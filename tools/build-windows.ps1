@@ -1,67 +1,161 @@
+# Development build: no installation, driver loading, or system configuration changes.
 [CmdletBinding()]
 param(
-    [ValidateSet('amd64')]
-    [string]$TargetArch = 'amd64',
-    [int]$Jobs = 8,
+    [ValidateRange(1, 64)][int]$Jobs = 8,
+    [string[]]$Targets = @('VBoxRT', 'VBoxManage', 'VBoxHeadless', 'VBoxSVC', 'VBoxVMM', 'VBoxDD', 'VBoxDD2', 'VBoxDDU', 'VMMR0', 'VBoxSup', 'tstRTXml', 'tstRTSemEvent'),
+    [string]$VisualStudioRoot,
+    [string]$SdkRoot = (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'),
+    [string]$SdkVersion = '10.0.26100.0',
+    [string]$WdkRoot,
+    [string]$YasmPath,
+    [string]$NasmPath,
+    [string]$XsltprocPath,
+    [switch]$CheckOnly,
     [switch]$ConfigureOnly,
     [switch]$WithoutHardening
 )
-
 $ErrorActionPreference = 'Stop'
-$sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\VirtualBox-7.2.6')).Path
-$vsWhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-if (-not (Test-Path $vsWhere)) {
-    $vsWhere = 'C:\gurobi1001\win64\bin\vswhere.exe'
-}
-if (-not (Test-Path $vsWhere)) {
-    throw '未找到 vswhere.exe，请安装 Visual Studio 2022。'
-}
+$repoRoot = Split-Path $PSScriptRoot -Parent
+$sourceRoot = Join-Path $repoRoot 'VirtualBox-7.2.6'
+$buildRoot = Join-Path $repoRoot '.build\windows'
+New-Item -ItemType Directory -Force $buildRoot | Out-Null
 
-$vsRoot = (& $vsWhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
-if (-not $vsRoot) {
-    throw '未找到带 C++ amd64 工具链的 Visual Studio 安装。'
+function Require-File([string]$Path, [string]$Description) {
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "Missing ${Description}: $Path"
+    }
 }
-$vcVars = Join-Path $vsRoot 'VC\Auxiliary\Build\vcvars64.bat'
+function Kmk-Path([string]$Path) { $Path.Replace('\', '/') }
+if (-not $VisualStudioRoot) {
+    $vswhere = Get-Command vswhere.exe -ErrorAction SilentlyContinue
+    $vswherePath = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if ($vswhere) { $vswherePath = $vswhere.Source }
+    if (Test-Path $vswherePath) {
+        $VisualStudioRoot = (& $vswherePath -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1)
+    }
+    if (-not $VisualStudioRoot) {
+        $VisualStudioRoot = Get-ChildItem (Join-Path $env:ProgramFiles 'Microsoft Visual Studio\2022') -Directory |
+            Where-Object { Test-Path (Join-Path $_.FullName 'VC\Auxiliary\Build\vcvars64.bat') } |
+            Select-Object -First 1 -ExpandProperty FullName
+    }
+}
+if (-not $VisualStudioRoot) { throw 'Visual Studio 2022 C++ tools were not found.' }
+$vcvars = Join-Path $VisualStudioRoot 'VC\Auxiliary\Build\vcvars64.bat'
 $kmk = Join-Path $sourceRoot 'kBuild\bin\win.amd64\kmk.exe'
-$nasm = (Get-Command nasm.exe -ErrorAction SilentlyContinue).Source
-if (-not $nasm) {
-    $nasm = Join-Path $env:LOCALAPPDATA 'bin\NASM\nasm.exe'
+if (-not $WdkRoot) { $WdkRoot = Join-Path $repoRoot '.build\deps\wdk\c' }
+if (-not $YasmPath) {
+    if (-not $CheckOnly) { & (Join-Path $PSScriptRoot 'build-yasm.ps1') -VisualStudioRoot $VisualStudioRoot }
+    $YasmPath = Join-Path $repoRoot '.build\deps\yasm-vbox\yasm.exe'
 }
-if (-not (Test-Path $nasm)) {
-    throw '未找到 NASM，请安装 NASM 并加入 PATH。'
+if (-not $NasmPath) { $NasmPath = Join-Path $repoRoot '.build\deps\nasm\nasm-2.16.03\nasm.exe' }
+if (-not $XsltprocPath) { $XsltprocPath = Join-Path $repoRoot '.build\deps\msys2\mingw64\bin\xsltproc.exe' }
+$midl = Join-Path $SdkRoot "bin\$SdkVersion\x64\midl.exe"
+$kmInclude = Join-Path $WdkRoot "Include\$SdkVersion\km"
+$kmLib = Join-Path $WdkRoot "Lib\$SdkVersion\km\x64"
+Require-File $vcvars 'VS2022 environment'
+Require-File $kmk 'kBuild'
+Require-File $midl 'SDK MIDL'
+Require-File (Join-Path $SdkRoot "Include\$SdkVersion\um\Windows.h") 'SDK headers'
+Require-File (Join-Path $kmInclude 'ntifs.h') 'WDK headers'
+Require-File (Join-Path $kmLib 'ntoskrnl.lib') 'WDK amd64 libraries'
+Require-File $YasmPath 'YASM'
+Require-File $NasmPath 'NASM'
+Require-File $XsltprocPath 'xsltproc'
+foreach ($tool in @($YasmPath, $NasmPath, $XsltprocPath)) {
+    & $tool --version
+    if ($LASTEXITCODE -ne 0) { throw "Tool cannot run: $tool (exit $LASTEXITCODE)" }
 }
+Write-Host "SDK/WDK: $SdkVersion; VS: $VisualStudioRoot"
+if ($CheckOnly) { return }
 
-$sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'
-$sdkVersions = Get-ChildItem (Join-Path $sdkRoot 'Include') -Directory -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -match '^10\.' } |
-    Sort-Object Name -Descending
-if (-not $sdkVersions) {
-    throw '未找到 Windows 10 SDK。'
+# configure.vbs normally overwrites tracked Linux configuration. Preserve bytes,
+# then move the Windows output to .build and pass AUTOCFG/LOCALCFG to kBuild.
+$snapshots = @{}
+foreach ($name in @('AutoConfig.kmk', 'configure.log', 'env.bat')) {
+    $path = Join-Path $sourceRoot $name
+    $snapshots[$path] = if (Test-Path $path) { [IO.File]::ReadAllBytes($path) } else { $null }
 }
-$wdkHeader = $sdkVersions | ForEach-Object { Join-Path $_.FullName 'km\ntifs.h' } | Where-Object { Test-Path $_ } | Select-Object -First 1
-if (-not $wdkHeader) {
-    throw '未找到 ntifs.h。请安装与 Windows SDK 匹配的 Windows Driver Kit (WDK)。'
-}
-
-if (-not (Get-Command xsltproc.exe -ErrorAction SilentlyContinue)) {
-    throw '未找到 xsltproc.exe。请安装 VirtualBox 构建工具包中的 libxslt。'
-}
-
 $q = [char]34
-$configure = "cscript //nologo configure.vbs --target-arch=$TargetArch --continue-on-error --disable-SDL --disable-COM --with-vc=$q$vsRoot$q --with-sdk10=$q$sdkRoot$q --with-nasm=$q$nasm$q"
-$build = "call env.bat && $q$kmk$q VBOX_SVN_REV=172246 TOOL_YASM_AS=$q$nasm$q -j$Jobs quick"
-if ($WithoutHardening) {
-    $build = "call env.bat && $q$kmk$q VBOX_WITHOUT_HARDENING=1 VBOX_SVN_REV=172246 TOOL_YASM_AS=$q$nasm$q -j$Jobs quick"
+$autoConfig = Join-Path $buildRoot 'AutoConfig.kmk'
+$localConfig = Join-Path $buildRoot 'LocalConfig.kmk'
+$envFile = Join-Path $buildRoot 'env.bat'
+try {
+    $vcRoot = Join-Path $VisualStudioRoot 'VC'
+    $configure = "cscript //nologo configure.vbs --target-arch=amd64 --disable-sdl --disable-additions --disable-pylint --with-vc=$q$vcRoot$q --with-sdk10=$q$SdkRoot$q --with-midl=$q$midl$q --with-yasm=$q$YasmPath$q --with-nasm=$q$NasmPath$q"
+    & cmd.exe /d /s /c "call $q$vcvars$q && cd /d $q$sourceRoot$q && $configure" > (Join-Path $buildRoot 'configure-output.log') 2>&1
+    $configureExit = $LASTEXITCODE
+    $configureOutput = Get-Content (Join-Path $buildRoot 'configure-output.log') -Raw
+    if ($configureExit -ne 0 -or $configureOutput -notmatch 'Execute env.bat once before you start to build VBox:') {
+        Get-Content (Join-Path $buildRoot 'configure-output.log') -Tail 35
+        throw "Configure failed (exit $configureExit). See .build/windows/configure-output.log."
+    }
+    $generatedConfig = Get-Content (Join-Path $sourceRoot 'AutoConfig.kmk') -Raw
+    foreach ($required in @('VBOX_VCC_TOOL_STEM\s*:= VCC143', 'PATH_TOOL_VCC143\s*:= .+', 'VBOX_MAIN_IDL\s*:= .+', 'PATH_TOOL_YASM\s*:= .+')) {
+        if ($generatedConfig -notmatch $required) { throw "Incomplete Windows configuration: missing $required" }
+    }
+    if ($generatedConfig -notmatch "SDK_WINSDK10_VERSION\s*:= $([regex]::Escape($SdkVersion))\s") {
+        throw "Configure selected an SDK other than the requested $SdkVersion."
+    }
+    Copy-Item (Join-Path $sourceRoot 'AutoConfig.kmk') $autoConfig -Force
+    Copy-Item (Join-Path $sourceRoot 'env.bat') $envFile -Force
+} finally {
+    foreach ($path in $snapshots.Keys) {
+        if ($null -ne $snapshots[$path]) { [IO.File]::WriteAllBytes($path, $snapshots[$path]) }
+        elseif (Test-Path $path) { Remove-Item -LiteralPath $path -Force }
+    }
 }
-
-$command = "call $q$vcVars$q && cd /d $q$sourceRoot$q && $configure"
-& cmd.exe /d /s /c $command
-if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
+$local = @(
+    "SDK_WINSDK10_VERSION := $SdkVersion",
+    "SDK_WINSDK10_MAX_VERSION := $SdkVersion",
+    "PATH_SDK_WINSDK10_KM_INC := $(Kmk-Path $kmInclude)",
+    "PATH_SDK_WINSDK10_KM_LIB.amd64 := $(Kmk-Path $kmLib)",
+    "VBOX_XSLTPROC := $(Kmk-Path $XsltprocPath)",
+    'VBOX_YASM_Wno-segreg-in-64bit := -Wno-segreg-in-64bit',
+    'VBOX_WITHOUT_ADDITIONS := 1',
+    'VBOX_WITH_32_ON_64_MAIN_API :=',
+    'VBOX_WITHOUT_DOCS := 1',
+    'VBOX_WITH_QTGUI :=',
+    'VBOX_WITH_QT_PAYLOAD :=',
+    'VBOX_WITH_MESA3D :=',
+    'VBOX_WITH_VMSVGA3D :=',
+    'VBOX_WITH_VMSVGA3D_DX :=',
+    'VBOX_WITH_PYTHON :=',
+    'VBOX_WITH_WEBSERVICES :=',
+    'VBOX_WITH_JAVA :=',
+    # Use the revision recorded in this archive's Version.kmk, not stale output.
+    'VBOX_SVN_REV = $(VBOX_SVN_REV_VERSION_FALLBACK)'
+)
+if ($WithoutHardening) { $local += 'VBOX_WITHOUT_HARDENING := 1' }
+[IO.File]::WriteAllLines($localConfig, $local, [Text.UTF8Encoding]::new($false))
+if ($ConfigureOnly) { Write-Host "Windows configuration: $buildRoot"; return }
+# Match the bundled libxml2 Makefile.kmk source list. Upstream configure.js
+# defaults enable modules (XPath, HTML, network, schemas) that VBox does not link.
+$xmlRoot = Join-Path $sourceRoot 'src\libs\libxml2-2.13.8'
+$xmlHeader = Join-Path $xmlRoot 'include\libxml\xmlversion.h'
+$xmlStamp = if (Test-Path $xmlHeader) { Get-Item $xmlHeader } else { $null }
+$xmlBefore = if ($xmlStamp) { [IO.File]::ReadAllText($xmlHeader) } else { $null }
+$xmlMsvcConfig = Join-Path $xmlRoot 'win32\config.msvc'
+$xmlMsvcBefore = [IO.File]::ReadAllBytes($xmlMsvcConfig)
+Push-Location (Join-Path $xmlRoot 'win32')
+try {
+    & cscript.exe //nologo //E:JScript configure.js threads=native ftp=no http=no html=no c14n=no catalog=no xpath=no xptr=no xinclude=no iconv=no icu=no zlib=yes lzma=no xml_debug=no regexps=no modules=no schemas=no schematron=no > (Join-Path $buildRoot 'libxml-configure.log') 2>&1
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $xmlHeader)) { throw 'libxml2 configuration failed.' }
+    if ($xmlBefore -eq [IO.File]::ReadAllText($xmlHeader)) { (Get-Item $xmlHeader).LastWriteTimeUtc = $xmlStamp.LastWriteTimeUtc }
+} finally {
+    [IO.File]::WriteAllBytes($xmlMsvcConfig, $xmlMsvcBefore)
+    Pop-Location
 }
-if ($ConfigureOnly) {
-    exit 0
+foreach ($target in $Targets) {
+    if ($target -notmatch '^[A-Za-z0-9_-]+$') { throw "Invalid build target: $target" }
 }
-
-& cmd.exe /d /s /c "call $q$vcVars$q && cd /d $q$sourceRoot$q && $build"
-exit $LASTEXITCODE
+$targetArgs = $Targets -join ' '
+$build = "call $q$envFile$q && $q$kmk$q AUTOCFG=$q$(Kmk-Path $autoConfig)$q LOCALCFG=$q$(Kmk-Path $localConfig)$q SDK_WINSDK10_MAX_VERSION=$SdkVersion -j$Jobs $targetArgs"
+$buildLog = Join-Path $buildRoot 'build.log'
+if (Test-Path $buildLog) {
+    Copy-Item $buildLog (Join-Path $buildRoot ("build-{0}.log" -f (Get-Date -Format 'yyyyMMdd-HHmmss-fff')))
+}
+& cmd.exe /d /s /c "call $q$vcvars$q && cd /d $q$sourceRoot$q && $build" > $buildLog 2>&1
+$buildExit = $LASTEXITCODE
+Get-Content $buildLog -Tail 30
+if ($buildExit -ne 0) { throw "Build failed (exit $buildExit). See $buildLog" }
+Write-Host "Build passed: $targetArgs"
