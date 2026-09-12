@@ -12,7 +12,24 @@ static RTTEST g_hTest;
 static uint8_t g_abRam[65536];
 static unsigned g_cIrqs;
 static unsigned g_cMemoryErrors;
+static unsigned g_cDisplayResizes;
+static unsigned g_cDisplayUpdates;
 static PDMDEVHLPR3 g_Helpers;
+
+static DECLCALLBACK(int) tstDisplayResize(PPDMIDISPLAYCONNECTOR pInterface, uint32_t cBits, void *pvVRAM,
+                                          uint32_t cbLine, uint32_t cx, uint32_t cy)
+{
+    RT_NOREF(pInterface, cBits, pvVRAM, cbLine, cx, cy);
+    g_cDisplayResizes++;
+    return VINF_SUCCESS;
+}
+
+static DECLCALLBACK(void) tstDisplayUpdate(PPDMIDISPLAYCONNECTOR pInterface, uint32_t x, uint32_t y,
+                                           uint32_t cx, uint32_t cy)
+{
+    RT_NOREF(pInterface, x, y, cx, cy);
+    g_cDisplayUpdates++;
+}
 
 static DECLCALLBACK(int) tstRead(PPDMDEVINS pDevIns, PPDMPCIDEV pPci, RTGCPHYS off, void *pv, size_t cb, uint32_t fFlags)
 {
@@ -206,6 +223,10 @@ int main(int argc, char **argv)
     g_Helpers.pfnSSMPutGCPhys64 = tstSsmPutU64;
     g_Helpers.pfnSSMGetGCPhys64 = tstSsmGetU64;
     PVIRTIOGPUCC pCC = PDMDEVINS_2_DATA_CC(pDev, PVIRTIOGPUCC);
+    static PDMIDISPLAYCONNECTOR DisplayConnector;
+    DisplayConnector.pfnResize = tstDisplayResize;
+    DisplayConnector.pfnUpdateRect = tstDisplayUpdate;
+    pCC->pDrv = &DisplayConnector;
     pCC->Virtio.pfnStatusChanged = virtioGpuR3StatusChanged;
     pCC->Virtio.pfnVirtqNotified = virtioGpuR3VirtqNotified;
     pGpu->Virtio.pDevInsR3 = pDev;
@@ -285,6 +306,7 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && pGpu->aScanouts[0].uResourceId == 7);
+    RTTESTI_CHECK(g_cDisplayResizes == 1);
 
     struct { uint32_t x, y, w, h, id, padding; } Flush = { 0, 0, 2, 2, 7, 0 };
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
@@ -293,6 +315,7 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && pGpu->aScanouts[0].uFlushSequence == 1);
+    RTTESTI_CHECK(g_cDisplayUpdates == 1);
 
     struct { uint32_t id, padding; } Detach = { 7, 0 };
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;

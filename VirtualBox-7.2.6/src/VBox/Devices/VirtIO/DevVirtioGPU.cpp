@@ -8,6 +8,7 @@
 #include <iprt/string.h>
 #include <iprt/sg.h>
 #include <iprt/mem.h>
+#include <iprt/uuid.h>
 #include <VBox/log.h>
 #include <VBox/pci.h>
 #include <VBox/vmm/pdmdev.h>
@@ -62,6 +63,9 @@ typedef VIRTIOGPU *PVIRTIOGPU;
 typedef struct VIRTIOGPUCC
 {
     VIRTIOCORER3 Virtio;     /* Must stay first for the common transport. */
+    PDMIBASE     IBase;
+    R3PTRTYPE(PPDMIBASE) pDrvBase;
+    R3PTRTYPE(PPDMIDISPLAYCONNECTOR) pDrv;
 } VIRTIOGPUCC;
 typedef VIRTIOGPUCC *PVIRTIOGPUCC;
 
@@ -350,14 +354,38 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                 if(pBuf->cbPhysSend<sizeof(Cmd)-sizeof(Cmd.Hdr) || RT_FAILURE(virtioGpuR3Read(pDevIns,pVirtio,pBuf,(uint8_t *)&Cmd+sizeof(Cmd.Hdr),sizeof(Cmd)-sizeof(Cmd.Hdr)))) Resp.Hdr.uType=VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
                 else if(Cmd.uScanoutId>=VIRTIOGPU_MAX_SCANOUTS) Resp.Hdr.uType=VIRTIOGPU_RESP_ERR_INVALID_SCANOUT_ID;
                 else if(!Cmd.uResourceId) { RT_ZERO(pThis->aScanouts[Cmd.uScanoutId]); Resp.Hdr.uType=VIRTIOGPU_RESP_OK_NODATA; }
-                else { PVIRTIOGPURESOURCE pRes=virtioGpuR3FindResource(pThis,Cmd.uResourceId); if(!pRes || !virtioGpuR3RectValid(pRes,Cmd.uX,Cmd.uY,Cmd.uWidth,Cmd.uHeight)) Resp.Hdr.uType=VIRTIOGPU_RESP_ERR_INVALID_PARAMETER; else { pThis->aScanouts[Cmd.uScanoutId].uResourceId=Cmd.uResourceId; pThis->aScanouts[Cmd.uScanoutId].uX=Cmd.uX; pThis->aScanouts[Cmd.uScanoutId].uY=Cmd.uY; pThis->aScanouts[Cmd.uScanoutId].uWidth=Cmd.uWidth; pThis->aScanouts[Cmd.uScanoutId].uHeight=Cmd.uHeight; Resp.Hdr.uType=VIRTIOGPU_RESP_OK_NODATA; } }
+                else
+                {
+                    PVIRTIOGPURESOURCE pRes=virtioGpuR3FindResource(pThis,Cmd.uResourceId);
+                    PVIRTIOGPUCC pThisCC = PDMDEVINS_2_DATA_CC(pDevIns, PVIRTIOGPUCC);
+                    if(!pRes || !virtioGpuR3RectValid(pRes,Cmd.uX,Cmd.uY,Cmd.uWidth,Cmd.uHeight))
+                        Resp.Hdr.uType=VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                    else
+                    {
+                        int rcResize = VINF_SUCCESS;
+                        if (pThisCC->pDrv && pThisCC->pDrv->pfnResize)
+                            rcResize = pThisCC->pDrv->pfnResize(pThisCC->pDrv, 32, pRes->pbPixels,
+                                                               pRes->uWidth * 4, Cmd.uWidth, Cmd.uHeight);
+                        if (RT_FAILURE(rcResize))
+                            Resp.Hdr.uType=VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                        else
+                        {
+                            pThis->aScanouts[Cmd.uScanoutId].uResourceId=Cmd.uResourceId;
+                            pThis->aScanouts[Cmd.uScanoutId].uX=Cmd.uX;
+                            pThis->aScanouts[Cmd.uScanoutId].uY=Cmd.uY;
+                            pThis->aScanouts[Cmd.uScanoutId].uWidth=Cmd.uWidth;
+                            pThis->aScanouts[Cmd.uScanoutId].uHeight=Cmd.uHeight;
+                            Resp.Hdr.uType=VIRTIOGPU_RESP_OK_NODATA;
+                        }
+                    }
+                }
                 break;
             }
             case VIRTIOGPU_CMD_RESOURCE_FLUSH:
             {
                 VIRTIOGPURESOURCEFLUSH Cmd; RT_ZERO(Cmd);
                 if(pBuf->cbPhysSend<sizeof(Cmd)-sizeof(Cmd.Hdr) || RT_FAILURE(virtioGpuR3Read(pDevIns,pVirtio,pBuf,(uint8_t *)&Cmd+sizeof(Cmd.Hdr),sizeof(Cmd)-sizeof(Cmd.Hdr)))) Resp.Hdr.uType=VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
-                else { PVIRTIOGPURESOURCE pRes=virtioGpuR3FindResource(pThis,Cmd.uResourceId); if(!pRes || !virtioGpuR3RectValid(pRes,Cmd.uX,Cmd.uY,Cmd.uWidth,Cmd.uHeight)) Resp.Hdr.uType=VIRTIOGPU_RESP_ERR_INVALID_PARAMETER; else { for(unsigned i=0;i<VIRTIOGPU_MAX_SCANOUTS;++i) if(pThis->aScanouts[i].uResourceId==Cmd.uResourceId) pThis->aScanouts[i].uFlushSequence++; Resp.Hdr.uType=VIRTIOGPU_RESP_OK_NODATA; } }
+                else { PVIRTIOGPURESOURCE pRes=virtioGpuR3FindResource(pThis,Cmd.uResourceId); if(!pRes || !virtioGpuR3RectValid(pRes,Cmd.uX,Cmd.uY,Cmd.uWidth,Cmd.uHeight)) Resp.Hdr.uType=VIRTIOGPU_RESP_ERR_INVALID_PARAMETER; else { PVIRTIOGPUCC pThisCC = PDMDEVINS_2_DATA_CC(pDevIns, PVIRTIOGPUCC); for(unsigned i=0;i<VIRTIOGPU_MAX_SCANOUTS;++i) if(pThis->aScanouts[i].uResourceId==Cmd.uResourceId) { pThis->aScanouts[i].uFlushSequence++; if (pThisCC->pDrv && pThisCC->pDrv->pfnUpdateRect) pThisCC->pDrv->pfnUpdateRect(pThisCC->pDrv, Cmd.uX, Cmd.uY, Cmd.uWidth, Cmd.uHeight); } Resp.Hdr.uType=VIRTIOGPU_RESP_OK_NODATA; } }
                 break;
             }
             default:
@@ -424,6 +452,32 @@ static DECLCALLBACK(void) virtioGpuR3StatusChanged(PVIRTIOCORE pVirtio, PVIRTIOC
         pThis->Config.fEventsRead = 0;
         virtioGpuR3FreeResources(pThis);
     }
+}
+
+static DECLCALLBACK(void *) virtioGpuR3QueryInterface(PPDMIBASE pInterface, const char *pszIID)
+{
+    PVIRTIOGPUCC pThisCC = RT_FROM_MEMBER(pInterface, VIRTIOGPUCC, IBase);
+    PDMIBASE_RETURN_INTERFACE(pszIID, PDMIBASE, &pThisCC->IBase);
+    return NULL;
+}
+
+static DECLCALLBACK(int) virtioGpuR3Attach(PPDMDEVINS pDevIns, unsigned iLUN, uint32_t fFlags)
+{
+    PVIRTIOGPUCC pThisCC = PDMDEVINS_2_DATA_CC(pDevIns, PVIRTIOGPUCC);
+    if (!(fFlags & PDM_TACH_FLAGS_NOT_HOT_PLUG) || iLUN != 0)
+        return VERR_INVALID_PARAMETER;
+    int rc = PDMDevHlpDriverAttach(pDevIns, iLUN, &pThisCC->IBase, &pThisCC->pDrvBase, "Display Port");
+    if (RT_SUCCESS(rc))
+    {
+        pThisCC->pDrv = PDMIBASE_QUERY_INTERFACE(pThisCC->pDrvBase, PDMIDISPLAYCONNECTOR);
+        if (!pThisCC->pDrv || !pThisCC->pDrv->pfnResize || !pThisCC->pDrv->pfnUpdateRect)
+        {
+            pThisCC->pDrv = NULL;
+            pThisCC->pDrvBase = NULL;
+            rc = VERR_PDM_MISSING_INTERFACE;
+        }
+    }
+    return rc;
 }
 
 static DECLCALLBACK(int) virtioGpuR3SaveExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM)
@@ -544,6 +598,7 @@ static DECLCALLBACK(int) virtioGpuR3Construct(PPDMDEVINS pDevIns, int iInstance,
     pThisCC->Virtio.pfnVirtqNotified = virtioGpuR3VirtqNotified;
     pThisCC->Virtio.pfnDevCapRead = virtioGpuR3DevCapRead;
     pThisCC->Virtio.pfnDevCapWrite = virtioGpuR3DevCapWrite;
+    pThisCC->IBase.pfnQueryInterface = virtioGpuR3QueryInterface;
     VIRTIOPCIPARAMS Pci;
     RT_ZERO(Pci);
     Pci.uDeviceId = DEVICE_PCI_DEVICE_ID_VIRTIO_BASE + VIRTIO_DEVICE_TYPE_GPU;
@@ -604,7 +659,7 @@ const PDMDEVREG g_DeviceVirtioGPU =
     /* .pfnReset = */          virtioGpuR3Reset,
     /* .pfnSuspend = */        NULL,
     /* .pfnResume = */         NULL,
-    /* .pfnAttach = */         NULL,
+    /* .pfnAttach = */         virtioGpuR3Attach,
     /* .pfnDetach = */         NULL,
     /* .pfnQueryInterface = */ NULL,
     /* .pfnInitComplete = */   NULL,
