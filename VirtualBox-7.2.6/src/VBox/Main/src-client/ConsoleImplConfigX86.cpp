@@ -1468,6 +1468,7 @@ int Console::i_configConstructorX86(PUVM pUVM, PVM pVM, PCVMMR3VTABLE pVMM, Auto
                     return vrc;
                 break;
             }
+#endif
             default:
                 AssertMsgFailed(("Invalid graphicsController=%d\n", enmGraphicsController));
                 return pVMM->pfnVMR3SetError(pUVM, VERR_INVALID_PARAMETER, RT_SRC_POS,

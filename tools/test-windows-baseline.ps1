@@ -6,7 +6,7 @@ $repoRoot = Split-Path $PSScriptRoot -Parent
 $binRoot = Join-Path $repoRoot 'VirtualBox-7.2.6\out\win.amd64\release\bin'
 $reportRoot = Join-Path $repoRoot '.build\windows'
 $results = @()
-$requiredFiles = @('VBoxRT.dll', 'VBoxVMM.dll', 'VBoxDD.dll', 'VBoxDD2.dll', 'VBoxDDU.dll', 'VBoxSVC.exe', 'VBoxManage.exe', 'VBoxHeadless.exe', 'VMMR0.r0', 'VBoxSup.sys')
+$requiredFiles = @('VBoxRT.dll', 'VBoxVMM.dll', 'VBoxDD.dll', 'VBoxDD2.dll', 'VBoxDDU.dll', 'VBoxSVC.exe', 'VBoxC.dll', 'VBoxProxyStub.dll', 'VBoxManage.exe', 'VBoxHeadless.exe', 'VMMR0.r0', 'VBoxSup.sys')
 foreach ($name in $requiredFiles) {
     $path = Join-Path $binRoot $name
     if (-not (Test-Path $path)) { throw "Missing build artifact: $path" }
@@ -45,3 +45,4 @@ $report = [ordered]@{
 }
 $report | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $reportRoot 'baseline-validation.json') -Encoding utf8
 Write-Host 'Baseline user-mode smoke tests passed. Guest boot and Venus require separate validation.'
+
