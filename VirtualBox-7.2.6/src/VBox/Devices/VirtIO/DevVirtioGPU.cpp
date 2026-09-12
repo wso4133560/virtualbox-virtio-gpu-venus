@@ -74,10 +74,12 @@ typedef struct VIRTIOGPU
     VkQueue hVkQueue;
     uint32_t uVkQueueFamily;
     VkPhysicalDeviceProperties VkProperties;
+    VkPhysicalDeviceMemoryProperties VkMemoryProperties;
     uint32_t uVkApiVersion;
     bool fVulkanLoader;
     bool fVulkanDevice;
     bool fVulkanQueue;
+    bool fVulkanMemory;
 #endif
 } VIRTIOGPU;
 typedef VIRTIOGPU *PVIRTIOGPU;
@@ -168,10 +170,12 @@ static int virtioGpuR3VulkanInit(PVIRTIOGPU pThis)
     pThis->hVkDevice = VK_NULL_HANDLE;
     pThis->hVkQueue = VK_NULL_HANDLE;
     pThis->uVkQueueFamily = UINT32_MAX;
+    RT_ZERO(pThis->VkMemoryProperties);
     pThis->uVkApiVersion = VK_API_VERSION_1_0;
     pThis->fVulkanLoader = false;
     pThis->fVulkanDevice = false;
     pThis->fVulkanQueue = false;
+    pThis->fVulkanMemory = false;
     char szVulkanPath[RTPATH_MAX] = "vulkan-1.dll";
 # ifdef RT_OS_WINDOWS
     char szSystemDir[RTPATH_MAX];
@@ -209,7 +213,10 @@ static int virtioGpuR3VulkanInit(PVIRTIOGPU pThis)
         (PFN_vkGetPhysicalDeviceProperties)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetPhysicalDeviceProperties");
     PFN_vkGetPhysicalDeviceQueueFamilyProperties pfnGetPhysicalDeviceQueueFamilyProperties =
         (PFN_vkGetPhysicalDeviceQueueFamilyProperties)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetPhysicalDeviceQueueFamilyProperties");
-    if (!pfnEnumeratePhysicalDevices || !pfnGetPhysicalDeviceProperties || !pfnGetPhysicalDeviceQueueFamilyProperties)
+    PFN_vkGetPhysicalDeviceMemoryProperties pfnGetPhysicalDeviceMemoryProperties =
+        (PFN_vkGetPhysicalDeviceMemoryProperties)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetPhysicalDeviceMemoryProperties");
+    if (!pfnEnumeratePhysicalDevices || !pfnGetPhysicalDeviceProperties || !pfnGetPhysicalDeviceQueueFamilyProperties
+        || !pfnGetPhysicalDeviceMemoryProperties)
         return VERR_NOT_FOUND;
     uint32_t cDevices = 0;
     vkrc = pfnEnumeratePhysicalDevices(pThis->hVkInstance, &cDevices, NULL);
@@ -224,6 +231,11 @@ static int virtioGpuR3VulkanInit(PVIRTIOGPU pThis)
     RT_ZERO(pThis->VkProperties);
     pfnGetPhysicalDeviceProperties(pThis->hVkPhysicalDevice, &pThis->VkProperties);
     pThis->fVulkanDevice = true;
+    RT_ZERO(pThis->VkMemoryProperties);
+    pfnGetPhysicalDeviceMemoryProperties(pThis->hVkPhysicalDevice, &pThis->VkMemoryProperties);
+    pThis->fVulkanMemory = pThis->VkMemoryProperties.memoryTypeCount != 0;
+    if (!pThis->fVulkanMemory)
+        return VERR_NOT_SUPPORTED;
     uint32_t cQueueFamilies = 0;
     pfnGetPhysicalDeviceQueueFamilyProperties(pThis->hVkPhysicalDevice, &cQueueFamilies, NULL);
     VkQueueFamilyProperties aQueueFamilies[16];
@@ -258,9 +270,15 @@ static int virtioGpuR3VulkanInit(PVIRTIOGPU pThis)
     pThis->fVulkanQueue = pThis->hVkQueue != VK_NULL_HANDLE;
     if (!pThis->fVulkanQueue)
         return VERR_NOT_SUPPORTED;
-    LogRel(("virtio-gpu: Vulkan host device '%s', API %u.%u.%u\n", pThis->VkProperties.deviceName,
+    VkDeviceSize cbDeviceLocal = 0;
+    for (uint32_t i = 0; i < pThis->VkMemoryProperties.memoryHeapCount; ++i)
+        if (pThis->VkMemoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+            cbDeviceLocal += pThis->VkMemoryProperties.memoryHeaps[i].size;
+    LogRel(("virtio-gpu: Vulkan host device '%s', API %u.%u.%u, memory types %u, device-local %llu MiB\n",
+            pThis->VkProperties.deviceName,
             VK_VERSION_MAJOR(pThis->VkProperties.apiVersion), VK_VERSION_MINOR(pThis->VkProperties.apiVersion),
-            VK_VERSION_PATCH(pThis->VkProperties.apiVersion)));
+            VK_VERSION_PATCH(pThis->VkProperties.apiVersion), pThis->VkMemoryProperties.memoryTypeCount,
+            (unsigned long long)(cbDeviceLocal / _1M)));
     return VINF_SUCCESS;
 }
 
@@ -291,6 +309,7 @@ static void virtioGpuR3VulkanTerm(PVIRTIOGPU pThis)
     pThis->pfnVkGetInstanceProcAddr = NULL;
     pThis->fVulkanLoader = false;
     pThis->fVulkanDevice = false;
+    pThis->fVulkanMemory = false;
 }
 
 /** Executes one short command and reads it back to prove queue execution. */

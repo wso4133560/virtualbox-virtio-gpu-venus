@@ -227,6 +227,7 @@ int main(int argc, char **argv)
     rc = virtioGpuR3VulkanInit(pGpu);
     RTTESTI_CHECK_RC(rc, VINF_SUCCESS);
     RTTESTI_CHECK(pGpu->fVulkanLoader && pGpu->fVulkanDevice && pGpu->fVulkanQueue
+                  && pGpu->fVulkanMemory && pGpu->VkMemoryProperties.memoryTypeCount != 0
                   && pGpu->hVkPhysicalDevice != VK_NULL_HANDLE && pGpu->hVkDevice != VK_NULL_HANDLE
                   && pGpu->hVkQueue != VK_NULL_HANDLE);
     RTTestSub(g_hTest, "host Vulkan queue execution probe");
