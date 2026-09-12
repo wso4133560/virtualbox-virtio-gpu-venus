@@ -70,10 +70,14 @@ typedef struct VIRTIOGPU
     PFN_vkGetInstanceProcAddr pfnVkGetInstanceProcAddr;
     VkInstance hVkInstance;
     VkPhysicalDevice hVkPhysicalDevice;
+    VkDevice hVkDevice;
+    VkQueue hVkQueue;
+    uint32_t uVkQueueFamily;
     VkPhysicalDeviceProperties VkProperties;
     uint32_t uVkApiVersion;
     bool fVulkanLoader;
     bool fVulkanDevice;
+    bool fVulkanQueue;
 #endif
 } VIRTIOGPU;
 typedef VIRTIOGPU *PVIRTIOGPU;
@@ -161,9 +165,13 @@ static int virtioGpuR3VulkanInit(PVIRTIOGPU pThis)
     pThis->pfnVkGetInstanceProcAddr = NULL;
     pThis->hVkInstance = VK_NULL_HANDLE;
     pThis->hVkPhysicalDevice = VK_NULL_HANDLE;
+    pThis->hVkDevice = VK_NULL_HANDLE;
+    pThis->hVkQueue = VK_NULL_HANDLE;
+    pThis->uVkQueueFamily = UINT32_MAX;
     pThis->uVkApiVersion = VK_API_VERSION_1_0;
     pThis->fVulkanLoader = false;
     pThis->fVulkanDevice = false;
+    pThis->fVulkanQueue = false;
     char szVulkanPath[RTPATH_MAX] = "vulkan-1.dll";
 # ifdef RT_OS_WINDOWS
     char szSystemDir[RTPATH_MAX];
@@ -199,7 +207,9 @@ static int virtioGpuR3VulkanInit(PVIRTIOGPU pThis)
         (PFN_vkEnumeratePhysicalDevices)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkEnumeratePhysicalDevices");
     PFN_vkGetPhysicalDeviceProperties pfnGetPhysicalDeviceProperties =
         (PFN_vkGetPhysicalDeviceProperties)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetPhysicalDeviceProperties");
-    if (!pfnEnumeratePhysicalDevices || !pfnGetPhysicalDeviceProperties)
+    PFN_vkGetPhysicalDeviceQueueFamilyProperties pfnGetPhysicalDeviceQueueFamilyProperties =
+        (PFN_vkGetPhysicalDeviceQueueFamilyProperties)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetPhysicalDeviceQueueFamilyProperties");
+    if (!pfnEnumeratePhysicalDevices || !pfnGetPhysicalDeviceProperties || !pfnGetPhysicalDeviceQueueFamilyProperties)
         return VERR_NOT_FOUND;
     uint32_t cDevices = 0;
     vkrc = pfnEnumeratePhysicalDevices(pThis->hVkInstance, &cDevices, NULL);
@@ -214,6 +224,40 @@ static int virtioGpuR3VulkanInit(PVIRTIOGPU pThis)
     RT_ZERO(pThis->VkProperties);
     pfnGetPhysicalDeviceProperties(pThis->hVkPhysicalDevice, &pThis->VkProperties);
     pThis->fVulkanDevice = true;
+    uint32_t cQueueFamilies = 0;
+    pfnGetPhysicalDeviceQueueFamilyProperties(pThis->hVkPhysicalDevice, &cQueueFamilies, NULL);
+    VkQueueFamilyProperties aQueueFamilies[16];
+    uint32_t cQueueFamiliesFetch = RT_MIN(cQueueFamilies, (uint32_t)RT_ELEMENTS(aQueueFamilies));
+    pfnGetPhysicalDeviceQueueFamilyProperties(pThis->hVkPhysicalDevice, &cQueueFamiliesFetch, aQueueFamilies);
+    for (uint32_t i = 0; i < cQueueFamiliesFetch; ++i)
+        if ((aQueueFamilies[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))
+            == (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))
+        {
+            pThis->uVkQueueFamily = i;
+            break;
+        }
+    if (pThis->uVkQueueFamily == UINT32_MAX)
+        return VERR_NOT_SUPPORTED;
+    PFN_vkCreateDevice pfnCreateDevice =
+        (PFN_vkCreateDevice)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkCreateDevice");
+    if (!pfnCreateDevice)
+        return VERR_NOT_FOUND;
+    float const fQueuePriority = 1.0f;
+    VkDeviceQueueCreateInfo QueueInfo = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, NULL, 0,
+                                          pThis->uVkQueueFamily, 1, &fQueuePriority };
+    VkDeviceCreateInfo DeviceInfo = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, NULL, 0, 1, &QueueInfo,
+                                      0, NULL, 0, NULL, NULL };
+    vkrc = pfnCreateDevice(pThis->hVkPhysicalDevice, &DeviceInfo, NULL, &pThis->hVkDevice);
+    if (vkrc != VK_SUCCESS)
+        return VERR_NOT_SUPPORTED;
+    PFN_vkGetDeviceQueue pfnGetDeviceQueue =
+        (PFN_vkGetDeviceQueue)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetDeviceQueue");
+    if (!pfnGetDeviceQueue)
+        return VERR_NOT_FOUND;
+    pfnGetDeviceQueue(pThis->hVkDevice, pThis->uVkQueueFamily, 0, &pThis->hVkQueue);
+    pThis->fVulkanQueue = pThis->hVkQueue != VK_NULL_HANDLE;
+    if (!pThis->fVulkanQueue)
+        return VERR_NOT_SUPPORTED;
     LogRel(("virtio-gpu: Vulkan host device '%s', API %u.%u.%u\n", pThis->VkProperties.deviceName,
             VK_VERSION_MAJOR(pThis->VkProperties.apiVersion), VK_VERSION_MINOR(pThis->VkProperties.apiVersion),
             VK_VERSION_PATCH(pThis->VkProperties.apiVersion)));
@@ -222,6 +266,16 @@ static int virtioGpuR3VulkanInit(PVIRTIOGPU pThis)
 
 static void virtioGpuR3VulkanTerm(PVIRTIOGPU pThis)
 {
+    if (pThis->hVkDevice != VK_NULL_HANDLE && pThis->pfnVkGetInstanceProcAddr)
+    {
+        PFN_vkDestroyDevice pfnDestroyDevice =
+            (PFN_vkDestroyDevice)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkDestroyDevice");
+        if (pfnDestroyDevice)
+            pfnDestroyDevice(pThis->hVkDevice, NULL);
+    }
+    pThis->hVkDevice = VK_NULL_HANDLE;
+    pThis->hVkQueue = VK_NULL_HANDLE;
+    pThis->fVulkanQueue = false;
     if (pThis->hVkInstance != VK_NULL_HANDLE && pThis->pfnVkGetInstanceProcAddr)
     {
         PFN_vkDestroyInstance pfnDestroyInstance =

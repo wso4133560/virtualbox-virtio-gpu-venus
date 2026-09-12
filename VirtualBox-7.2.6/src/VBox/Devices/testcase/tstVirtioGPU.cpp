@@ -223,10 +223,12 @@ int main(int argc, char **argv)
         return RTTestSummaryAndDestroy(g_hTest);
     }
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
-    RTTestSub(g_hTest, "host Vulkan instance and physical device probe");
+    RTTestSub(g_hTest, "host Vulkan instance, physical device and queue probe");
     rc = virtioGpuR3VulkanInit(pGpu);
     RTTESTI_CHECK_RC(rc, VINF_SUCCESS);
-    RTTESTI_CHECK(pGpu->fVulkanLoader && pGpu->fVulkanDevice && pGpu->hVkPhysicalDevice != VK_NULL_HANDLE);
+    RTTESTI_CHECK(pGpu->fVulkanLoader && pGpu->fVulkanDevice && pGpu->fVulkanQueue
+                  && pGpu->hVkPhysicalDevice != VK_NULL_HANDLE && pGpu->hVkDevice != VK_NULL_HANDLE
+                  && pGpu->hVkQueue != VK_NULL_HANDLE);
     virtioGpuR3VulkanTerm(pGpu);
 #endif
     pDev->u32Version = PDM_DEVINS_VERSION;
