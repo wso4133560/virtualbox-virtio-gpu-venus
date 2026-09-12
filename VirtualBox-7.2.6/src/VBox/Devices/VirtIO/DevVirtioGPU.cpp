@@ -292,6 +292,121 @@ static void virtioGpuR3VulkanTerm(PVIRTIOGPU pThis)
     pThis->fVulkanLoader = false;
     pThis->fVulkanDevice = false;
 }
+
+/** Executes one short command and reads it back to prove queue execution. */
+static int virtioGpuR3VulkanProbeQueue(PVIRTIOGPU pThis)
+{
+    if (!pThis->fVulkanQueue || pThis->hVkDevice == VK_NULL_HANDLE)
+        return VERR_NOT_SUPPORTED;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr =
+        (PFN_vkGetDeviceProcAddr)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetDeviceProcAddr");
+    PFN_vkGetPhysicalDeviceMemoryProperties pfnGetMemoryProperties =
+        (PFN_vkGetPhysicalDeviceMemoryProperties)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance,
+                                                                                    "vkGetPhysicalDeviceMemoryProperties");
+    if (!pfnGetDeviceProcAddr || !pfnGetMemoryProperties)
+        return VERR_NOT_FOUND;
+# define VK_DEV_PROC(type, name) (type)pfnGetDeviceProcAddr(pThis->hVkDevice, name)
+    PFN_vkCreateCommandPool pfnCreateCommandPool = VK_DEV_PROC(PFN_vkCreateCommandPool, "vkCreateCommandPool");
+    PFN_vkDestroyCommandPool pfnDestroyCommandPool = VK_DEV_PROC(PFN_vkDestroyCommandPool, "vkDestroyCommandPool");
+    PFN_vkAllocateCommandBuffers pfnAllocateCommandBuffers = VK_DEV_PROC(PFN_vkAllocateCommandBuffers, "vkAllocateCommandBuffers");
+    PFN_vkFreeCommandBuffers pfnFreeCommandBuffers = VK_DEV_PROC(PFN_vkFreeCommandBuffers, "vkFreeCommandBuffers");
+    PFN_vkBeginCommandBuffer pfnBeginCommandBuffer = VK_DEV_PROC(PFN_vkBeginCommandBuffer, "vkBeginCommandBuffer");
+    PFN_vkEndCommandBuffer pfnEndCommandBuffer = VK_DEV_PROC(PFN_vkEndCommandBuffer, "vkEndCommandBuffer");
+    PFN_vkCmdFillBuffer pfnCmdFillBuffer = VK_DEV_PROC(PFN_vkCmdFillBuffer, "vkCmdFillBuffer");
+    PFN_vkCreateBuffer pfnCreateBuffer = VK_DEV_PROC(PFN_vkCreateBuffer, "vkCreateBuffer");
+    PFN_vkDestroyBuffer pfnDestroyBuffer = VK_DEV_PROC(PFN_vkDestroyBuffer, "vkDestroyBuffer");
+    PFN_vkGetBufferMemoryRequirements pfnGetBufferMemoryRequirements = VK_DEV_PROC(PFN_vkGetBufferMemoryRequirements, "vkGetBufferMemoryRequirements");
+    PFN_vkAllocateMemory pfnAllocateMemory = VK_DEV_PROC(PFN_vkAllocateMemory, "vkAllocateMemory");
+    PFN_vkFreeMemory pfnFreeMemory = VK_DEV_PROC(PFN_vkFreeMemory, "vkFreeMemory");
+    PFN_vkBindBufferMemory pfnBindBufferMemory = VK_DEV_PROC(PFN_vkBindBufferMemory, "vkBindBufferMemory");
+    PFN_vkMapMemory pfnMapMemory = VK_DEV_PROC(PFN_vkMapMemory, "vkMapMemory");
+    PFN_vkUnmapMemory pfnUnmapMemory = VK_DEV_PROC(PFN_vkUnmapMemory, "vkUnmapMemory");
+    PFN_vkCreateFence pfnCreateFence = VK_DEV_PROC(PFN_vkCreateFence, "vkCreateFence");
+    PFN_vkDestroyFence pfnDestroyFence = VK_DEV_PROC(PFN_vkDestroyFence, "vkDestroyFence");
+    PFN_vkQueueSubmit pfnQueueSubmit = VK_DEV_PROC(PFN_vkQueueSubmit, "vkQueueSubmit");
+    PFN_vkWaitForFences pfnWaitForFences = VK_DEV_PROC(PFN_vkWaitForFences, "vkWaitForFences");
+    if (!pfnCreateCommandPool || !pfnDestroyCommandPool || !pfnAllocateCommandBuffers || !pfnFreeCommandBuffers
+        || !pfnBeginCommandBuffer || !pfnEndCommandBuffer || !pfnCmdFillBuffer || !pfnCreateBuffer
+        || !pfnDestroyBuffer || !pfnGetBufferMemoryRequirements || !pfnAllocateMemory || !pfnFreeMemory
+        || !pfnBindBufferMemory || !pfnMapMemory || !pfnUnmapMemory || !pfnCreateFence || !pfnDestroyFence
+        || !pfnQueueSubmit || !pfnWaitForFences)
+        return VERR_NOT_FOUND;
+    VkCommandPool hPool = VK_NULL_HANDLE;
+    VkCommandBuffer hCmd = VK_NULL_HANDLE;
+    VkBuffer hBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory hMemory = VK_NULL_HANDLE;
+    VkFence hFence = VK_NULL_HANDLE;
+    int rc = VERR_NOT_SUPPORTED;
+    VkMemoryAllocateInfo AllocInfo;
+    VkCommandBufferAllocateInfo CmdAllocInfo;
+    VkCommandBufferBeginInfo BeginInfo;
+    VkFenceCreateInfo FenceInfo;
+    VkSubmitInfo SubmitInfo;
+    RT_ZERO(AllocInfo);
+    RT_ZERO(CmdAllocInfo);
+    RT_ZERO(BeginInfo);
+    RT_ZERO(FenceInfo);
+    RT_ZERO(SubmitInfo);
+    VkCommandPoolCreateInfo PoolInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, NULL, 0, pThis->uVkQueueFamily };
+    VkBufferCreateInfo BufferInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, sizeof(uint32_t),
+                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL };
+    VkMemoryRequirements MemReq;
+    VkPhysicalDeviceMemoryProperties MemProps;
+    RT_ZERO(MemReq);
+    RT_ZERO(MemProps);
+    if (pfnCreateCommandPool(pThis->hVkDevice, &PoolInfo, NULL, &hPool) != VK_SUCCESS
+        || pfnCreateBuffer(pThis->hVkDevice, &BufferInfo, NULL, &hBuffer) != VK_SUCCESS)
+        goto cleanup;
+    pfnGetBufferMemoryRequirements(pThis->hVkDevice, hBuffer, &MemReq);
+    pfnGetMemoryProperties(pThis->hVkPhysicalDevice, &MemProps);
+    uint32_t iMemoryType = UINT32_MAX;
+    for (uint32_t i = 0; i < MemProps.memoryTypeCount; ++i)
+        if ((MemReq.memoryTypeBits & RT_BIT_32(i))
+            && (MemProps.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+                == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+        {
+            iMemoryType = i;
+            break;
+        }
+    if (iMemoryType == UINT32_MAX)
+        goto cleanup;
+    AllocInfo = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, MemReq.size, iMemoryType };
+    if (pfnAllocateMemory(pThis->hVkDevice, &AllocInfo, NULL, &hMemory) != VK_SUCCESS
+        || pfnBindBufferMemory(pThis->hVkDevice, hBuffer, hMemory, 0) != VK_SUCCESS)
+        goto cleanup;
+    CmdAllocInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, NULL, hPool,
+                     VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1 };
+    if (pfnAllocateCommandBuffers(pThis->hVkDevice, &CmdAllocInfo, &hCmd) != VK_SUCCESS)
+        goto cleanup;
+    BeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
+                  VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, NULL };
+    if (pfnBeginCommandBuffer(hCmd, &BeginInfo) != VK_SUCCESS)
+        goto cleanup;
+    pfnCmdFillBuffer(hCmd, hBuffer, 0, sizeof(uint32_t), UINT32_C(0xa5a5a5a5));
+    if (pfnEndCommandBuffer(hCmd) != VK_SUCCESS)
+        goto cleanup;
+    FenceInfo = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, NULL, 0 };
+    if (pfnCreateFence(pThis->hVkDevice, &FenceInfo, NULL, &hFence) != VK_SUCCESS)
+        goto cleanup;
+    SubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, 0, NULL, NULL, 1, &hCmd, 0, NULL };
+    if (pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, hFence) != VK_SUCCESS
+        || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
+        goto cleanup;
+    void *pv = NULL;
+    if (pfnMapMemory(pThis->hVkDevice, hMemory, 0, sizeof(uint32_t), 0, &pv) == VK_SUCCESS)
+    {
+        rc = *(uint32_t *)pv == UINT32_C(0xa5a5a5a5) ? VINF_SUCCESS : VERR_MISMATCH;
+        pfnUnmapMemory(pThis->hVkDevice, hMemory);
+    }
+cleanup:
+    if (hFence != VK_NULL_HANDLE) pfnDestroyFence(pThis->hVkDevice, hFence, NULL);
+    if (hCmd != VK_NULL_HANDLE) pfnFreeCommandBuffers(pThis->hVkDevice, hPool, 1, &hCmd);
+    if (hMemory != VK_NULL_HANDLE) pfnFreeMemory(pThis->hVkDevice, hMemory, NULL);
+    if (hBuffer != VK_NULL_HANDLE) pfnDestroyBuffer(pThis->hVkDevice, hBuffer, NULL);
+    if (hPool != VK_NULL_HANDLE) pfnDestroyCommandPool(pThis->hVkDevice, hPool, NULL);
+    return rc;
+# undef VK_DEV_PROC
+}
 #endif
 
 static bool virtioGpuR3RectValid(PVIRTIOGPURESOURCE pRes, uint32_t x, uint32_t y, uint32_t w, uint32_t h)

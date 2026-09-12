@@ -229,6 +229,9 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(pGpu->fVulkanLoader && pGpu->fVulkanDevice && pGpu->fVulkanQueue
                   && pGpu->hVkPhysicalDevice != VK_NULL_HANDLE && pGpu->hVkDevice != VK_NULL_HANDLE
                   && pGpu->hVkQueue != VK_NULL_HANDLE);
+    RTTestSub(g_hTest, "host Vulkan queue execution probe");
+    rc = virtioGpuR3VulkanProbeQueue(pGpu);
+    RTTESTI_CHECK_RC(rc, VINF_SUCCESS);
     virtioGpuR3VulkanTerm(pGpu);
 #endif
     pDev->u32Version = PDM_DEVINS_VERSION;
