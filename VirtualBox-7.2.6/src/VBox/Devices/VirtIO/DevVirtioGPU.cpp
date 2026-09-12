@@ -680,6 +680,7 @@ static int virtioGpuR3VulkanFillBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes
     {
         goto cleanup;
     }
+    memcpy(pRes->pbPixels + off, (uint8_t *)pRes->pvVkMapped + off, (size_t)cb);
     rc = VINF_SUCCESS;
 cleanup:
     return rc;
@@ -725,6 +726,7 @@ static int virtioGpuR3VulkanCopyBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pSrc
         || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
         return VERR_NOT_SUPPORTED;
     memcpy((uint8_t *)pDst->pvVkMapped + offDst, (uint8_t *)pSrc->pvVkMapped + offSrc, (size_t)cbCopy);
+    memcpy(pDst->pbPixels + offDst, (uint8_t *)pDst->pvVkMapped + offDst, (size_t)cbCopy);
     return VINF_SUCCESS;
 # undef VK_COPY_PROC
 }
@@ -836,8 +838,12 @@ static int virtioGpuR3VulkanCopyBufferBatch(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE
         || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
         return VERR_NOT_SUPPORTED;
     for (uint32_t i = 0; i < cCopy; ++i)
+    {
         memcpy((uint8_t *)pDst->pvVkMapped + paCopy[i].offDst,
                (uint8_t *)pSrc->pvVkMapped + paCopy[i].offSrc, (size_t)paCopy[i].cbCopy);
+        memcpy(pDst->pbPixels + paCopy[i].offDst,
+               (uint8_t *)pDst->pvVkMapped + paCopy[i].offDst, (size_t)paCopy[i].cbCopy);
+    }
     return VINF_SUCCESS;
 # undef VK_BATCH_COPY_PROC
 }
@@ -882,8 +888,12 @@ static int virtioGpuR3VulkanFillBufferBatch(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE
         || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
         return VERR_NOT_SUPPORTED;
     for (uint32_t i = 0; i < cFill; ++i)
+    {
         if (*(uint32_t *)((uint8_t *)pRes->pvVkMapped + paFill[i].offBuffer) != paFill[i].uData)
             return VERR_MISMATCH;
+        memcpy(pRes->pbPixels + paFill[i].offBuffer,
+               (uint8_t *)pRes->pvVkMapped + paFill[i].offBuffer, (size_t)paFill[i].cbBuffer);
+    }
     return VINF_SUCCESS;
 # undef VK_BATCH_PROC
 }

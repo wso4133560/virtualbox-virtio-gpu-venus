@@ -403,13 +403,15 @@ int main(int argc, char **argv)
     RTTestSub(g_hTest, "Vulkan fill command execution and readback");
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     RTTESTI_CHECK_RC(virtioGpuR3VulkanFillBuffer(pGpu, &pGpu->aResources[0], 0, 4, UINT32_C(0x5a5a5a5a)), VINF_SUCCESS);
+    RTTESTI_CHECK(*(uint32_t *)pGpu->aResources[0].pbPixels == UINT32_C(0x5a5a5a5a));
     VIRTIOGPURESOURCECREATEBLOB BlobCopy = { 10, 0, 0, 0, UINT64_C(0x5678), 64 };
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_CREATE_BLOB, &BlobCopy, sizeof(BlobCopy), 24);
     virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     RTTESTI_CHECK_RC(virtioGpuR3VulkanCopyBuffer(pGpu, &pGpu->aResources[0], &pGpu->aResources[1], 0, 0, 4), VINF_SUCCESS);
-    RTTESTI_CHECK(*(uint32_t *)pGpu->aResources[1].pvVkMapped == UINT32_C(0x5a5a5a5a));
+    RTTESTI_CHECK(*(uint32_t *)pGpu->aResources[1].pvVkMapped == UINT32_C(0x5a5a5a5a)
+                  && *(uint32_t *)pGpu->aResources[1].pbPixels == UINT32_C(0x5a5a5a5a));
     RTTestSub(g_hTest, "persistent Vulkan submission throughput");
     VIRTIOGPUFILLCMD aBatch[8] = { { 0 } };
     for (unsigned i = 0; i < RT_ELEMENTS(aBatch); ++i)
@@ -422,6 +424,8 @@ int main(int argc, char **argv)
     }
     uint64_t const tsStart = RTTimeNanoTS();
     RTTESTI_CHECK_RC(virtioGpuR3VulkanFillBufferBatch(pGpu, &pGpu->aResources[0], aBatch, RT_ELEMENTS(aBatch)), VINF_SUCCESS);
+    for (unsigned i = 0; i < RT_ELEMENTS(aBatch); ++i)
+        RTTESTI_CHECK(*(uint32_t *)(pGpu->aResources[0].pbPixels + i * 4) == i);
     uint64_t const cNs = RTTimeNanoTS() - tsStart;
     RTTestIPrintf(RTTESTLVL_ALWAYS, "persistent Vulkan fill: 8 fills in one submission: %llu ns (%llu ns/fill)\n",
                   (unsigned long long)cNs, (unsigned long long)(cNs / 8));
@@ -524,7 +528,8 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA
-                  && *(uint32_t *)((uint8_t *)pGpu->aResources[0].pvVkMapped + 4) == uDataSecond);
+                  && *(uint32_t *)((uint8_t *)pGpu->aResources[0].pvVkMapped + 4) == uDataSecond
+                  && *(uint32_t *)(pGpu->aResources[0].pbPixels + 4) == uDataSecond);
     struct { VIRTIOGPUSUBMIT3D Hdr; uint32_t auResourceIds[2]; uint8_t abCommand[128]; } SubmitCopyBatch = { { 128, 2 }, { 9, 10 }, { 0 } };
     uint32_t uCopyType = 112;
     uint64_t uCopyCommandBuffer = 42;
@@ -558,7 +563,9 @@ int main(int argc, char **argv)
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA
                   && *(uint32_t *)((uint8_t *)pGpu->aResources[1].pvVkMapped + 0) == uData
-                  && *(uint32_t *)((uint8_t *)pGpu->aResources[1].pvVkMapped + 4) == uDataSecond);
+                  && *(uint32_t *)((uint8_t *)pGpu->aResources[1].pvVkMapped + 4) == uDataSecond
+                  && *(uint32_t *)(pGpu->aResources[1].pbPixels + 0) == uData
+                  && *(uint32_t *)(pGpu->aResources[1].pbPixels + 4) == uDataSecond);
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_CTX_DETACH_RESOURCE, &uContextCopyResource,
                    sizeof(uContextCopyResource), 24, 42);
