@@ -9,6 +9,11 @@
 #include <iprt/sg.h>
 #include <iprt/mem.h>
 #include <iprt/uuid.h>
+#include <iprt/ldr.h>
+#include <iprt/path.h>
+#ifdef RT_OS_WINDOWS
+# include <iprt/win/windows.h>
+#endif
 #include <VBox/log.h>
 #include <VBox/pci.h>
 #include <VBox/vmm/pdmdev.h>
@@ -57,6 +62,11 @@ typedef struct VIRTIOGPU
     VIRTIOGPURESOURCE aResources[VIRTIOGPU_MAX_RESOURCES];
     VIRTIOGPUSCANOUT aScanouts[VIRTIOGPU_MAX_SCANOUTS];
     uint64_t cbAllocated;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    RTLDRMOD hVulkan;
+    PFNRT pfnVkGetInstanceProcAddr;
+    bool fVulkanLoader;
+#endif
 } VIRTIOGPU;
 typedef VIRTIOGPU *PVIRTIOGPU;
 
@@ -594,6 +604,36 @@ static DECLCALLBACK(int) virtioGpuR3Construct(PPDMDEVINS pDevIns, int iInstance,
     PVIRTIOGPU pThis = PDMDEVINS_2_DATA(pDevIns, PVIRTIOGPU);
     PVIRTIOGPUCC pThisCC = PDMDEVINS_2_DATA_CC(pDevIns, PVIRTIOGPUCC);
     pThis->Config.cScanouts = 1;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    pThis->hVulkan = NIL_RTLDRMOD;
+    pThis->pfnVkGetInstanceProcAddr = NULL;
+    pThis->fVulkanLoader = false;
+    char szVulkanPath[RTPATH_MAX] = "vulkan-1.dll";
+# ifdef RT_OS_WINDOWS
+    char szSystemDir[RTPATH_MAX];
+    UINT cchSystemDir = GetSystemDirectoryA(szSystemDir, sizeof(szSystemDir));
+    if (cchSystemDir && cchSystemDir < sizeof(szSystemDir) - sizeof("\\vulkan-1.dll"))
+    {
+        RTStrCopy(szVulkanPath, sizeof(szVulkanPath), szSystemDir);
+        RTStrCat(szVulkanPath, sizeof(szVulkanPath), "\\vulkan-1.dll");
+    }
+# endif
+    int rcVulkan = RTLdrLoad(szVulkanPath, &pThis->hVulkan);
+    if (RT_SUCCESS(rcVulkan))
+        rcVulkan = RTLdrGetSymbol(pThis->hVulkan, "vkGetInstanceProcAddr", (void **)&pThis->pfnVkGetInstanceProcAddr);
+    if (RT_SUCCESS(rcVulkan) && pThis->pfnVkGetInstanceProcAddr)
+    {
+        pThis->fVulkanLoader = true;
+        LogRel(("virtio-gpu: Vulkan loader available (Venus backend probe)\n"));
+    }
+    else
+    {
+        if (pThis->hVulkan != NIL_RTLDRMOD)
+            RTLdrClose(pThis->hVulkan);
+        pThis->hVulkan = NIL_RTLDRMOD;
+        LogRel(("virtio-gpu: Vulkan loader unavailable, using software path\n"));
+    }
+#endif
     pThisCC->Virtio.pfnStatusChanged = virtioGpuR3StatusChanged;
     pThisCC->Virtio.pfnVirtqNotified = virtioGpuR3VirtqNotified;
     pThisCC->Virtio.pfnDevCapRead = virtioGpuR3DevCapRead;
@@ -630,6 +670,10 @@ static DECLCALLBACK(int) virtioGpuR3Destruct(PPDMDEVINS pDevIns)
     PVIRTIOGPU pThis = PDMDEVINS_2_DATA(pDevIns, PVIRTIOGPU);
     PVIRTIOGPUCC pThisCC = PDMDEVINS_2_DATA_CC(pDevIns, PVIRTIOGPUCC);
     virtioGpuR3FreeResources(pThis);
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    if (pThis->hVulkan != NIL_RTLDRMOD)
+        RTLdrClose(pThis->hVulkan);
+#endif
     virtioCoreR3Term(pDevIns, &pThis->Virtio, &pThisCC->Virtio);
     return VINF_SUCCESS;
 }

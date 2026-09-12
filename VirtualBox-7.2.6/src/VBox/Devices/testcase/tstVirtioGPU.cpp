@@ -195,6 +195,26 @@ int main(int argc, char **argv)
     if (rc != VINF_SUCCESS)
         return rc;
     RTTestBanner(g_hTest);
+    RTTestSub(g_hTest, "host Vulkan loader probe");
+    RTLDRMOD hVulkan = NIL_RTLDRMOD;
+    PFNRT pfnVkGetInstanceProcAddr = NULL;
+    char szVulkanPath[RTPATH_MAX] = "vulkan-1.dll";
+#ifdef RT_OS_WINDOWS
+    char szSystemDir[RTPATH_MAX];
+    UINT cchSystemDir = GetSystemDirectoryA(szSystemDir, sizeof(szSystemDir));
+    if (cchSystemDir && cchSystemDir < sizeof(szSystemDir) - sizeof("\\vulkan-1.dll"))
+    {
+        RTStrCopy(szVulkanPath, sizeof(szVulkanPath), szSystemDir);
+        RTStrCat(szVulkanPath, sizeof(szVulkanPath), "\\vulkan-1.dll");
+    }
+#endif
+    int rcVulkan = RTLdrLoad(szVulkanPath, &hVulkan);
+    if (RT_SUCCESS(rcVulkan))
+        rcVulkan = RTLdrGetSymbol(hVulkan, "vkGetInstanceProcAddr", (void **)&pfnVkGetInstanceProcAddr);
+    RTTESTI_CHECK_RC(rcVulkan, VINF_SUCCESS);
+    RTTESTI_CHECK(pfnVkGetInstanceProcAddr != NULL);
+    if (hVulkan != NIL_RTLDRMOD)
+        RTLdrClose(hVulkan);
     PPDMDEVINS pDev = (PPDMDEVINS)RTMemAllocZ(RT_UOFFSETOF(PDMDEVINS, achInstanceData) + sizeof(VIRTIOGPUCC));
     PVIRTIOGPU pGpu = (PVIRTIOGPU)RTMemAllocZ(sizeof(*pGpu));
     if (!pDev || !pGpu)

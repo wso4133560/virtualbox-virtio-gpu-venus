@@ -13,7 +13,8 @@ param(
     [switch]$CheckOnly,
     [switch]$ConfigureOnly,
     [switch]$WithoutHardening,
-    [switch]$EnableVirtioGpu
+    [switch]$EnableVirtioGpu,
+    [switch]$EnableVirtioGpuVenus
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
@@ -128,6 +129,7 @@ $local = @(
 )
 if ($WithoutHardening) { $local += 'VBOX_WITHOUT_HARDENING := 1' }
 if ($EnableVirtioGpu) { $local += 'VBOX_WITH_VIRTIO_GPU := 1' }
+if ($EnableVirtioGpuVenus) { $local += 'VBOX_WITH_VIRTIO_GPU_VENUS := 1' }
 [IO.File]::WriteAllLines($localConfig, $local, [Text.UTF8Encoding]::new($false))
 if ($ConfigureOnly) { Write-Host "Windows configuration: $buildRoot"; return }
 # Match the bundled libxml2 Makefile.kmk source list. Upstream configure.js
