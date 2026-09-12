@@ -553,7 +553,9 @@ static int virtioGpuR3VulkanResourceCreate(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE 
         || !pfnBindBufferMemory || !pfnMapMemory || !pfnUnmapMemory)
         return VERR_NOT_FOUND;
     VkBufferCreateInfo BufferInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, pRes->cbPixels,
-                                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+                                      | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
+                                      | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
                                       VK_SHARING_MODE_EXCLUSIVE, 0, NULL };
     VkMemoryRequirements MemReq;
     RT_ZERO(MemReq);
@@ -563,15 +565,23 @@ static int virtioGpuR3VulkanResourceCreate(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE 
         return VERR_NOT_SUPPORTED;
     pfnGetRequirements(pThis->hVkDevice, pRes->hVkBuffer, &MemReq);
     uint32_t iMemoryType = UINT32_MAX;
+    uint32_t iFallbackMemoryType = UINT32_MAX;
     for (uint32_t i = 0; i < pThis->VkMemoryProperties.memoryTypeCount; ++i)
         if ((MemReq.memoryTypeBits & RT_BIT_32(i))
             && (pThis->VkMemoryProperties.memoryTypes[i].propertyFlags
                 & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
                 == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
         {
-            iMemoryType = i;
-            break;
+            if (iFallbackMemoryType == UINT32_MAX)
+                iFallbackMemoryType = i;
+            if (pThis->VkMemoryProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+            {
+                iMemoryType = i;
+                break;
+            }
         }
+    if (iMemoryType == UINT32_MAX)
+        iMemoryType = iFallbackMemoryType;
     if (iMemoryType == UINT32_MAX)
         goto resource_cleanup;
     AllocInfo = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, MemReq.size, iMemoryType };
