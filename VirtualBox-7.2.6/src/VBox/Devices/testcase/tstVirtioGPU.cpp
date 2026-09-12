@@ -399,6 +399,10 @@ int main(int argc, char **argv)
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     RTTESTI_CHECK(pGpu->aResources[0].fVulkanBuffer && pGpu->aResources[0].hVkBuffer != VK_NULL_HANDLE);
 #endif
+    RTTestSub(g_hTest, "Vulkan fill command execution and readback");
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    RTTESTI_CHECK_RC(virtioGpuR3VulkanFillBuffer(pGpu, &pGpu->aResources[0], 0, 4, UINT32_C(0x5a5a5a5a)), VINF_SUCCESS);
+#endif
     Unref.id = 9;
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_UNREF, &Unref, sizeof(Unref), 24);
