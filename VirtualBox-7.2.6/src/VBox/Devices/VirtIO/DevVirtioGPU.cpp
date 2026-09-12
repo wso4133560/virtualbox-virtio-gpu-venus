@@ -32,6 +32,7 @@
 #define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(4)
 #define VIRTIOGPU_MAX_RESOURCES 256
 #define VIRTIOGPU_MAX_CONTEXTS 64
+#define VIRTIOGPU_MAX_CONTEXT_RESOURCES 64
 #define VIRTIOGPU_MAX_BACKING_ENTRIES 64
 #define VIRTIOGPU_MAX_RESOURCE_BYTES (UINT64_C(256) * _1M)
 
@@ -71,6 +72,8 @@ typedef struct VIRTIOGPUCONTEXT
     uint32_t uContextId;
     uint32_t cchName;
     char szName[64];
+    uint32_t cResources;
+    uint32_t auResourceIds[VIRTIOGPU_MAX_CONTEXT_RESOURCES];
 } VIRTIOGPUCONTEXT;
 typedef VIRTIOGPUCONTEXT *PVIRTIOGPUCONTEXT;
 
@@ -179,6 +182,14 @@ static PVIRTIOGPUCONTEXT virtioGpuR3FindContext(PVIRTIOGPU pThis, uint32_t uCont
         if (pThis->aContexts[i].fUsed && pThis->aContexts[i].uContextId == uContextId)
             return &pThis->aContexts[i];
     return NULL;
+}
+
+static bool virtioGpuR3ContextHasResource(PVIRTIOGPUCONTEXT pCtx, uint32_t uResourceId)
+{
+    for (uint32_t i = 0; i < pCtx->cResources; ++i)
+        if (pCtx->auResourceIds[i] == uResourceId)
+            return true;
+    return false;
 }
 
 static void virtioGpuR3FreeResources(PVIRTIOGPU pThis)
@@ -789,6 +800,18 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
                         virtioGpuR3VulkanResourceDestroy(pThis, pRes);
 #endif
+                        for (unsigned i = 0; i < RT_ELEMENTS(pThis->aContexts); ++i)
+                        {
+                            PVIRTIOGPUCONTEXT pCtx = &pThis->aContexts[i];
+                            for (uint32_t j = 0; j < pCtx->cResources; )
+                                if (pCtx->auResourceIds[j] == Cmd.id)
+                                {
+                                    pCtx->auResourceIds[j] = pCtx->auResourceIds[--pCtx->cResources];
+                                    pCtx->auResourceIds[pCtx->cResources] = 0;
+                                }
+                                else
+                                    ++j;
+                        }
                         pThis->cbAllocated -= pRes->cbPixels; RT_ZERO(*pRes);
                         Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
                     }
@@ -834,6 +857,43 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                     else
                     {
                         RT_ZERO(*pCtx);
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
+                    }
+                }
+                break;
+            }
+            case VIRTIOGPU_CMD_CTX_ATTACH_RESOURCE:
+            case VIRTIOGPU_CMD_CTX_DETACH_RESOURCE:
+            {
+                uint32_t uResourceId = 0;
+                PVIRTIOGPUCONTEXT pCtx = virtioGpuR3FindContext(pThis, Req.uCtxId);
+                if (!pCtx || pBuf->cbPhysSend < sizeof(uResourceId)
+                    || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf, &uResourceId, sizeof(uResourceId))))
+                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                else if (!virtioGpuR3FindResource(pThis, uResourceId))
+                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_RESOURCE_ID;
+                else if (Req.uType == VIRTIOGPU_CMD_CTX_ATTACH_RESOURCE)
+                {
+                    if (virtioGpuR3ContextHasResource(pCtx, uResourceId)
+                        || pCtx->cResources >= VIRTIOGPU_MAX_CONTEXT_RESOURCES)
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                    else
+                    {
+                        pCtx->auResourceIds[pCtx->cResources++] = uResourceId;
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
+                    }
+                }
+                else
+                {
+                    uint32_t iResource = 0;
+                    while (iResource < pCtx->cResources && pCtx->auResourceIds[iResource] != uResourceId)
+                        ++iResource;
+                    if (iResource == pCtx->cResources)
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                    else
+                    {
+                        pCtx->auResourceIds[iResource] = pCtx->auResourceIds[--pCtx->cResources];
+                        pCtx->auResourceIds[pCtx->cResources] = 0;
                         Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
                     }
                 }
@@ -1083,6 +1143,8 @@ static DECLCALLBACK(int) virtioGpuR3SaveExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
             rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, pCtx->uContextId);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, pCtx->cchName);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutMem(pSSM, pCtx->szName, sizeof(pCtx->szName));
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, pCtx->cResources);
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutMem(pSSM, pCtx->auResourceIds, sizeof(pCtx->auResourceIds));
         }
     }
     for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aScanouts); ++i)
@@ -1175,6 +1237,17 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
                                    || virtioGpuR3FindContext(pThis, pCtx->uContextId) != pCtx))
                 rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetMem(pSSM, pCtx->szName, sizeof(pCtx->szName));
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &pCtx->cResources);
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetMem(pSSM, pCtx->auResourceIds, sizeof(pCtx->auResourceIds));
+            if (RT_SUCCESS(rc) && pCtx->cResources > VIRTIOGPU_MAX_CONTEXT_RESOURCES)
+                rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
+            for (uint32_t j = 0; RT_SUCCESS(rc) && j < pCtx->cResources; ++j)
+                if (!virtioGpuR3FindResource(pThis, pCtx->auResourceIds[j]))
+                    rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
+                else
+                    for (uint32_t k = 0; k < j; ++k)
+                        if (pCtx->auResourceIds[k] == pCtx->auResourceIds[j])
+                            rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
             if (RT_FAILURE(rc))
                 RT_ZERO(*pCtx);
         }
