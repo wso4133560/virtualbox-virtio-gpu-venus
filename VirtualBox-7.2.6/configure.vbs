@@ -823,11 +823,13 @@ class VisualCPPState
          end if
 
          ' Check that it's a supported version
+         ' VS2022 may localize cl.exe output; its path identifies the supported 17.x toolchain.
+         if strVer = "" and InStr(1, LCase(strClExe), "2022") > 0 then strVer = "17.0"
          checkClExe = True
          if InStr(1, strVer, "16.") = 1 then
             m_strVersion = "VCC100"
          elseif InStr(1, strVer, "17.") = 1 then
-            m_strVersion = "VCC110"
+            m_strVersion = "VCC143"
             LogPrint "The Visual C++ compiler ('" & strClExe & "') version isn't really supported, but may work: " & strVer
          elseif InStr(1, strVer, "18.") = 1 then
             m_strVersion = "VCC120"
@@ -1959,7 +1961,7 @@ sub CheckForQt(strOptQt, strOptInfix)
       LogPrint "Testing qtenv2.bat links (" & ArraySize(arrCandidates) & ") ..."
 
       ' VC infixes/subdir names to consider (ASSUMES 64bit)
-      if     g_strVCCVersion = "VCC142" or g_strVCCVersion = "" then
+      if     g_strVCCVersion = "VCC142" or g_strVCCVersion = "VCC143" or g_strVCCVersion = "" then
          arrVccInfixes = Array("msvc2019_64", "msvc2017_64", "msvc2015_64")
       else
          MsgFatal "Unexpected VC version: " & g_strVCCVersion
