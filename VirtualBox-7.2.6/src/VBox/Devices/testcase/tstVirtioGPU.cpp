@@ -379,6 +379,18 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(g_cDisplayUpdates == 1);
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     RTTESTI_CHECK(!memcmp(pGpu->aResources[0].pbPixels, abPixels, sizeof(abPixels)));
+    RTTESTI_CHECK(RT_SUCCESS(virtioGpuR3VulkanFillBuffer(pGpu, &pGpu->aResources[0], 0,
+                                                         sizeof(abPixels), UINT32_C(0x11223344))));
+    memset(pGpu->aResources[0].pbPixels, 0, sizeof(abPixels));
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_FLUSH, &Flush, sizeof(Flush), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && pGpu->aScanouts[0].uFlushSequence == 2);
+    RTTESTI_CHECK(g_cDisplayUpdates == 2);
+    for (unsigned i = 0; i < RT_ELEMENTS(abPixels) / sizeof(uint32_t); ++i)
+        RTTESTI_CHECK(((uint32_t *)pGpu->aResources[0].pbPixels)[i] == UINT32_C(0x11223344));
 #endif
 
     struct { uint32_t id, padding; } Detach = { 7, 0 };

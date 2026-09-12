@@ -878,7 +878,7 @@ static int virtioGpuR3VulkanFillBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes
         goto cleanup;
     }
     memcpy(pRes->pbPixels + off, (uint8_t *)pRes->pvVkMapped + off, (size_t)cb);
-    rc = VINF_SUCCESS;
+    rc = virtioGpuR3VulkanResourceSyncImage(pThis, pRes);
 cleanup:
     return rc;
 # undef VK_FILL_PROC
@@ -924,7 +924,7 @@ static int virtioGpuR3VulkanCopyBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pSrc
         return VERR_NOT_SUPPORTED;
     memcpy((uint8_t *)pDst->pvVkMapped + offDst, (uint8_t *)pSrc->pvVkMapped + offSrc, (size_t)cbCopy);
     memcpy(pDst->pbPixels + offDst, (uint8_t *)pDst->pvVkMapped + offDst, (size_t)cbCopy);
-    return VINF_SUCCESS;
+    return virtioGpuR3VulkanResourceSyncImage(pThis, pDst);
 # undef VK_COPY_PROC
 }
 
@@ -1065,7 +1065,7 @@ static int virtioGpuR3VulkanUpdateBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pR
     if (memcmp((uint8_t *)pRes->pvVkMapped + off, pbData, (size_t)cbData) != 0)
         return VERR_MISMATCH;
     memcpy(pRes->pbPixels + off, pbData, (size_t)cbData);
-    return VINF_SUCCESS;
+    return virtioGpuR3VulkanResourceSyncImage(pThis, pRes);
 # undef VK_UPDATE_PROC
 }
 
@@ -1121,7 +1121,7 @@ static int virtioGpuR3VulkanCopyBufferBatch(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE
         memcpy(pDst->pbPixels + paCopy[i].offDst,
                (uint8_t *)pDst->pvVkMapped + paCopy[i].offDst, (size_t)paCopy[i].cbCopy);
     }
-    return VINF_SUCCESS;
+    return virtioGpuR3VulkanResourceSyncImage(pThis, pDst);
 # undef VK_BATCH_COPY_PROC
 }
 
@@ -1178,7 +1178,7 @@ static int virtioGpuR3VulkanCopyBufferRegions(PVIRTIOGPU pThis, PVIRTIOGPURESOUR
         memcpy(pDst->pbPixels + aRegions[i].dstOffset,
                (uint8_t *)pDst->pvVkMapped + aRegions[i].dstOffset, (size_t)aRegions[i].size);
     }
-    return VINF_SUCCESS;
+    return virtioGpuR3VulkanResourceSyncImage(pThis, pDst);
 # undef VK_COPY_REGIONS_PROC
 }
 
@@ -1228,7 +1228,7 @@ static int virtioGpuR3VulkanFillBufferBatch(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE
         memcpy(pRes->pbPixels + paFill[i].offBuffer,
                (uint8_t *)pRes->pvVkMapped + paFill[i].offBuffer, (size_t)paFill[i].cbBuffer);
     }
-    return VINF_SUCCESS;
+    return virtioGpuR3VulkanResourceSyncImage(pThis, pRes);
 # undef VK_BATCH_PROC
 }
 #endif
