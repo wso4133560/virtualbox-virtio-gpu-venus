@@ -33,6 +33,7 @@
 #define VIRTIOGPU_MAX_RESOURCES 256
 #define VIRTIOGPU_MAX_CONTEXTS 64
 #define VIRTIOGPU_MAX_CONTEXT_RESOURCES 64
+#define VIRTIOGPU_MAX_SUBMIT_BYTES (UINT32_C(1) * _1M)
 #define VIRTIOGPU_MAX_BACKING_ENTRIES 64
 #define VIRTIOGPU_MAX_RESOURCE_BYTES (UINT64_C(256) * _1M)
 
@@ -896,6 +897,47 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                         pCtx->auResourceIds[pCtx->cResources] = 0;
                         Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
                     }
+                }
+                break;
+            }
+            case VIRTIOGPU_CMD_SUBMIT_3D:
+            {
+                VIRTIOGPUSUBMIT3D Cmd;
+                RT_ZERO(Cmd);
+                PVIRTIOGPUCONTEXT pCtx = virtioGpuR3FindContext(pThis, Req.uCtxId);
+                if (!pCtx || pBuf->cbPhysSend < sizeof(Cmd)
+                    || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Cmd, sizeof(Cmd)))
+                    || Cmd.cbCommand > VIRTIOGPU_MAX_SUBMIT_BYTES || Cmd.cResources > VIRTIOGPU_MAX_CONTEXT_RESOURCES
+                    || pBuf->cbPhysSend < sizeof(Cmd) + (size_t)Cmd.cResources * sizeof(uint32_t) + Cmd.cbCommand)
+                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                else
+                {
+                    uint32_t auResourceIds[VIRTIOGPU_MAX_CONTEXT_RESOURCES];
+                    RT_ZERO(auResourceIds);
+                    rcReq = Cmd.cResources
+                          ? virtioGpuR3Read(pDevIns, pVirtio, pBuf, auResourceIds,
+                                            (size_t)Cmd.cResources * sizeof(uint32_t)) : VINF_SUCCESS;
+                    for (uint32_t i = 0; RT_SUCCESS(rcReq) && i < Cmd.cResources; ++i)
+                        if (!virtioGpuR3ContextHasResource(pCtx, auResourceIds[i]))
+                            rcReq = VERR_INVALID_PARAMETER;
+                    if (RT_SUCCESS(rcReq) && Cmd.cbCommand)
+                    {
+                        uint8_t *pbCommand = (uint8_t *)RTMemAlloc(Cmd.cbCommand);
+                        if (!pbCommand)
+                            rcReq = VERR_NO_MEMORY;
+                        else
+                        {
+                            rcReq = virtioGpuR3Read(pDevIns, pVirtio, pBuf, pbCommand, Cmd.cbCommand);
+                            RTMemFree(pbCommand);
+                        }
+                    }
+                    if (RT_FAILURE(rcReq))
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                    else if (Cmd.cbCommand == 0)
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
+                    else
+                        /* The full Venus serialization decoder is the next backend milestone. */
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
                 }
                 break;
             }
