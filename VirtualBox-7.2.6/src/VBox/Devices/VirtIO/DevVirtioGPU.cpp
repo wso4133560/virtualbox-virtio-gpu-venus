@@ -789,6 +789,52 @@ static bool virtioGpuR3DecodeCopyBuffer(const uint8_t *pbCommand, size_t cbComma
     return pCopy->uCommandBuffer != 0 && pCopy->uSrcBuffer != 0 && pCopy->uDstBuffer != 0
         && pCopy->cRegions == 1 && pCopy->cbRegions == 24;
 }
+
+static int virtioGpuR3VulkanFillBufferBatch(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes,
+                                             const VIRTIOGPUFILLCMD *paFill, uint32_t cFill)
+{
+    if (!cFill || !paFill || !pRes->fVulkanBuffer || !pThis->fVulkanQueue || !pThis->fVulkanSubmit)
+        return VERR_INVALID_PARAMETER;
+    for (uint32_t i = 0; i < cFill; ++i)
+        if (paFill[i].offBuffer > pRes->cbPixels || paFill[i].cbBuffer > pRes->cbPixels - paFill[i].offBuffer
+            || !paFill[i].cbBuffer || (paFill[i].offBuffer & 3) || (paFill[i].cbBuffer & 3))
+            return VERR_INVALID_PARAMETER;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr =
+        (PFN_vkGetDeviceProcAddr)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetDeviceProcAddr");
+    if (!pfnGetDeviceProcAddr)
+        return VERR_NOT_FOUND;
+# define VK_BATCH_PROC(type, name) (type)pfnGetDeviceProcAddr(pThis->hVkDevice, name)
+    PFN_vkResetCommandBuffer pfnResetCommandBuffer = VK_BATCH_PROC(PFN_vkResetCommandBuffer, "vkResetCommandBuffer");
+    PFN_vkBeginCommandBuffer pfnBeginCommandBuffer = VK_BATCH_PROC(PFN_vkBeginCommandBuffer, "vkBeginCommandBuffer");
+    PFN_vkEndCommandBuffer pfnEndCommandBuffer = VK_BATCH_PROC(PFN_vkEndCommandBuffer, "vkEndCommandBuffer");
+    PFN_vkCmdFillBuffer pfnCmdFillBuffer = VK_BATCH_PROC(PFN_vkCmdFillBuffer, "vkCmdFillBuffer");
+    PFN_vkResetFences pfnResetFences = VK_BATCH_PROC(PFN_vkResetFences, "vkResetFences");
+    PFN_vkQueueSubmit pfnQueueSubmit = VK_BATCH_PROC(PFN_vkQueueSubmit, "vkQueueSubmit");
+    PFN_vkWaitForFences pfnWaitForFences = VK_BATCH_PROC(PFN_vkWaitForFences, "vkWaitForFences");
+    if (!pfnResetCommandBuffer || !pfnBeginCommandBuffer || !pfnEndCommandBuffer || !pfnCmdFillBuffer
+        || !pfnResetFences || !pfnQueueSubmit || !pfnWaitForFences)
+        return VERR_NOT_FOUND;
+    VkCommandBuffer hCmd = pThis->hVkSubmitCommandBuffer;
+    VkFence hFence = pThis->hVkSubmitFence;
+    VkCommandBufferBeginInfo BeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
+                                           VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, NULL };
+    VkSubmitInfo SubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, 0, NULL, NULL, 1, &hCmd, 0, NULL };
+    if (pfnResetFences(pThis->hVkDevice, 1, &hFence) != VK_SUCCESS
+        || pfnResetCommandBuffer(hCmd, 0) != VK_SUCCESS
+        || pfnBeginCommandBuffer(hCmd, &BeginInfo) != VK_SUCCESS)
+        return VERR_NOT_SUPPORTED;
+    for (uint32_t i = 0; i < cFill; ++i)
+        pfnCmdFillBuffer(hCmd, pRes->hVkBuffer, paFill[i].offBuffer, paFill[i].cbBuffer, paFill[i].uData);
+    if (pfnEndCommandBuffer(hCmd) != VK_SUCCESS
+        || pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, hFence) != VK_SUCCESS
+        || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
+        return VERR_NOT_SUPPORTED;
+    for (uint32_t i = 0; i < cFill; ++i)
+        if (*(uint32_t *)((uint8_t *)pRes->pvVkMapped + paFill[i].offBuffer) != paFill[i].uData)
+            return VERR_MISMATCH;
+    return VINF_SUCCESS;
+# undef VK_BATCH_PROC
+}
 #endif
 
 static bool virtioGpuR3RectValid(PVIRTIOGPURESOURCE pRes, uint32_t x, uint32_t y, uint32_t w, uint32_t h)
@@ -1177,6 +1223,42 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                         Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
                     else
                     {
+                        if (Cmd.cbCommand > sizeof(uint32_t) * 11 && Cmd.cbCommand % 44 == 0
+                            && Cmd.cbCommand / 44 <= 256)
+                        {
+                            uint32_t const cFill = Cmd.cbCommand / 44;
+                            VIRTIOGPUFILLCMD aFill[256];
+                            PVIRTIOGPURESOURCE pBatchRes = NULL;
+                            bool fBatchValid = true;
+                            for (uint32_t i = 0; i < cFill; ++i)
+                            {
+                                if (!virtioGpuR3DecodeFillBuffer(pbCommand + i * 44, 44, &aFill[i])
+                                    || aFill[i].uBuffer > UINT32_MAX
+                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)aFill[i].uBuffer))
+                                {
+                                    fBatchValid = false;
+                                    break;
+                                }
+                                PVIRTIOGPURESOURCE pCurRes = virtioGpuR3FindResource(pThis, (uint32_t)aFill[i].uBuffer);
+                                if (!pCurRes || (pBatchRes && pBatchRes != pCurRes))
+                                {
+                                    fBatchValid = false;
+                                    break;
+                                }
+                                pBatchRes = pCurRes;
+                            }
+                            if (fBatchValid)
+                            {
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                                Resp.Hdr.uType = RT_SUCCESS(virtioGpuR3VulkanFillBufferBatch(pThis, pBatchRes,
+                                                                                               aFill, cFill))
+                                               ? VIRTIOGPU_RESP_OK_NODATA : VIRTIOGPU_RESP_ERR_UNSPEC;
+#else
+                                Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
+#endif
+                                break;
+                            }
+                        }
                         VIRTIOGPUFILLCMD Fill;
                         PVIRTIOGPURESOURCE pRes = NULL;
                         if (virtioGpuR3DecodeFillBuffer(pbCommand, Cmd.cbCommand, &Fill))

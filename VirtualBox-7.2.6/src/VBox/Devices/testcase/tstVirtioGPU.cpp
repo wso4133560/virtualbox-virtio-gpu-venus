@@ -411,11 +411,19 @@ int main(int argc, char **argv)
     RTTESTI_CHECK_RC(virtioGpuR3VulkanCopyBuffer(pGpu, &pGpu->aResources[0], &pGpu->aResources[1], 0, 0, 4), VINF_SUCCESS);
     RTTESTI_CHECK(*(uint32_t *)pGpu->aResources[1].pvVkMapped == UINT32_C(0x5a5a5a5a));
     RTTestSub(g_hTest, "persistent Vulkan submission throughput");
+    VIRTIOGPUFILLCMD aBatch[8] = { { 0 } };
+    for (unsigned i = 0; i < RT_ELEMENTS(aBatch); ++i)
+    {
+        aBatch[i].uCommandBuffer = 42;
+        aBatch[i].uBuffer = 9;
+        aBatch[i].offBuffer = i * 4;
+        aBatch[i].cbBuffer = 4;
+        aBatch[i].uData = i;
+    }
     uint64_t const tsStart = RTTimeNanoTS();
-    for (unsigned i = 0; i < 8; ++i)
-        RTTESTI_CHECK_RC(virtioGpuR3VulkanFillBuffer(pGpu, &pGpu->aResources[0], 0, 4, i), VINF_SUCCESS);
+    RTTESTI_CHECK_RC(virtioGpuR3VulkanFillBufferBatch(pGpu, &pGpu->aResources[0], aBatch, RT_ELEMENTS(aBatch)), VINF_SUCCESS);
     uint64_t const cNs = RTTimeNanoTS() - tsStart;
-    RTTestIPrintf(RTTESTLVL_ALWAYS, "persistent Vulkan fill: 8 submissions in %llu ns (%llu ns/op)\n",
+    RTTestIPrintf(RTTESTLVL_ALWAYS, "persistent Vulkan fill: 8 fills in one submission: %llu ns (%llu ns/fill)\n",
                   (unsigned long long)cNs, (unsigned long long)(cNs / 8));
     RTTestSub(g_hTest, "Venus vkCmdFillBuffer serialization boundary");
     uint8_t abCommand[44] = { 0 };
@@ -490,6 +498,20 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
+    struct { VIRTIOGPUSUBMIT3D Hdr; uint32_t uResourceId; uint8_t abCommand[88]; } SubmitBatch = { { 88, 1 }, 9, { 0 } };
+    memcpy(SubmitBatch.abCommand, SubmitCommand.abCommand, sizeof(SubmitCommand.abCommand));
+    memcpy(SubmitBatch.abCommand + 44, SubmitCommand.abCommand, sizeof(SubmitCommand.abCommand));
+    uint64_t offSecond = 4;
+    uint32_t uDataSecond = UINT32_C(0xdecafbad);
+    memcpy(SubmitBatch.abCommand + 44 + 24, &offSecond, sizeof(offSecond));
+    memcpy(SubmitBatch.abCommand + 44 + 40, &uDataSecond, sizeof(uDataSecond));
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SUBMIT_3D, &SubmitBatch, sizeof(SubmitBatch), 24, 42);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA
+                  && *(uint32_t *)((uint8_t *)pGpu->aResources[0].pvVkMapped + 4) == uDataSecond);
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_CTX_DETACH_RESOURCE, &uContextResource,
                    sizeof(uContextResource), 24, 42);
@@ -532,10 +554,10 @@ int main(int argc, char **argv)
     };
     for (unsigned i = 0; i < RT_ELEMENTS(aCases); ++i)
     {
-        uint16_t uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+        uint16_t const uBeforeShort = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
         tstPost(&pGpu->Virtio, 0, aCases[i].cbSend, aCases[i].cbReturn, aCases[i].uType, aCases[i].fFlags);
         virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
-        RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == aCases[i].cbUsed);
+        RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBeforeShort) == aCases[i].cbUsed);
         if (aCases[i].cbUsed)
         {
             memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
