@@ -29,7 +29,7 @@
 # error "VirtIO-GPU currently runs entirely in ring 3."
 #endif
 
-#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(2)
+#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(3)
 #define VIRTIOGPU_MAX_RESOURCES 256
 #define VIRTIOGPU_MAX_BACKING_ENTRIES 64
 #define VIRTIOGPU_MAX_RESOURCE_BYTES (UINT64_C(256) * _1M)
@@ -41,6 +41,7 @@ typedef struct VIRTIOGPURESOURCE
     uint32_t uFormat;
     uint32_t uWidth;
     uint32_t uHeight;
+    bool fBlob;
     uint32_t cBacking;
     uint64_t cbPixels;
     uint8_t *pbPixels;
@@ -679,6 +680,75 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                 }
                 break;
             }
+            case VIRTIOGPU_CMD_RESOURCE_CREATE_BLOB:
+            {
+                VIRTIOGPURESOURCECREATEBLOB Cmd;
+                RT_ZERO(Cmd);
+                if (pBuf->cbPhysSend < sizeof(Cmd) || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Cmd, sizeof(Cmd)))
+                    || !Cmd.uResourceId || virtioGpuR3FindResource(pThis, Cmd.uResourceId)
+                    || !Cmd.cbBlob || Cmd.cbBlob > VIRTIOGPU_MAX_RESOURCE_BYTES || (Cmd.cbBlob & 3)
+                    || Cmd.cEntries > VIRTIOGPU_MAX_BACKING_ENTRIES
+                    || pBuf->cbPhysSend < sizeof(Cmd) + (size_t)Cmd.cEntries * sizeof(VIRTIOGPUMEMENTRY))
+                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                else
+                {
+                    PVIRTIOGPURESOURCE pRes = NULL;
+                    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aResources); ++i)
+                        if (!pThis->aResources[i].fUsed) { pRes = &pThis->aResources[i]; break; }
+                    if (!pRes || pThis->cbAllocated > VIRTIOGPU_MAX_RESOURCE_BYTES - Cmd.cbBlob
+                        || Cmd.cbBlob / 4 > UINT32_MAX)
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_OUT_OF_MEMORY;
+                    else
+                    {
+                        pRes->pbPixels = (uint8_t *)RTMemAllocZ((size_t)Cmd.cbBlob);
+                        if (!pRes->pbPixels)
+                            Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_OUT_OF_MEMORY;
+                        else
+                        {
+                            pRes->fUsed = true;
+                            pRes->fBlob = true;
+                            pRes->uResourceId = Cmd.uResourceId;
+                            pRes->uWidth = (uint32_t)(Cmd.cbBlob / 4);
+                            pRes->uHeight = 1;
+                            pRes->cbPixels = (size_t)Cmd.cbBlob;
+                            pRes->cBacking = Cmd.cEntries;
+                            if (Cmd.cEntries)
+                            {
+                                rcReq = virtioGpuR3Read(pDevIns, pVirtio, pBuf, pRes->aBacking,
+                                                        (size_t)Cmd.cEntries * sizeof(VIRTIOGPUMEMENTRY));
+                                uint64_t cbBacking = 0;
+                                for (uint32_t i = 0; RT_SUCCESS(rcReq) && i < Cmd.cEntries; ++i)
+                                    if (pRes->aBacking[i].GCPhys > UINT64_MAX - pRes->aBacking[i].cb
+                                        || cbBacking > UINT64_MAX - pRes->aBacking[i].cb)
+                                        rcReq = VERR_OUT_OF_RANGE;
+                                    else
+                                        cbBacking += pRes->aBacking[i].cb;
+                                if (RT_FAILURE(rcReq) || cbBacking < Cmd.cbBlob)
+                                    rcReq = VERR_INVALID_PARAMETER;
+                            }
+                            if (RT_SUCCESS(rcReq))
+                            {
+                                pThis->cbAllocated += pRes->cbPixels;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                                rcReq = virtioGpuR3VulkanResourceCreate(pThis, pRes);
+#endif
+                            }
+                            if (RT_FAILURE(rcReq))
+                            {
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                                virtioGpuR3VulkanResourceDestroy(pThis, pRes);
+#endif
+                                RTMemFree(pRes->pbPixels);
+                                RT_ZERO(*pRes);
+                                Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                            }
+                            else
+                                Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
+                        }
+                    }
+                }
+                break;
+            }
             case VIRTIOGPU_CMD_RESOURCE_UNREF:
             {
                 struct { uint32_t id, padding; } Cmd;
@@ -928,7 +998,8 @@ static DECLCALLBACK(int) virtioGpuR3SaveExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
         if (RT_SUCCESS(rc) && pThis->aResources[i].fUsed)
         {
             PVIRTIOGPURESOURCE pRes = &pThis->aResources[i];
-            rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, pRes->uResourceId);
+            rc = pDevIns->pHlpR3->pfnSSMPutBool(pSSM, pRes->fBlob);
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, pRes->uResourceId);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, pRes->uFormat);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, pRes->uWidth);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, pRes->uHeight);
@@ -962,14 +1033,16 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
         {
             PVIRTIOGPURESOURCE pRes = &pThis->aResources[i];
             pRes->fUsed = true;
-            rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &pRes->uResourceId);
+            rc = pDevIns->pHlpR3->pfnSSMGetBool(pSSM, &pRes->fBlob);
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &pRes->uResourceId);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &pRes->uFormat);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &pRes->uWidth);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &pRes->uHeight);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &pRes->cBacking);
             if (RT_SUCCESS(rc) && (pRes->cBacking > VIRTIOGPU_MAX_BACKING_ENTRIES || !pRes->uResourceId
-                                   || pRes->uFormat != VIRTIOGPU_FORMAT_B8G8R8X8_UNORM
-                                   || !pRes->uWidth || !pRes->uHeight
+                                   || (!pRes->fBlob && pRes->uFormat != VIRTIOGPU_FORMAT_B8G8R8X8_UNORM)
+                                   || (pRes->fBlob && (pRes->uFormat != 0 || pRes->uHeight != 1))
+                                   || !pRes->uWidth
                                    || (uint64_t)pRes->uWidth * pRes->uHeight * 4 > VIRTIOGPU_MAX_RESOURCE_BYTES))
                 rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetMem(pSSM, pRes->aBacking, sizeof(pRes->aBacking));
