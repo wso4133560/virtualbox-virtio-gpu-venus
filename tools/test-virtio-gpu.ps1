@@ -62,7 +62,8 @@ if ($bufferCopyMatch.Success) {
         batchNsPerCopy = [uint64]$bufferCopyMatch.Groups['perCopy'].Value
     }
 }
-$passed = $passed -and $null -ne $bufferCopy
+$bufferCopyValid = $null -ne $bufferCopy -and $bufferCopy.single8Ns -gt 0 -and $bufferCopy.batch8Ns -gt 0 -and $bufferCopy.batchNsPerCopy -gt 0
+$passed = $passed -and $bufferCopyValid
 
 # Verify the production configuration hand-off that the standalone callback test
 # cannot exercise without a registered COM server and a bootable guest image.
@@ -125,6 +126,7 @@ $report = [ordered]@{
     requiredGroups = $requiredGroups
     missingGroups = $missingGroups
     persistentBufferCopy = $bufferCopy
+    persistentBufferCopyValid = $bufferCopyValid
     hostVulkan = $hostVulkan
     configurationChain = $configChain
     artifacts = @($artifacts)
