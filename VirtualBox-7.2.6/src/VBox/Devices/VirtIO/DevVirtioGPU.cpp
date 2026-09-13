@@ -72,6 +72,7 @@ typedef struct VIRTIOGPURESOURCE
     VkDeviceMemory hVkImageMemory;
     VkImageLayout enmVkImageLayout;
     bool fVulkanBuffer;
+    bool fVulkanMemoryCoherent;
     bool fVulkanImage;
     bool fVulkanImageDirty;
 #endif
@@ -147,6 +148,7 @@ typedef VIRTIOGPUCC *PVIRTIOGPUCC;
 static int virtioGpuR3VulkanResourceCreate(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes);
 static void virtioGpuR3VulkanResourceDestroy(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes);
 static int virtioGpuR3VulkanResourceSync(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes);
+static int virtioGpuR3VulkanResourceMemoryOp(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes, bool fInvalidate);
 #endif
 
 static DECLCALLBACK(int) virtioGpuR3DevCapRead(PPDMDEVINS pDevIns, uint32_t offCap, void *pvBuf, uint32_t cbRead)
@@ -694,6 +696,27 @@ static int virtioGpuR3VulkanImageCreate(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRe
 # undef VK_IMAGE_PROC
 }
 
+/** Flush or invalidate a non-coherent host-visible resource mapping. */
+static int virtioGpuR3VulkanResourceMemoryOp(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes, bool fInvalidate)
+{
+    if (!pRes->fVulkanBuffer || pRes->fVulkanMemoryCoherent || pThis->hVkDevice == VK_NULL_HANDLE)
+        return VINF_SUCCESS;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr =
+        (PFN_vkGetDeviceProcAddr)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetDeviceProcAddr");
+    if (!pfnGetDeviceProcAddr)
+        return VERR_NOT_FOUND;
+    PFN_vkFlushMappedMemoryRanges pfnFlushMappedMemoryRanges =
+        (PFN_vkFlushMappedMemoryRanges)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkFlushMappedMemoryRanges");
+    PFN_vkInvalidateMappedMemoryRanges pfnInvalidateMappedMemoryRanges =
+        (PFN_vkInvalidateMappedMemoryRanges)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkInvalidateMappedMemoryRanges");
+    if ((fInvalidate && !pfnInvalidateMappedMemoryRanges) || (!fInvalidate && !pfnFlushMappedMemoryRanges))
+        return VERR_NOT_FOUND;
+    VkMappedMemoryRange Range = { VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, NULL, pRes->hVkMemory, 0, VK_WHOLE_SIZE };
+    VkResult const vkrc = fInvalidate ? pfnInvalidateMappedMemoryRanges(pThis->hVkDevice, 1, &Range)
+                                      : pfnFlushMappedMemoryRanges(pThis->hVkDevice, 1, &Range);
+    return vkrc == VK_SUCCESS ? VINF_SUCCESS : VERR_NOT_SUPPORTED;
+}
+
 static int virtioGpuR3VulkanResourceCreate(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes)
 {
     pRes->hVkBuffer = VK_NULL_HANDLE;
@@ -703,6 +726,7 @@ static int virtioGpuR3VulkanResourceCreate(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE 
     pRes->hVkImageMemory = VK_NULL_HANDLE;
     pRes->enmVkImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     pRes->fVulkanBuffer = false;
+    pRes->fVulkanMemoryCoherent = false;
     pRes->fVulkanImage = false;
     pRes->fVulkanImageDirty = false;
     if (!pThis->fVulkanMemory || pThis->hVkDevice == VK_NULL_HANDLE)
@@ -739,9 +763,7 @@ static int virtioGpuR3VulkanResourceCreate(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE 
     uint32_t iFallbackMemoryType = UINT32_MAX;
     for (uint32_t i = 0; i < pThis->VkMemoryProperties.memoryTypeCount; ++i)
         if ((MemReq.memoryTypeBits & RT_BIT_32(i))
-            && (pThis->VkMemoryProperties.memoryTypes[i].propertyFlags
-                & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
-                == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+            && (pThis->VkMemoryProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
         {
             if (iFallbackMemoryType == UINT32_MAX)
                 iFallbackMemoryType = i;
@@ -762,7 +784,11 @@ static int virtioGpuR3VulkanResourceCreate(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE 
     if (pfnMapMemory(pThis->hVkDevice, pRes->hVkMemory, 0, VK_WHOLE_SIZE, 0, &pRes->pvVkMapped) != VK_SUCCESS)
         goto resource_cleanup;
     pRes->fVulkanBuffer = true;
+    pRes->fVulkanMemoryCoherent = (pThis->VkMemoryProperties.memoryTypes[iMemoryType].propertyFlags
+                                    & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
     memcpy(pRes->pvVkMapped, pRes->pbPixels, (size_t)pRes->cbPixels);
+    if (RT_FAILURE(virtioGpuR3VulkanResourceMemoryOp(pThis, pRes, false)))
+        goto resource_cleanup;
     if (!pRes->fBlob)
     {
         int const rcImage = virtioGpuR3VulkanImageCreate(pThis, pRes);
@@ -791,6 +817,7 @@ resource_cleanup:
     pRes->hVkMemory = VK_NULL_HANDLE;
     pRes->hVkBuffer = VK_NULL_HANDLE;
     pRes->pvVkMapped = NULL;
+    pRes->fVulkanMemoryCoherent = false;
     return VERR_NOT_SUPPORTED;
 # undef VK_RES_PROC
 }
@@ -825,6 +852,7 @@ static void virtioGpuR3VulkanResourceDestroy(PVIRTIOGPU pThis, PVIRTIOGPURESOURC
     pRes->hVkImageMemory = VK_NULL_HANDLE;
     pRes->enmVkImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     pRes->fVulkanBuffer = false;
+    pRes->fVulkanMemoryCoherent = false;
     pRes->fVulkanImage = false;
 }
 
@@ -929,6 +957,9 @@ static int virtioGpuR3VulkanResourceReadbackImage(PVIRTIOGPU pThis, PVIRTIOGPURE
         || pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, hFence) != VK_SUCCESS
         || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
         return VERR_NOT_SUPPORTED;
+    int const rcInvalidate = virtioGpuR3VulkanResourceMemoryOp(pThis, pRes, true);
+    if (RT_FAILURE(rcInvalidate))
+        return rcInvalidate;
     pRes->enmVkImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     memcpy(pRes->pbPixels, pRes->pvVkMapped, (size_t)pRes->cbPixels);
     pRes->fVulkanImageDirty = false;
@@ -938,7 +969,9 @@ static int virtioGpuR3VulkanResourceReadbackImage(PVIRTIOGPU pThis, PVIRTIOGPURE
 
 static int virtioGpuR3VulkanResourceEnsureBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes)
 {
-    return pRes->fVulkanImageDirty ? virtioGpuR3VulkanResourceReadbackImage(pThis, pRes) : VINF_SUCCESS;
+    if (pRes->fVulkanImageDirty)
+        return virtioGpuR3VulkanResourceReadbackImage(pThis, pRes);
+    return virtioGpuR3VulkanResourceMemoryOp(pThis, pRes, false);
 }
 
 static int virtioGpuR3VulkanResourceSync(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes)
@@ -946,6 +979,9 @@ static int virtioGpuR3VulkanResourceSync(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pR
     if (!pRes->fVulkanBuffer || !pRes->pbPixels || !pRes->pvVkMapped)
         return VINF_SUCCESS;
     memcpy(pRes->pvVkMapped, pRes->pbPixels, (size_t)pRes->cbPixels);
+    int const rcFlush = virtioGpuR3VulkanResourceMemoryOp(pThis, pRes, false);
+    if (RT_FAILURE(rcFlush))
+        return rcFlush;
     return virtioGpuR3VulkanResourceSyncImage(pThis, pRes);
 }
 
@@ -987,6 +1023,8 @@ static int virtioGpuR3VulkanFillBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes
     if (pfnEndCommandBuffer(hCmd) != VK_SUCCESS
         || pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, hFence) != VK_SUCCESS
         || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
+        goto cleanup;
+    if (RT_FAILURE(virtioGpuR3VulkanResourceMemoryOp(pThis, pRes, true)))
         goto cleanup;
     if (*(uint32_t *)((uint8_t *)pRes->pvVkMapped + off) != uData)
     {
@@ -1043,6 +1081,12 @@ static int virtioGpuR3VulkanCopyBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pSrc
         || pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, hFence) != VK_SUCCESS
         || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
         return VERR_NOT_SUPPORTED;
+    int rcInvalidate = virtioGpuR3VulkanResourceMemoryOp(pThis, pSrc, true);
+    if (RT_FAILURE(rcInvalidate))
+        return rcInvalidate;
+    rcInvalidate = virtioGpuR3VulkanResourceMemoryOp(pThis, pDst, true);
+    if (RT_FAILURE(rcInvalidate))
+        return rcInvalidate;
     memcpy((uint8_t *)pDst->pvVkMapped + offDst, (uint8_t *)pSrc->pvVkMapped + offSrc, (size_t)cbCopy);
     memcpy(pDst->pbPixels + offDst, (uint8_t *)pDst->pvVkMapped + offDst, (size_t)cbCopy);
     return virtioGpuR3VulkanResourceSyncImage(pThis, pDst);
@@ -1565,6 +1609,9 @@ static int virtioGpuR3VulkanCopyImageToBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOUR
         || pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, hFence) != VK_SUCCESS
         || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
         return VERR_NOT_SUPPORTED;
+    int const rcInvalidate = virtioGpuR3VulkanResourceMemoryOp(pThis, pDst, true);
+    if (RT_FAILURE(rcInvalidate))
+        return rcInvalidate;
     memcpy(pDst->pbPixels, pDst->pvVkMapped, (size_t)pSrc->cbPixels);
     if (pSrc == pDst)
         pSrc->fVulkanImageDirty = false;
@@ -1765,6 +1812,9 @@ static int virtioGpuR3VulkanUpdateBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pR
         || pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, hFence) != VK_SUCCESS
         || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
         return VERR_NOT_SUPPORTED;
+    int const rcInvalidate = virtioGpuR3VulkanResourceMemoryOp(pThis, pRes, true);
+    if (RT_FAILURE(rcInvalidate))
+        return rcInvalidate;
     if (memcmp((uint8_t *)pRes->pvVkMapped + off, pbData, (size_t)cbData) != 0)
         return VERR_MISMATCH;
     memcpy(pRes->pbPixels + off, pbData, (size_t)cbData);
@@ -1823,6 +1873,12 @@ static int virtioGpuR3VulkanCopyBufferBatch(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE
         || pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, hFence) != VK_SUCCESS
         || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
         return VERR_NOT_SUPPORTED;
+    int rcInvalidate = virtioGpuR3VulkanResourceMemoryOp(pThis, pSrc, true);
+    if (RT_FAILURE(rcInvalidate))
+        return rcInvalidate;
+    rcInvalidate = virtioGpuR3VulkanResourceMemoryOp(pThis, pDst, true);
+    if (RT_FAILURE(rcInvalidate))
+        return rcInvalidate;
     for (uint32_t i = 0; i < cCopy; ++i)
     {
         memcpy((uint8_t *)pDst->pvVkMapped + paCopy[i].offDst,
@@ -1886,6 +1942,12 @@ static int virtioGpuR3VulkanCopyBufferRegions(PVIRTIOGPU pThis, PVIRTIOGPURESOUR
         || pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, hFence) != VK_SUCCESS
         || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
         return VERR_NOT_SUPPORTED;
+    int rcInvalidate = virtioGpuR3VulkanResourceMemoryOp(pThis, pSrc, true);
+    if (RT_FAILURE(rcInvalidate))
+        return rcInvalidate;
+    rcInvalidate = virtioGpuR3VulkanResourceMemoryOp(pThis, pDst, true);
+    if (RT_FAILURE(rcInvalidate))
+        return rcInvalidate;
     for (uint32_t i = 0; i < pCopy->cRegions; ++i)
     {
         memcpy((uint8_t *)pDst->pvVkMapped + aRegions[i].dstOffset,
@@ -1939,6 +2001,9 @@ static int virtioGpuR3VulkanFillBufferBatch(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE
         || pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, hFence) != VK_SUCCESS
         || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
         return VERR_NOT_SUPPORTED;
+    int rcInvalidate = virtioGpuR3VulkanResourceMemoryOp(pThis, pRes, true);
+    if (RT_FAILURE(rcInvalidate))
+        return rcInvalidate;
     for (uint32_t i = 0; i < cFill; ++i)
     {
         if (*(uint32_t *)((uint8_t *)pRes->pvVkMapped + paFill[i].offBuffer) != paFill[i].uData)
