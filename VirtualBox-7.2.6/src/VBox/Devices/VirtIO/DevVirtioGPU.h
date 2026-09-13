@@ -292,6 +292,7 @@ AssertCompileSize(VIRTIOGPUDISPLAYRESP, 408);
 #define VIRTIOGPU_FLAG_FENCE                UINT32_C(1)
 
 /* VirtIO-GPU device feature bits from the transport specification. */
+#define VIRTIOGPU_F_VIRGL                   (UINT64_C(1) << 0)
 #define VIRTIOGPU_F_RESOURCE_BLOB            (UINT64_C(1) << 3)
 #define VIRTIOGPU_F_CONTEXT_INIT             (UINT64_C(1) << 4)
 

@@ -3512,8 +3512,11 @@ static DECLCALLBACK(int) virtioGpuR3Construct(PPDMDEVINS pDevIns, int iInstance,
 #endif
     char szName[16];
     RTStrPrintf(szName, sizeof(szName), "virtio-gpu%u", iInstance);
+    uint64_t const fGpuFeatures = VIRTIOGPU_F_RESOURCE_BLOB | VIRTIOGPU_F_CONTEXT_INIT
+                                | (pThis->enmActiveBackend == VIRTIOGPU_BACKEND_VENUS
+                                   ? VIRTIOGPU_F_VIRGL : 0);
     rc = virtioCoreR3Init(pDevIns, &pThis->Virtio, &pThisCC->Virtio, &Pci, szName,
-                            VIRTIOGPU_F_RESOURCE_BLOB | VIRTIOGPU_F_CONTEXT_INIT,
+                            fGpuFeatures,
                             0, &pThis->Config, sizeof(pThis->Config), VIRTIOGPU_QUEUE_COUNT);
     if (RT_FAILURE(rc))
         return PDMDEV_SET_ERROR(pDevIns, rc, N_("virtio-gpu: failed to initialize VirtIO core"));

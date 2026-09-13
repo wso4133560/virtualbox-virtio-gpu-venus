@@ -441,7 +441,11 @@ int main(int argc, char **argv)
     pGpu->Virtio.pDevInsR3 = pDev;
     pGpu->Virtio.cVirtqs = VIRTIOGPU_QUEUE_COUNT;
     pGpu->Virtio.fDeviceStatus = VIRTIO_STATUS_DRIVER_OK;
-    pGpu->Virtio.uDeviceFeatures = VIRTIO_F_VERSION_1;
+    pGpu->Virtio.uDeviceFeatures = VIRTIO_F_VERSION_1 | VIRTIOGPU_F_RESOURCE_BLOB | VIRTIOGPU_F_CONTEXT_INIT;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    pGpu->Virtio.uDeviceFeatures |= VIRTIOGPU_F_VIRGL;
+    RTTESTI_CHECK((pGpu->Virtio.uDeviceFeatures & VIRTIOGPU_F_VIRGL) != 0);
+#endif
     pGpu->Config.cScanouts = 1;
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     pGpu->enmActiveBackend = VIRTIOGPU_BACKEND_VENUS;
