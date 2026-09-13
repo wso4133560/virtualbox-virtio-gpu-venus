@@ -62,6 +62,7 @@ if ($bufferCopyMatch.Success) {
         batchNsPerCopy = [uint64]$bufferCopyMatch.Groups['perCopy'].Value
     }
 }
+$passed = $passed -and $null -ne $bufferCopy
 
 # Verify the production configuration hand-off that the standalone callback test
 # cannot exercise without a registered COM server and a bootable guest image.
