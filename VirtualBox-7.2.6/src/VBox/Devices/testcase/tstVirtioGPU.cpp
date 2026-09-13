@@ -817,6 +817,40 @@ int main(int argc, char **argv)
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && !pGpu->aResources[1].fUsed);
 
+    RTTestSub(g_hTest, "3D resource create protocol and Vulkan backing");
+    VIRTIOGPURESOURCECREATE3D Create3D;
+    RT_ZERO(Create3D);
+    Create3D.uResourceId = 13;
+    Create3D.uTarget = VIRTIOGPU_TARGET_2D;
+    Create3D.uFormat = VIRTIOGPU_FORMAT_R8G8B8A8_UNORM;
+    Create3D.uWidth = 2;
+    Create3D.uHeight = 2;
+    Create3D.uDepth = 1;
+    Create3D.uArraySize = 1;
+    Create3D.uLastLevel = 0;
+    Create3D.cSamples = 1;
+    Create3D.fFlags = VIRTIOGPU_RESOURCE_FLAG_Y_0_TOP;
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_CREATE_3D,
+                   &Create3D.uResourceId, sizeof(Create3D) - sizeof(Create3D.Hdr), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && pGpu->aResources[1].fUsed
+                  && pGpu->aResources[1].uResourceId == 13
+                  && pGpu->aResources[1].uFormat == VIRTIOGPU_FORMAT_R8G8B8A8_UNORM
+                  && pGpu->aResources[1].uWidth == 2 && pGpu->aResources[1].uHeight == 2);
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    RTTESTI_CHECK(pGpu->aResources[1].fVulkanImage && pGpu->aResources[1].hVkImage != VK_NULL_HANDLE);
+#endif
+    struct { uint32_t id, padding; } Unref3D = { 13, 0 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_UNREF, &Unref3D, sizeof(Unref3D), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && !pGpu->aResources[1].fUsed);
+
     uint8_t abPixels[16] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
     memcpy(&g_abRam[0x6000], abPixels, sizeof(abPixels));
     struct { uint32_t id, count; VIRTIOGPUMEMENTRY Entry; } Attach = { 7, 1, { 0x6000, 16, 0 } };

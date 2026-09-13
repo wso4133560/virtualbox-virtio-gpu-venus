@@ -3337,6 +3337,58 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                 }
                 break;
             }
+            case VIRTIOGPU_CMD_RESOURCE_CREATE_3D:
+            {
+                VIRTIOGPURESOURCECREATE3D Cmd;
+                RT_ZERO(Cmd);
+                if (pBuf->cbPhysSend < sizeof(Cmd) - sizeof(Cmd.Hdr)
+                    || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf,
+                                                  (uint8_t *)&Cmd + sizeof(Cmd.Hdr), sizeof(Cmd) - sizeof(Cmd.Hdr))))
+                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                else if (Cmd.uResourceId == 0 || virtioGpuR3FindResource(pThis, Cmd.uResourceId)
+                         || Cmd.uTarget != VIRTIOGPU_TARGET_2D
+                         || (Cmd.uFormat != VIRTIOGPU_FORMAT_B8G8R8A8_UNORM
+                             && Cmd.uFormat != VIRTIOGPU_FORMAT_B8G8R8X8_UNORM
+                             && Cmd.uFormat != VIRTIOGPU_FORMAT_R8G8B8A8_UNORM)
+                         || Cmd.uWidth == 0 || Cmd.uHeight == 0 || Cmd.uWidth > 16384 || Cmd.uHeight > 16384
+                         || Cmd.uDepth != 1 || Cmd.uArraySize != 1 || Cmd.uLastLevel != 0 || Cmd.cSamples != 1
+                         || (Cmd.fFlags & ~VIRTIOGPU_RESOURCE_FLAG_Y_0_TOP)
+                         || (uint64_t)Cmd.uWidth * Cmd.uHeight * 4 > VIRTIOGPU_MAX_RESOURCE_BYTES
+                         || pThis->cbAllocated + (uint64_t)Cmd.uWidth * Cmd.uHeight * 4 > VIRTIOGPU_MAX_RESOURCE_BYTES)
+                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                else
+                {
+                    PVIRTIOGPURESOURCE pRes = NULL;
+                    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aResources); ++i)
+                        if (!pThis->aResources[i].fUsed) { pRes = &pThis->aResources[i]; break; }
+                    size_t const cbPixels = (size_t)Cmd.uWidth * Cmd.uHeight * 4;
+                    if (!pRes || !(pRes->pbPixels = (uint8_t *)RTMemAllocZ(cbPixels)))
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_OUT_OF_MEMORY;
+                    else
+                    {
+                        pRes->fUsed = true; pRes->uResourceId = Cmd.uResourceId; pRes->uFormat = Cmd.uFormat;
+                        pRes->uWidth = Cmd.uWidth; pRes->uHeight = Cmd.uHeight; pRes->cbPixels = cbPixels;
+                        pThis->cbAllocated += cbPixels;
+                        int rcBackend = VINF_SUCCESS;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                        rcBackend = virtioGpuR3VulkanResourceCreate(pThis, pRes);
+#endif
+                        if (RT_FAILURE(rcBackend))
+                        {
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                            virtioGpuR3VulkanResourceDestroy(pThis, pRes);
+#endif
+                            RTMemFree(pRes->pbPixels);
+                            pThis->cbAllocated -= pRes->cbPixels;
+                            RT_ZERO(*pRes);
+                            Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_OUT_OF_MEMORY;
+                        }
+                        else
+                            Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
+                    }
+                }
+                break;
+            }
             case VIRTIOGPU_CMD_RESOURCE_CREATE_2D:
             {
                 struct { uint32_t id, format, width, height; } Cmd;
@@ -3488,6 +3540,7 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                 break;
             }
             case VIRTIOGPU_CMD_RESOURCE_MAP_BLOB:
+            case VIRTIOGPU_CMD_RESOURCE_MAP_BLOB_LEGACY:
             {
                 VIRTIOGPURESOURCEMAPBLOB Cmd;
                 RT_ZERO(Cmd);
@@ -3524,6 +3577,7 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                 break;
             }
             case VIRTIOGPU_CMD_RESOURCE_UNMAP_BLOB:
+            case VIRTIOGPU_CMD_RESOURCE_UNMAP_BLOB_LEGACY:
             {
                 VIRTIOGPURESOURCEMAPBLOB Cmd;
                 RT_ZERO(Cmd);
