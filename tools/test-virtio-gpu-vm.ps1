@@ -4,15 +4,24 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$IsoPath,
-    [string]$RuntimeDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) 'VirtualBox-7.2.6\out\win.amd64\release\bin'),
-    [string]$VmName = ('virtio-gpu-smoke-' + [guid]::NewGuid().ToString('N').Substring(0, 8)),
+    [string]$RuntimeDirectory,
+    [string]$VmName,
     [ValidateRange(1024, 131072)][int]$MemoryMB = 4096,
     [ValidateRange(1, 300)][int]$TimeoutSeconds = 60,
     [switch]$KeepVm,
-    [string]$ReportPath = (Join-Path (Split-Path $PSScriptRoot -Parent) '.build\windows\virtio-gpu-vm-validation.json')
+    [string]$ReportPath
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $RuntimeDirectory) {
+    $RuntimeDirectory = Join-Path (Split-Path $PSScriptRoot -Parent) 'VirtualBox-7.2.6\out\win.amd64\release\bin'
+}
+if (-not $VmName) {
+    $VmName = 'virtio-gpu-smoke-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+}
+if (-not $ReportPath) {
+    $ReportPath = Join-Path (Split-Path $PSScriptRoot -Parent) '.build\windows\virtio-gpu-vm-validation.json'
+}
 $runtime = (Resolve-Path -LiteralPath $RuntimeDirectory).Path
 $vboxManage = Join-Path $runtime 'VBoxManage.exe'
 $iso = (Resolve-Path -LiteralPath $IsoPath).Path
