@@ -2959,7 +2959,8 @@ static DECLCALLBACK(int) virtioGpuR3Construct(PPDMDEVINS pDevIns, int iInstance,
     char szName[16];
     RTStrPrintf(szName, sizeof(szName), "virtio-gpu%u", iInstance);
     rc = virtioCoreR3Init(pDevIns, &pThis->Virtio, &pThisCC->Virtio, &Pci, szName,
-                            0, 0, &pThis->Config, sizeof(pThis->Config), VIRTIOGPU_QUEUE_COUNT);
+                            VIRTIOGPU_F_RESOURCE_BLOB | VIRTIOGPU_F_CONTEXT_INIT,
+                            0, &pThis->Config, sizeof(pThis->Config), VIRTIOGPU_QUEUE_COUNT);
     if (RT_FAILURE(rc))
         return PDMDEV_SET_ERROR(pDevIns, rc, N_("virtio-gpu: failed to initialize VirtIO core"));
     return PDMDevHlpSSMRegister(pDevIns, VIRTIOGPU_SAVED_STATE_VERSION, sizeof(*pThis),
