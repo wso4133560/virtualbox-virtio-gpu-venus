@@ -2203,6 +2203,10 @@ static void virtioGpuR3FillVenusCapset(VIRTIOGPUCAPSETVENUS *pCapset)
     pCapset->uVkMesaVenusProtocolSpecVersion = 1;
     pCapset->fSupportsBlobId0 = 1;
     pCapset->auVkExtensionMask1[0] = 1;
+    /* The renderer exposes a dedicated host-visible shared BAR for HOST3D
+       blobs.  Mesa's virtgpu backend uses this bit to select that guest VRAM
+       heap instead of trying to inject ordinary guest pages. */
+    pCapset->fUseGuestVram = 1;
 }
 
 /** Process one control/cursor command and enqueue one used entry. */

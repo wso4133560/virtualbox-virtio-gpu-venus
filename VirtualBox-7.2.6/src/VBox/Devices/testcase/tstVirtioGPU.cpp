@@ -550,6 +550,7 @@ int main(int argc, char **argv)
                   && CapsetResp.Capset.uVkExtCommandSerializationSpecVersion == 1
                   && CapsetResp.Capset.uVkMesaVenusProtocolSpecVersion == 1
                   && CapsetResp.Capset.fSupportsBlobId0 == 1
+                  && CapsetResp.Capset.fUseGuestVram == 1
                   && CapsetResp.Capset.auVkExtensionMask1[0] == 1);
     GetCapset.uCapsetVersion = 1;
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
