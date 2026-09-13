@@ -62,6 +62,7 @@ typedef struct VIRTIOGPURESOURCE
     VkImageLayout enmVkImageLayout;
     bool fVulkanBuffer;
     bool fVulkanImage;
+    bool fVulkanImageDirty;
 #endif
 } VIRTIOGPURESOURCE;
 typedef VIRTIOGPURESOURCE *PVIRTIOGPURESOURCE;
@@ -611,6 +612,7 @@ static int virtioGpuR3VulkanResourceCreate(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE 
     pRes->enmVkImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     pRes->fVulkanBuffer = false;
     pRes->fVulkanImage = false;
+    pRes->fVulkanImageDirty = false;
     if (!pThis->fVulkanMemory || pThis->hVkDevice == VK_NULL_HANDLE)
         return VINF_SUCCESS;
     PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr =
@@ -774,6 +776,7 @@ static int virtioGpuR3VulkanResourceSyncImage(PVIRTIOGPU pThis, PVIRTIOGPURESOUR
         || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
         return VERR_NOT_SUPPORTED;
     pRes->enmVkImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    pRes->fVulkanImageDirty = false;
     return VINF_SUCCESS;
 # undef VK_IMAGE_SYNC_PROC
 }
@@ -826,8 +829,14 @@ static int virtioGpuR3VulkanResourceReadbackImage(PVIRTIOGPU pThis, PVIRTIOGPURE
         return VERR_NOT_SUPPORTED;
     pRes->enmVkImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     memcpy(pRes->pbPixels, pRes->pvVkMapped, (size_t)pRes->cbPixels);
+    pRes->fVulkanImageDirty = false;
     return VINF_SUCCESS;
 # undef VK_IMAGE_READBACK_PROC
+}
+
+static int virtioGpuR3VulkanResourceEnsureBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes)
+{
+    return pRes->fVulkanImageDirty ? virtioGpuR3VulkanResourceReadbackImage(pThis, pRes) : VINF_SUCCESS;
 }
 
 static int virtioGpuR3VulkanResourceSync(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes)
@@ -844,6 +853,9 @@ static int virtioGpuR3VulkanFillBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes
     if (!pRes->fVulkanBuffer || !pThis->fVulkanQueue || !pThis->fVulkanSubmit || off > pRes->cbPixels
         || cb > pRes->cbPixels - off || !cb || (off & 3) || (cb & 3))
         return VERR_INVALID_PARAMETER;
+    int rcEnsure = virtioGpuR3VulkanResourceEnsureBuffer(pThis, pRes);
+    if (RT_FAILURE(rcEnsure))
+        return rcEnsure;
     PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr =
         (PFN_vkGetDeviceProcAddr)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetDeviceProcAddr");
     if (!pfnGetDeviceProcAddr)
@@ -893,6 +905,12 @@ static int virtioGpuR3VulkanCopyBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pSrc
         || offSrc > pSrc->cbPixels || cbCopy > pSrc->cbPixels - offSrc
         || offDst > pDst->cbPixels || cbCopy > pDst->cbPixels - offDst || !cbCopy)
         return VERR_INVALID_PARAMETER;
+    int rcEnsure = virtioGpuR3VulkanResourceEnsureBuffer(pThis, pSrc);
+    if (RT_FAILURE(rcEnsure))
+        return rcEnsure;
+    rcEnsure = virtioGpuR3VulkanResourceEnsureBuffer(pThis, pDst);
+    if (RT_FAILURE(rcEnsure))
+        return rcEnsure;
     PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr =
         (PFN_vkGetDeviceProcAddr)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetDeviceProcAddr");
     if (!pfnGetDeviceProcAddr)
@@ -1129,6 +1147,7 @@ static int virtioGpuR3VulkanClearColorImage(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE
         || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
         return VERR_NOT_SUPPORTED;
     pRes->enmVkImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    pRes->fVulkanImageDirty = true;
     return VINF_SUCCESS;
 # undef VK_CLEAR_IMAGE_PROC
 }
@@ -1140,6 +1159,9 @@ static int virtioGpuR3VulkanUpdateBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pR
     if (!pRes->fVulkanBuffer || !pThis->fVulkanQueue || !pThis->fVulkanSubmit || !pbData || !cbData
         || off > pRes->cbPixels || cbData > pRes->cbPixels - off)
         return VERR_INVALID_PARAMETER;
+    int rcEnsure = virtioGpuR3VulkanResourceEnsureBuffer(pThis, pRes);
+    if (RT_FAILURE(rcEnsure))
+        return rcEnsure;
     PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr =
         (PFN_vkGetDeviceProcAddr)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetDeviceProcAddr");
     if (!pfnGetDeviceProcAddr)
@@ -1183,6 +1205,12 @@ static int virtioGpuR3VulkanCopyBufferBatch(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE
     if (!cCopy || !paCopy || !pSrc->fVulkanBuffer || !pDst->fVulkanBuffer || !pThis->fVulkanQueue
         || !pThis->fVulkanSubmit)
         return VERR_INVALID_PARAMETER;
+    int rcEnsure = virtioGpuR3VulkanResourceEnsureBuffer(pThis, pSrc);
+    if (RT_FAILURE(rcEnsure))
+        return rcEnsure;
+    rcEnsure = virtioGpuR3VulkanResourceEnsureBuffer(pThis, pDst);
+    if (RT_FAILURE(rcEnsure))
+        return rcEnsure;
     for (uint32_t i = 0; i < cCopy; ++i)
         if (paCopy[i].offSrc > pSrc->cbPixels || paCopy[i].cbCopy > pSrc->cbPixels - paCopy[i].offSrc
             || paCopy[i].offDst > pDst->cbPixels || paCopy[i].cbCopy > pDst->cbPixels - paCopy[i].offDst
@@ -1238,6 +1266,12 @@ static int virtioGpuR3VulkanCopyBufferRegions(PVIRTIOGPU pThis, PVIRTIOGPURESOUR
     if (!pCopy || !pCopy->pbRegions || !pSrc->fVulkanBuffer || !pDst->fVulkanBuffer
         || !pThis->fVulkanQueue || !pThis->fVulkanSubmit)
         return VERR_INVALID_PARAMETER;
+    int rcEnsure = virtioGpuR3VulkanResourceEnsureBuffer(pThis, pSrc);
+    if (RT_FAILURE(rcEnsure))
+        return rcEnsure;
+    rcEnsure = virtioGpuR3VulkanResourceEnsureBuffer(pThis, pDst);
+    if (RT_FAILURE(rcEnsure))
+        return rcEnsure;
     VkBufferCopy aRegions[256];
     for (uint32_t i = 0; i < pCopy->cRegions; ++i)
     {
@@ -1294,6 +1328,9 @@ static int virtioGpuR3VulkanFillBufferBatch(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE
 {
     if (!cFill || !paFill || !pRes->fVulkanBuffer || !pThis->fVulkanQueue || !pThis->fVulkanSubmit)
         return VERR_INVALID_PARAMETER;
+    int rcEnsure = virtioGpuR3VulkanResourceEnsureBuffer(pThis, pRes);
+    if (RT_FAILURE(rcEnsure))
+        return rcEnsure;
     for (uint32_t i = 0; i < cFill; ++i)
         if (paFill[i].offBuffer > pRes->cbPixels || paFill[i].cbBuffer > pRes->cbPixels - paFill[i].offBuffer
             || !paFill[i].cbBuffer || (paFill[i].offBuffer & 3) || (paFill[i].cbBuffer & 3))
