@@ -246,6 +246,12 @@
           <arg choice="plain">vmsvga</arg>
           <arg choice="plain">vboxsvga</arg>
           <arg choice="plain">qemuramfb</arg>
+          <arg choice="plain">virtio-gpu</arg>
+        </group></arg>
+      <arg>--gpu-backend=<group choice="plain">
+          <arg choice="plain">auto</arg>
+          <arg choice="plain">software</arg>
+          <arg choice="plain">venus</arg>
         </group></arg>
       <arg>--snapshot-folder=<group choice="plain">
           <arg choice="plain">default</arg>
@@ -1262,10 +1268,20 @@ it unless this changes. -->
             </para></listitem>
         </varlistentry>
         <varlistentry>
-          <term><option>--graphicscontroller=none | vboxvga | vmsvga | vboxsvga</option></term>
+          <term><option>--graphicscontroller=none | vboxvga | vmsvga | vboxsvga | qemuramfb | virtio-gpu</option></term>
           <listitem><para>
               Задает используемый тип графического контроллера.
               Смотрите <xref linkend="settings-screen" />.
+            </para></listitem>
+        </varlistentry>
+        <varlistentry>
+          <term><option>--gpu-backend=auto | software | venus</option></term>
+          <listitem><para>
+              Задает backend для контроллера <literal>virtio-gpu</literal>.
+              Значение <literal>auto</literal> использует Vulkan хоста,
+              если он доступен, и иначе переключается на программный путь;
+              <literal>software</literal> отключает Vulkan хоста;
+              <literal>venus</literal> требует инициализации Vulkan хоста.
             </para></listitem>
         </varlistentry>
         <varlistentry>

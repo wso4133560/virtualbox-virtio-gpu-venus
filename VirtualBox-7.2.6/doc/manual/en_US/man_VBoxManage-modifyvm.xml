@@ -249,6 +249,12 @@
           <arg choice="plain">vmsvga</arg>
           <arg choice="plain">vboxsvga</arg>
           <arg choice="plain">qemuramfb</arg>
+          <arg choice="plain">virtio-gpu</arg>
+        </group></arg>
+      <arg>--gpu-backend=<group choice="plain">
+          <arg choice="plain">auto</arg>
+          <arg choice="plain">software</arg>
+          <arg choice="plain">venus</arg>
         </group></arg>
       <arg>--snapshot-folder=<group choice="plain">
           <arg choice="plain">default</arg>
@@ -1328,10 +1334,20 @@ it unless this changes. -->
             </para></listitem>
         </varlistentry>
         <varlistentry>
-          <term><option>--graphicscontroller=none | vboxvga | vmsvga | vboxsvga</option></term>
+          <term><option>--graphicscontroller=none | vboxvga | vmsvga | vboxsvga | qemuramfb | virtio-gpu</option></term>
           <listitem><para>
               Specifies the graphics controller type to use. See
               <xref linkend="settings-screen" />.
+            </para></listitem>
+        </varlistentry>
+        <varlistentry>
+          <term><option>--gpu-backend=auto | software | venus</option></term>
+          <listitem><para>
+              Selects the backend for the <literal>virtio-gpu</literal>
+              controller. <literal>auto</literal> uses the host Vulkan
+              backend when available and otherwise falls back to software;
+              <literal>software</literal> disables host Vulkan;
+              <literal>venus</literal> requires host Vulkan initialization.
             </para></listitem>
         </varlistentry>
         <varlistentry>

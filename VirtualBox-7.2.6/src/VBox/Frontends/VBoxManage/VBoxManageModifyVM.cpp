@@ -80,6 +80,7 @@ enum
     MODIFYVM_PLUGCPU,
     MODIFYVM_UNPLUGCPU,
     MODIFYVM_GRAPHICSCONTROLLER,
+    MODIFYVM_GPU_BACKEND,
     MODIFYVM_MONITORCOUNT,
     MODIFYVM_ACCELERATE3D,
     MODIFYVM_ACCELERATE2DVIDEO,  // deprecated
@@ -312,6 +313,7 @@ static const RTGETOPTDEF g_aModifyVMOptions[] =
     OPT2("--cpu-execution-cap",             "--cpuexecutioncap",        MODIFYVM_CPU_EXECTUION_CAP,         RTGETOPT_REQ_UINT32),
     OPT2("--rtc-use-utc",                   "--rtcuseutc",              MODIFYVM_RTCUSEUTC,                 RTGETOPT_REQ_BOOL_ONOFF),
     OPT2("--graphicscontroller",            "--graphicscontroller",     MODIFYVM_GRAPHICSCONTROLLER,        RTGETOPT_REQ_STRING),
+    OPT2("--gpu-backend",                   "--gpubackend",              MODIFYVM_GPU_BACKEND,             RTGETOPT_REQ_STRING),
     OPT2("--monitor-count",                 "--monitorcount",           MODIFYVM_MONITORCOUNT,              RTGETOPT_REQ_UINT32),
     OPT2("--accelerate-3d",                 "--accelerate3d",           MODIFYVM_ACCELERATE3D,              RTGETOPT_REQ_BOOL_ONOFF),
     /* { Kept for backwards-compatibility*/
@@ -1141,11 +1143,36 @@ RTEXITCODE handleModifyVM(HandlerArg *a)
                 else if (   !RTStrICmp(ValueUnion.psz, "qemuramfb")
                          || !RTStrICmp(ValueUnion.psz, "qemu-ramfb"))
                     CHECK_ERROR(pGraphicsAdapter, COMSETTER(GraphicsControllerType)(GraphicsControllerType_QemuRamFB));
+#ifdef VBOX_WITH_VIRTIO_GPU
+                else if (   !RTStrICmp(ValueUnion.psz, "virtio-gpu")
+                         || !RTStrICmp(ValueUnion.psz, "virtiogpu"))
+                    CHECK_ERROR(pGraphicsAdapter, COMSETTER(GraphicsControllerType)(GraphicsControllerType_VirtioGPU));
+#endif
                 else
                 {
                     errorArgument(ModifyVM::tr("Invalid --graphicscontroller argument '%s'"), ValueUnion.psz);
                     hrc = E_FAIL;
                 }
+                break;
+            }
+
+            case MODIFYVM_GPU_BACKEND:
+            {
+                const char *pszBackend = NULL;
+                if (!RTStrICmp(ValueUnion.psz, "auto"))
+                    pszBackend = "auto";
+                else if (!RTStrICmp(ValueUnion.psz, "software"))
+                    pszBackend = "software";
+                else if (!RTStrICmp(ValueUnion.psz, "venus"))
+                    pszBackend = "venus";
+                else
+                {
+                    errorArgument(ModifyVM::tr("Invalid --gpu-backend argument '%s' (use auto, software or venus)"),
+                                  ValueUnion.psz);
+                    hrc = E_FAIL;
+                    break;
+                }
+                hrc = setExtraData(sessionMachine, "VBoxInternal/Devices/virtio-gpu/0/Config/Backend", pszBackend);
                 break;
             }
 
