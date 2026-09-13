@@ -43,6 +43,35 @@ try {
 Write-Host $text
 $passed = -not $timedOut -and $testExit -eq 0 -and $text -match '(?m)^tstVirtioGPU: SUCCESS\s*$'
 $groups = @([regex]::Matches($text, '(?m)^tstVirtioGPU: (.+?)\s+: PASSED\s*$') | ForEach-Object { $_.Groups[1].Value.Trim() })
+
+# Verify the production configuration hand-off that the standalone callback test
+# cannot exercise without a registered COM server and a bootable guest image.
+$configChecks = [ordered]@{}
+$configSources = @{
+    modifyVm = Join-Path $repoRoot 'VirtualBox-7.2.6\src\VBox\Frontends\VBoxManage\VBoxManageModifyVM.cpp'
+    consoleConfig = Join-Path $repoRoot 'VirtualBox-7.2.6\src\VBox\Main\src-client\ConsoleImplConfigX86.cpp'
+    deviceConstruct = Join-Path $repoRoot 'VirtualBox-7.2.6\src\VBox\Devices\VirtIO\DevVirtioGPU.cpp'
+    deviceRegistration = Join-Path $repoRoot 'VirtualBox-7.2.6\src\VBox\Devices\build\VBoxDD.cpp'
+}
+foreach ($source in $configSources.GetEnumerator()) {
+    if (-not (Test-Path -LiteralPath $source.Value -PathType Leaf)) {
+        $configChecks[$source.Key] = $false
+        continue
+    }
+    $sourceText = Get-Content -LiteralPath $source.Value -Raw
+    $configChecks[$source.Key] = switch ($source.Key) {
+        modifyVm { $sourceText -match 'MODIFYVM_GPU_BACKEND' -and $sourceText -match 'VBoxInternal/Devices/virtio-gpu/0/Config/Backend' }
+        consoleConfig { $sourceText -match 'InsertConfigNode\(pDevices, "virtio-gpu"' -and $sourceText -match 'InsertConfigString\(pVirtioGpuInst, "Backend"' }
+        deviceConstruct { $sourceText -match 'pfnCFGMQueryStringDef\(pCfg, "Backend"' -and $sourceText -match 'virtioGpuR3ParseBackend' }
+        deviceRegistration { $sourceText -match 'g_DeviceVirtioGPU' -and $sourceText -match 'pfnRegister' }
+    }
+}
+$configChain = [ordered]@{
+    verified = @($configChecks.Values) -notcontains $false
+    checks = $configChecks
+    note = 'Static source checks cover VBoxManage -> Main CFGM -> virtio-gpu construction; real VM boot still requires COM registration and a guest ISO.'
+}
+$passed = $passed -and $configChain.verified
 $hostVulkan = $null
 $hostVulkanDeviceMatch = [regex]::Match($text, '(?m)^(?:tstVirtioGPU: )?host Vulkan device: (?<name>.+?)\s*$')
 $hostVulkanApiMatch = [regex]::Match($text, '(?m)^(?:tstVirtioGPU: )?host Vulkan api: (?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+) memoryTypes=(?<memoryTypes>\d+) deviceLocalMiB=(?<deviceLocalMiB>\d+)\s*$')
@@ -74,6 +103,7 @@ $report = [ordered]@{
     timedOut = $timedOut
     passedGroups = $groups
     hostVulkan = $hostVulkan
+    configurationChain = $configChain
     artifacts = @($artifacts)
     guestBootVerified = $false
     displayVerified = $false
