@@ -943,6 +943,24 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA
                   && !memcmp(pGpu->aResources[1].pbPixels, pGpu->aResources[0].pbPixels, sizeof(abPixels)));
 
+    RTTestSub(g_hTest, "Venus CopyBuffer2 batch submission");
+    uint8_t abCopyBuffer2BatchCommand[200] = { 0 };
+    memcpy(abCopyBuffer2BatchCommand, abCopyBuffer2Command, sizeof(abCopyBuffer2Command));
+    memcpy(abCopyBuffer2BatchCommand + sizeof(abCopyBuffer2Command), abCopyBuffer2Command,
+           sizeof(abCopyBuffer2Command));
+    struct { VIRTIOGPUSUBMIT3D Hdr; uint32_t auResourceIds[2]; uint8_t abCommand[200]; }
+        SubmitCopyBuffer2Batch = { { 200, 2 }, { 7, 11 }, { 0 } };
+    memcpy(SubmitCopyBuffer2Batch.abCommand, abCopyBuffer2BatchCommand, sizeof(abCopyBuffer2BatchCommand));
+    memset(pGpu->aResources[1].pbPixels, 0, sizeof(abPixels));
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SUBMIT_3D, &SubmitCopyBuffer2Batch,
+                   sizeof(SubmitCopyBuffer2Batch), 24, 43);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA
+                  && !memcmp(pGpu->aResources[1].pbPixels, pGpu->aResources[0].pbPixels, sizeof(abPixels)));
+
     memset(pGpu->aResources[0].pbPixels, 0, sizeof(abPixels));
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_FLUSH, &Flush, sizeof(Flush), 24);
