@@ -128,6 +128,8 @@ typedef struct VIRTIOGPU
     bool fVulkanQueue;
     bool fVulkanMemory;
     bool fVulkanSubmit;
+    bool fVulkanExternalMemory;
+    bool fVulkanExternalSemaphore;
 #endif
 } VIRTIOGPU;
 typedef VIRTIOGPU *PVIRTIOGPU;
@@ -271,6 +273,8 @@ static int virtioGpuR3VulkanInit(PVIRTIOGPU pThis)
     pThis->fVulkanQueue = false;
     pThis->fVulkanMemory = false;
     pThis->fVulkanSubmit = false;
+    pThis->fVulkanExternalMemory = false;
+    pThis->fVulkanExternalSemaphore = false;
     char szVulkanPath[RTPATH_MAX] = "vulkan-1.dll";
 # ifdef RT_OS_WINDOWS
     char szSystemDir[RTPATH_MAX];
@@ -375,6 +379,32 @@ static int virtioGpuR3VulkanInit(PVIRTIOGPU pThis)
     pThis->uVkQueueFamily = uSelectedQueueFamily;
     pThis->fVulkanDevice = true;
     pThis->fVulkanMemory = true;
+    PFN_vkEnumerateDeviceExtensionProperties pfnEnumerateDeviceExtensionProperties =
+        (PFN_vkEnumerateDeviceExtensionProperties)pThis->pfnVkGetInstanceProcAddr(
+            pThis->hVkInstance, "vkEnumerateDeviceExtensionProperties");
+    if (pfnEnumerateDeviceExtensionProperties)
+    {
+        uint32_t cExtensions = 0;
+        if (pfnEnumerateDeviceExtensionProperties(pThis->hVkPhysicalDevice, NULL, &cExtensions, NULL) == VK_SUCCESS
+            && cExtensions)
+        {
+            VkExtensionProperties *paExtensions = (VkExtensionProperties *)RTMemAllocZ(
+                sizeof(*paExtensions) * cExtensions);
+            if (paExtensions
+                && pfnEnumerateDeviceExtensionProperties(pThis->hVkPhysicalDevice, NULL, &cExtensions,
+                                                         paExtensions) == VK_SUCCESS)
+                for (uint32_t iExtension = 0; iExtension < cExtensions; ++iExtension)
+                {
+                    if (RTStrCmp(paExtensions[iExtension].extensionName, "VK_KHR_external_memory") == 0
+                        || RTStrCmp(paExtensions[iExtension].extensionName, "VK_KHR_external_memory_win32") == 0)
+                        pThis->fVulkanExternalMemory = true;
+                    if (RTStrCmp(paExtensions[iExtension].extensionName, "VK_KHR_external_semaphore") == 0
+                        || RTStrCmp(paExtensions[iExtension].extensionName, "VK_KHR_external_semaphore_win32") == 0)
+                        pThis->fVulkanExternalSemaphore = true;
+                }
+            RTMemFree(paExtensions);
+        }
+    }
     PFN_vkCreateDevice pfnCreateDevice =
         (PFN_vkCreateDevice)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkCreateDevice");
     if (!pfnCreateDevice)
@@ -426,6 +456,8 @@ static int virtioGpuR3VulkanInit(PVIRTIOGPU pThis)
             VK_VERSION_MAJOR(pThis->VkProperties.apiVersion), VK_VERSION_MINOR(pThis->VkProperties.apiVersion),
             VK_VERSION_PATCH(pThis->VkProperties.apiVersion), pThis->VkMemoryProperties.memoryTypeCount,
             (unsigned long long)(cbDeviceLocal / _1M)));
+    LogRel(("virtio-gpu: Vulkan external handles: memory=%RTbool semaphore=%RTbool\n",
+            pThis->fVulkanExternalMemory, pThis->fVulkanExternalSemaphore));
     return VINF_SUCCESS;
 }
 
@@ -476,6 +508,8 @@ static void virtioGpuR3VulkanTerm(PVIRTIOGPU pThis)
     pThis->fVulkanLoader = false;
     pThis->fVulkanDevice = false;
     pThis->fVulkanMemory = false;
+    pThis->fVulkanExternalMemory = false;
+    pThis->fVulkanExternalSemaphore = false;
 }
 
 /** Executes one short command and reads it back to prove queue execution. */
