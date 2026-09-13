@@ -43,6 +43,22 @@ try {
 Write-Host $text
 $passed = -not $timedOut -and $testExit -eq 0 -and $text -match '(?m)^tstVirtioGPU: SUCCESS\s*$'
 $groups = @([regex]::Matches($text, '(?m)^tstVirtioGPU: (.+?)\s+: PASSED\s*$') | ForEach-Object { $_.Groups[1].Value.Trim() })
+$requiredGroups = @(
+    'Vulkan RGBA8 resource format'
+    'R8G8B8A8 resource control path'
+    'Vulkan persistent buffer transfer throughput'
+)
+$missingGroups = @($requiredGroups | Where-Object { $_ -notin $groups })
+$passed = $passed -and $missingGroups.Count -eq 0
+$bufferCopyMatch = [regex]::Match($text, '(?m)^tstVirtioGPU: persistent Vulkan buffer copy: single8=(?<single>\d+) ns, batch8=(?<batch>\d+) ns \((?<perCopy>\d+) ns/copy\)\s*$')
+$bufferCopy = $null
+if ($bufferCopyMatch.Success) {
+    $bufferCopy = [ordered]@{
+        single8Ns = [uint64]$bufferCopyMatch.Groups['single'].Value
+        batch8Ns = [uint64]$bufferCopyMatch.Groups['batch'].Value
+        batchNsPerCopy = [uint64]$bufferCopyMatch.Groups['perCopy'].Value
+    }
+}
 
 # Verify the production configuration hand-off that the standalone callback test
 # cannot exercise without a registered COM server and a bootable guest image.
@@ -102,6 +118,9 @@ $report = [ordered]@{
     exitCode = $testExit
     timedOut = $timedOut
     passedGroups = $groups
+    requiredGroups = $requiredGroups
+    missingGroups = $missingGroups
+    persistentBufferCopy = $bufferCopy
     hostVulkan = $hostVulkan
     configurationChain = $configChain
     artifacts = @($artifacts)
