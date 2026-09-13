@@ -35,6 +35,7 @@
 #include <iprt/ctype.h>
 #include <iprt/sg.h>
 #include <iprt/types.h>
+#include <VBox/types.h>
 
 /*
  * WARNING! NEVER ENABLE IN PRODUCTION BUILDS!
@@ -72,6 +73,7 @@ typedef CTX_SUFF(PVIRTIOCORE) PVIRTIOCORECC;
 #define VIRTIO_NOTIFY_OFFSET_MULTIPLIER     2                    /**< VirtIO Notify Cap. MMIO config param     */
 #define VIRTIO_REGION_LEGACY_IO             0                    /**< BAR for VirtIO legacy drivers MBZ        */
 #define VIRTIO_REGION_PCI_CAP               2                    /**< BAR for VirtIO Cap. MMIO (impl specific) */
+#define VIRTIO_REGION_PCI_SHARED            4                    /**< BAR for VirtIO shared memory regions   */
 #define VIRTIO_REGION_MSIX_CAP              0                    /**< Bar for MSI-X handling                   */
 #define VIRTIO_PAGE_SIZE                 4096                    /**< Page size used by VirtIO specification   */
 
@@ -216,6 +218,9 @@ typedef struct VIRTIOPCIPARAMS
     uint16_t  uInterruptLine;                                    /**< PCI Cfg Interrupt line                    */
     uint16_t  uInterruptPin;                                     /**< PCI Cfg Interrupt pin                     */
     uint8_t   uDeviceType;                                       /**< Device type (used for Virtio-over-MMIO)   */
+    uint32_t  cbSharedMemory;                                   /**< Optional shared memory BAR size           */
+    void    **ppvSharedMemory;                                  /**< Ring-3 mapping returned for shared BAR    */
+    PPGMMMIO2HANDLE phSharedMemory;                             /**< Shared BAR MMIO2 handle                   */
 } VIRTIOPCIPARAMS, *PVIRTIOPCIPARAMS;
 
 
@@ -326,6 +331,7 @@ typedef enum VIRTIOVMSTATECHANGED
 #define VIRTIO_PCI_CAP_ISR_CFG                          3        /**< ISR PCI capability id                     */
 #define VIRTIO_PCI_CAP_DEVICE_CFG                       4        /**< Device-specific PCI cfg capability ID     */
 #define VIRTIO_PCI_CAP_PCI_CFG                          5        /**< PCI CFG capability ID                     */
+#define VIRTIO_PCI_CAP_SHARED_MEMORY_CFG                8        /**< Shared memory capability ID              */
 
 #define VIRTIO_PCI_CAP_ID_VENDOR                     0x09        /**< Vendor-specific PCI CFG Device Cap. ID    */
 
@@ -406,6 +412,13 @@ typedef struct virtio_pci_cfg_cap
     struct virtio_pci_cap pciCap;                                /**< Cap. defines the BAR/off/len to access    */
     uint8_t uPciCfgData[4];                                      /**< I/O buf for above cap.                    */
 } VIRTIO_PCI_CFG_CAP_T, *PVIRTIO_PCI_CFG_CAP_T;
+
+typedef struct virtio_pci_shm_cap
+{
+    struct virtio_pci_cap pciCap;
+    uint32_t uOffsetHi;
+    uint32_t uLengthHi;
+} VIRTIO_PCI_SHM_CAP_T, *PVIRTIO_PCI_SHM_CAP_T;
 
 /**
  * PCI capability data locations (PCI CFG and MMIO).

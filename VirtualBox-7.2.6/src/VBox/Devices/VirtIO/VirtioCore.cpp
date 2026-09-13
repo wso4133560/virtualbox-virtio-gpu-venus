@@ -3141,7 +3141,8 @@ static int virtioR3PciTransportInit(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, PVI
     pCfg->uCfgType = VIRTIO_PCI_CAP_PCI_CFG;
     pCfg->uCapVndr = VIRTIO_PCI_CAP_ID_VENDOR;
     pCfg->uCapLen  = sizeof(VIRTIO_PCI_CFG_CAP_T);
-    pCfg->uCapNext = (pVirtio->fMsiSupport || pVirtioCC->pbDevSpecificCfg) ? CFG_ADDR_2_IDX(pCfg) + pCfg->uCapLen : 0;
+    pCfg->uCapNext = (pVirtio->fMsiSupport || pVirtioCC->pbDevSpecificCfg || pPciParams->cbSharedMemory)
+                   ? CFG_ADDR_2_IDX(pCfg) + pCfg->uCapLen : 0;
     pCfg->uBar     = VIRTIO_REGION_PCI_CAP;
     pCfg->uOffset  = 0;
     pCfg->uLength  = 4;
@@ -3160,7 +3161,8 @@ static int virtioR3PciTransportInit(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, PVI
         pCfg->uCfgType = VIRTIO_PCI_CAP_DEVICE_CFG;
         pCfg->uCapVndr = VIRTIO_PCI_CAP_ID_VENDOR;
         pCfg->uCapLen  = sizeof(VIRTIO_PCI_CAP_T);
-        pCfg->uCapNext = pVirtio->fMsiSupport ? CFG_ADDR_2_IDX(pCfg) + pCfg->uCapLen : 0;
+        pCfg->uCapNext = (pVirtio->fMsiSupport || pPciParams->cbSharedMemory)
+                       ? CFG_ADDR_2_IDX(pCfg) + pCfg->uCapLen : 0;
         pCfg->uBar     = VIRTIO_REGION_PCI_CAP;
         pCfg->uOffset  = pVirtioCC->pIsrCap->uOffset + pVirtioCC->pIsrCap->uLength;
         pCfg->uOffset  = RT_ALIGN_32(pCfg->uOffset, 4);
@@ -3171,6 +3173,24 @@ static int virtioR3PciTransportInit(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, PVI
     }
     else
         Assert(pVirtio->LocDeviceCap.cbMmio == 0 && pVirtio->LocDeviceCap.cbPci == 0);
+
+    if (pPciParams->cbSharedMemory)
+    {
+        PVIRTIO_PCI_SHM_CAP_T pShm = (PVIRTIO_PCI_SHM_CAP_T)&pPciDev->abConfig[pCfg->uCapNext];
+        pShm->pciCap.uCfgType = VIRTIO_PCI_CAP_SHARED_MEMORY_CFG;
+        pShm->pciCap.uCapVndr = VIRTIO_PCI_CAP_ID_VENDOR;
+        pShm->pciCap.uCapLen  = sizeof(VIRTIO_PCI_SHM_CAP_T);
+        pShm->pciCap.uCapNext = pVirtio->fMsiSupport ? CFG_ADDR_2_IDX(pShm) + pShm->pciCap.uCapLen : 0;
+        pShm->pciCap.uBar     = VIRTIO_REGION_PCI_SHARED;
+        pShm->pciCap.uOffset  = 0;
+        pShm->pciCap.uLength  = pPciParams->cbSharedMemory;
+        pShm->uOffsetHi       = 0;
+        pShm->uLengthHi       = 0;
+        rc = PDMDevHlpPCIIORegionCreateMmio2(pDevIns, VIRTIO_REGION_PCI_SHARED,
+                                             pPciParams->cbSharedMemory, PCI_ADDRESS_SPACE_MEM_PREFETCH,
+                                             pcszInstance, pPciParams->ppvSharedMemory, pPciParams->phSharedMemory);
+        AssertLogRelRCReturn(rc, PDMDEV_SET_ERROR(pDevIns, rc, N_("virtio: cannot register shared memory BAR")));
+    }
 
     if (pVirtio->fMsiSupport)
     {

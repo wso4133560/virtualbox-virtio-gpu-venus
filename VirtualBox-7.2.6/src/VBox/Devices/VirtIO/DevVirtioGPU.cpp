@@ -44,6 +44,7 @@
 #define VIRTIOGPU_VK_CMD_COPY_IMAGE UINT32_C(113)
 #define VIRTIOGPU_MAX_BACKING_ENTRIES 64
 #define VIRTIOGPU_MAX_RESOURCE_BYTES (UINT64_C(256) * _1M)
+#define VIRTIOGPU_SHARED_MEMORY_BYTES (UINT64_C(256) * _1M)
 
 typedef enum VIRTIOGPUBACKEND
 {
@@ -60,6 +61,9 @@ typedef struct VIRTIOGPURESOURCE
     uint32_t uWidth;
     uint32_t uHeight;
     bool fBlob;
+    bool fSharedMemory;
+    bool fMapped;
+    uint64_t offSharedMemory;
     uint32_t cBacking;
     uint64_t cbPixels;
     uint8_t *pbPixels;
@@ -110,6 +114,9 @@ typedef struct VIRTIOGPU
     VIRTIOGPUCONTEXT aContexts[VIRTIOGPU_MAX_CONTEXTS];
     VIRTIOGPUSCANOUT aScanouts[VIRTIOGPU_MAX_SCANOUTS];
     uint64_t cbAllocated;
+    uint8_t *pbSharedMemory;
+    PGMMMIO2HANDLE hSharedMemory;
+    uint64_t offSharedMemoryNext;
     VIRTIOGPUBACKEND enmBackend;
     VIRTIOGPUBACKEND enmActiveBackend;
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
@@ -223,6 +230,18 @@ static PVIRTIOGPURESOURCE virtioGpuR3FindResource(PVIRTIOGPU pThis, uint32_t uRe
     return NULL;
 }
 
+static int virtioGpuR3SharedMemoryAlloc(PVIRTIOGPU pThis, uint64_t cb, uint64_t *poff)
+{
+    if (!pThis || !pThis->pbSharedMemory || !poff || !cb || cb > VIRTIOGPU_SHARED_MEMORY_BYTES)
+        return VERR_NOT_SUPPORTED;
+    uint64_t off = RT_ALIGN_64(pThis->offSharedMemoryNext, UINT64_C(4096));
+    if (off > VIRTIOGPU_SHARED_MEMORY_BYTES || cb > VIRTIOGPU_SHARED_MEMORY_BYTES - off)
+        return VERR_OUT_OF_RESOURCES;
+    pThis->offSharedMemoryNext = off + cb;
+    *poff = off;
+    return VINF_SUCCESS;
+}
+
 /** Derive a stable per-resource UUID without exposing a host pointer or handle. */
 static void virtioGpuR3ResourceUuid(uint32_t uResourceId, uint8_t auUuid[16])
 {
@@ -262,7 +281,8 @@ static void virtioGpuR3FreeResources(PVIRTIOGPU pThis)
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
         virtioGpuR3VulkanResourceDestroy(pThis, &pThis->aResources[i]);
 #endif
-        RTMemFree(pThis->aResources[i].pbPixels);
+        if (!pThis->aResources[i].fSharedMemory)
+            RTMemFree(pThis->aResources[i].pbPixels);
         RT_ZERO(pThis->aResources[i]);
     }
     for (unsigned i = 0; i < RT_ELEMENTS(pThis->aScanouts); ++i)
@@ -2336,13 +2356,21 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                         Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_OUT_OF_MEMORY;
                     else
                     {
-                        pRes->pbPixels = (uint8_t *)RTMemAllocZ((size_t)Cmd.cbBlob);
+                        uint64_t offShared = 0;
+                        bool const fUseShared = (Cmd.fBlob & VIRTIOGPU_BLOB_FLAG_USE_MAPPABLE) != 0;
+                        int rcShared = fUseShared ? virtioGpuR3SharedMemoryAlloc(pThis, Cmd.cbBlob, &offShared)
+                                                  : VINF_SUCCESS;
+                        pRes->pbPixels = RT_SUCCESS(rcShared) && fUseShared
+                                       ? pThis->pbSharedMemory + offShared
+                                       : RT_SUCCESS(rcShared) ? (uint8_t *)RTMemAllocZ((size_t)Cmd.cbBlob) : NULL;
                         if (!pRes->pbPixels)
                             Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_OUT_OF_MEMORY;
                         else
                         {
                             pRes->fUsed = true;
                             pRes->fBlob = true;
+                            pRes->fSharedMemory = fUseShared;
+                            pRes->offSharedMemory = offShared;
                             pRes->uResourceId = Cmd.uResourceId;
                             pRes->uWidth = (uint32_t)(Cmd.cbBlob / 4);
                             pRes->uHeight = 1;
@@ -2374,7 +2402,8 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
                                 virtioGpuR3VulkanResourceDestroy(pThis, pRes);
 #endif
-                                RTMemFree(pRes->pbPixels);
+                                if (!pRes->fSharedMemory)
+                                    RTMemFree(pRes->pbPixels);
                                 RT_ZERO(*pRes);
                                 Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
                             }
@@ -2408,6 +2437,64 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                 }
                 break;
             }
+            case VIRTIOGPU_CMD_RESOURCE_MAP_BLOB:
+            {
+                VIRTIOGPURESOURCEMAPBLOB Cmd;
+                RT_ZERO(Cmd);
+                if (pBuf->cbPhysSend < sizeof(Cmd) || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Cmd, sizeof(Cmd)))
+                    || Cmd.uPadding != 0 || pBuf->cbPhysReturn < sizeof(VIRTIOGPURESPMAPINFO))
+                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                else
+                {
+                    PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResource(pThis, Cmd.uResourceId);
+                    if (!pRes)
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_RESOURCE_ID;
+                    else if (!pRes->fBlob || !pRes->fSharedMemory)
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                    else
+                    {
+                        VIRTIOGPURESPMAPINFO MapResp;
+                        RT_ZERO(MapResp);
+                        MapResp.Hdr = Resp.Hdr;
+                        MapResp.Hdr.uType = VIRTIOGPU_RESP_OK_MAP_INFO;
+                        MapResp.uMapInfo = pRes->offSharedMemory;
+                        pRes->fMapped = true;
+                        memcpy(&Resp, &MapResp, sizeof(MapResp.Hdr));
+                        pvResponse = RTMemAlloc(sizeof(MapResp));
+                        if (!pvResponse)
+                            Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_OUT_OF_MEMORY;
+                        else
+                        {
+                            memcpy(pvResponse, &MapResp, sizeof(MapResp));
+                            cbResp = sizeof(MapResp);
+                            fPreserveResponse = true;
+                        }
+                    }
+                }
+                break;
+            }
+            case VIRTIOGPU_CMD_RESOURCE_UNMAP_BLOB:
+            {
+                VIRTIOGPURESOURCEMAPBLOB Cmd;
+                RT_ZERO(Cmd);
+                if (pBuf->cbPhysSend < sizeof(Cmd) || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Cmd, sizeof(Cmd)))
+                    || Cmd.uPadding != 0)
+                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                else
+                {
+                    PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResource(pThis, Cmd.uResourceId);
+                    if (!pRes)
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_RESOURCE_ID;
+                    else if (!pRes->fBlob || !pRes->fSharedMemory || !pRes->fMapped)
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                    else
+                    {
+                        pRes->fMapped = false;
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
+                    }
+                }
+                break;
+            }
             case VIRTIOGPU_CMD_RESOURCE_UNREF:
             {
                 struct { uint32_t id, padding; } Cmd;
@@ -2422,7 +2509,8 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                     {
                         for (unsigned i=0; i<VIRTIOGPU_MAX_SCANOUTS; ++i)
                             if (pThis->aScanouts[i].uResourceId == Cmd.id) RT_ZERO(pThis->aScanouts[i]);
-                        RTMemFree(pRes->pbPixels);
+                        if (!pRes->fSharedMemory)
+                            RTMemFree(pRes->pbPixels);
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
                         virtioGpuR3VulkanResourceDestroy(pThis, pRes);
 #endif
@@ -3360,6 +3448,14 @@ static DECLCALLBACK(int) virtioGpuR3Construct(PPDMDEVINS pDevIns, int iInstance,
     Pci.uSubsystemId = VIRTIO_DEVICE_TYPE_GPU;
     Pci.uInterruptPin = 1;
     Pci.uDeviceType = VIRTIO_DEVICE_TYPE_GPU;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    if (pThis->enmActiveBackend == VIRTIOGPU_BACKEND_VENUS)
+    {
+        Pci.cbSharedMemory = (uint32_t)VIRTIOGPU_SHARED_MEMORY_BYTES;
+        Pci.ppvSharedMemory = (void **)&pThis->pbSharedMemory;
+        Pci.phSharedMemory = &pThis->hSharedMemory;
+    }
+#endif
     char szName[16];
     RTStrPrintf(szName, sizeof(szName), "virtio-gpu%u", iInstance);
     rc = virtioCoreR3Init(pDevIns, &pThis->Virtio, &pThisCC->Virtio, &Pci, szName,

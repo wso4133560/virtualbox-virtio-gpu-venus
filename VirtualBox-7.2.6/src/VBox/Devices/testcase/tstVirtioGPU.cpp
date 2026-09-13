@@ -871,6 +871,43 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && pGpu->aScanouts[0].uResourceId == 0);
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     RTTESTI_CHECK(pGpu->aResources[0].fVulkanBuffer && pGpu->aResources[0].hVkBuffer != VK_NULL_HANDLE);
+
+    /* The standalone test bypasses PCI construction; provide a small shared
+       window so RESOURCE_MAP_BLOB can be verified end to end. */
+    pGpu->pbSharedMemory = (uint8_t *)RTMemAllocZ(64 * 1024);
+    pGpu->offSharedMemoryNext = 0;
+    VIRTIOGPURESOURCECREATEBLOB BlobMappable = { 14, VIRTIOGPU_BLOB_MEM_HOST3D,
+                                                 VIRTIOGPU_BLOB_FLAG_USE_MAPPABLE, 0,
+                                                 UINT64_C(0x9abc), 64 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_CREATE_BLOB, &BlobMappable,
+                   sizeof(BlobMappable), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    RTTESTI_CHECK(pGpu->aResources[1].fSharedMemory && pGpu->aResources[1].pbPixels == pGpu->pbSharedMemory);
+    VIRTIOGPURESOURCEMAPBLOB MapBlob = { { VIRTIOGPU_CMD_RESOURCE_MAP_BLOB, 0, 0, 0, 0 }, 14, 0 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_MAP_BLOB, &MapBlob,
+                   sizeof(MapBlob), sizeof(VIRTIOGPURESPMAPINFO));
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == sizeof(VIRTIOGPURESPMAPINFO));
+    VIRTIOGPURESPMAPINFO MapResp;
+    memcpy(&MapResp, &g_abRam[0x5000], sizeof(MapResp));
+    RTTESTI_CHECK(MapResp.Hdr.uType == VIRTIOGPU_RESP_OK_MAP_INFO && MapResp.uMapInfo == 0
+                  && pGpu->aResources[1].fMapped);
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_UNMAP_BLOB, &MapBlob,
+                   sizeof(MapBlob), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && !pGpu->aResources[1].fMapped);
+    struct { uint32_t id, padding; } UnrefMappable = { 14, 0 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_UNREF, &UnrefMappable,
+                   sizeof(UnrefMappable), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
 #endif
     RTTestSub(g_hTest, "Vulkan fill command execution and readback");
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
