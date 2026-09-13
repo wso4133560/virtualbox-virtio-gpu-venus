@@ -464,6 +464,12 @@ static void tstVulkanCopyReadback(PVIRTIOGPU pGpu)
         ImageDst.uResourceId = 101;
         int const rcBarrier2Exec = virtioGpuR3VulkanPipelineBarrier(pGpu, &ImageDst, &Barrier2Exec);
         RTTESTI_CHECK_RC(rcBarrier2Exec, VINF_SUCCESS);
+        RTTestSub(g_hTest, "Venus PipelineBarrier2 batch submission");
+        VIRTIOGPUPIPELINEBARRIERCMD aBarrier2Batch[2] = { Barrier2Exec, Barrier2Exec };
+        ImageDst.enmVkImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        int const rcBarrier2Batch = virtioGpuR3VulkanPipelineBarrierBatch(pGpu, &ImageDst, aBarrier2Batch,
+                                                                           RT_ELEMENTS(aBarrier2Batch));
+        RTTESTI_CHECK_RC(rcBarrier2Batch, VINF_SUCCESS);
     }
     else
         RTTestFailed(g_hTest, "GPU image backing required for buffer-to-image test");
