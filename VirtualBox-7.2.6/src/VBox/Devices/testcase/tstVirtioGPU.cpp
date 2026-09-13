@@ -230,6 +230,8 @@ static PFN_vkGetDeviceProcAddr g_pfnCopyTestDeviceProc;
 static unsigned g_cDroppedCopies;
 static bool g_fDropBufferToImage;
 static unsigned g_cDroppedBufferToImage;
+static bool g_fCountImageToBuffer;
+static unsigned g_cImageToBufferCalls;
 
 /* Suppress only the copy recording. Submission, fences and mapped memory still
  * use the real GPU driver, so a CPU replacement copy cannot pass this test. */
@@ -248,12 +250,27 @@ static VKAPI_ATTR void VKAPI_CALL tstVkDropCopyBufferToImage(VkCommandBuffer hCm
     ++g_cDroppedBufferToImage;
 }
 
+static VKAPI_ATTR void VKAPI_CALL tstVkCountCopyImageToBuffer(VkCommandBuffer hCmd, VkImage hSrc,
+                                                              VkImageLayout enmLayout, VkBuffer hDst,
+                                                              uint32_t cRegions, const VkBufferImageCopy *paRegions)
+{
+    ++g_cImageToBufferCalls;
+    if (g_fCountImageToBuffer)
+        return;
+    PFN_vkCmdCopyImageToBuffer pfnCopy = (PFN_vkCmdCopyImageToBuffer)
+        g_pfnCopyTestDeviceProc(VK_NULL_HANDLE, "vkCmdCopyImageToBuffer");
+    if (pfnCopy)
+        pfnCopy(hCmd, hSrc, enmLayout, hDst, cRegions, paRegions);
+}
+
 static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL tstVkCopyDeviceProc(VkDevice hDevice, const char *pszName)
 {
     if (!strcmp(pszName, "vkCmdCopyBuffer"))
         return (PFN_vkVoidFunction)tstVkDropCopyBuffer;
     if (g_fDropBufferToImage && !strcmp(pszName, "vkCmdCopyBufferToImage"))
         return (PFN_vkVoidFunction)tstVkDropCopyBufferToImage;
+    if (g_fCountImageToBuffer && !strcmp(pszName, "vkCmdCopyImageToBuffer"))
+        return (PFN_vkVoidFunction)tstVkCountCopyImageToBuffer;
     return g_pfnCopyTestDeviceProc(hDevice, pszName);
 }
 
@@ -1358,6 +1375,21 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
+
+    /* A clean image must not trigger an unnecessary image-to-buffer readback. */
+    struct { uint32_t x, y, w, h, id, padding; } CleanFlush = { 0, 0, 2, 2, 7, 0 };
+    g_cImageToBufferCalls = 0;
+    g_fCountImageToBuffer = true;
+    pGpu->pfnVkGetInstanceProcAddr = tstVkCopyInstanceProc;
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_FLUSH, &CleanFlush,
+                   sizeof(CleanFlush), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    pGpu->pfnVkGetInstanceProcAddr = g_pfnCopyTestInstanceProc;
+    g_fCountImageToBuffer = false;
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && g_cImageToBufferCalls == 0);
 
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_CTX_DETACH_RESOURCE, &uClearResource,
