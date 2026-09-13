@@ -29,7 +29,7 @@
 # error "VirtIO-GPU currently runs entirely in ring 3."
 #endif
 
-#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(7)
+#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(8)
 #define VIRTIOGPU_MAX_RESOURCES 256
 #define VIRTIOGPU_MAX_CONTEXTS 64
 #define VIRTIOGPU_MAX_CONTEXT_RESOURCES 64
@@ -289,6 +289,7 @@ static void virtioGpuR3FreeResources(PVIRTIOGPU pThis)
         RT_ZERO(pThis->aScanouts[i]);
     RT_ZERO(pThis->aContexts);
     pThis->cbAllocated = 0;
+    pThis->offSharedMemoryNext = 0;
 }
 
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
@@ -3246,6 +3247,8 @@ static DECLCALLBACK(int) virtioGpuR3SaveExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
         {
             PVIRTIOGPURESOURCE pRes = &pThis->aResources[i];
             rc = pDevIns->pHlpR3->pfnSSMPutBool(pSSM, pRes->fBlob);
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutBool(pSSM, pRes->fSharedMemory);
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU64(pSSM, pRes->offSharedMemory);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, pRes->uResourceId);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, pRes->uFormat);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, pRes->uWidth);
@@ -3305,6 +3308,11 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
             PVIRTIOGPURESOURCE pRes = &pThis->aResources[i];
             pRes->fUsed = true;
             rc = pDevIns->pHlpR3->pfnSSMGetBool(pSSM, &pRes->fBlob);
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetBool(pSSM, &pRes->fSharedMemory);
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU64(pSSM, &pRes->offSharedMemory);
+            if (RT_SUCCESS(rc) && pRes->fSharedMemory
+                && (!pThis->pbSharedMemory || pRes->offSharedMemory > VIRTIOGPU_SHARED_MEMORY_BYTES))
+                rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &pRes->uResourceId);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &pRes->uFormat);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &pRes->uWidth);
@@ -3336,10 +3344,17 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
             if (RT_SUCCESS(rc))
             {
                 pRes->cbPixels = (size_t)pRes->uWidth * pRes->uHeight * 4;
-                pRes->pbPixels = (uint8_t *)RTMemAlloc(pRes->cbPixels);
-                if (!pRes->pbPixels) rc = VERR_NO_MEMORY;
+                if (pRes->fSharedMemory && pRes->cbPixels > VIRTIOGPU_SHARED_MEMORY_BYTES - pRes->offSharedMemory)
+                    rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
+                pRes->pbPixels = RT_SUCCESS(rc) && pRes->fSharedMemory
+                               ? pThis->pbSharedMemory + pRes->offSharedMemory
+                               : RT_SUCCESS(rc) ? (uint8_t *)RTMemAlloc(pRes->cbPixels) : NULL;
+                if (!pRes->pbPixels && RT_SUCCESS(rc)) rc = VERR_NO_MEMORY;
                 else
                 {
+                    if (pRes->fSharedMemory)
+                        pThis->offSharedMemoryNext = RT_MAX(pThis->offSharedMemoryNext,
+                                                            pRes->offSharedMemory + pRes->cbPixels);
                     pThis->cbAllocated += pRes->cbPixels;
                     rc = pDevIns->pHlpR3->pfnSSMGetMem(pSSM, pRes->pbPixels, pRes->cbPixels);
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
