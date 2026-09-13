@@ -1423,6 +1423,58 @@ int main(int argc, char **argv)
                   && CopyImages2.uCommandBuffer == uCopyImagesCommandBuffer
                   && CopyImages2.uSrcImage == uCopyImages2Src && CopyImages2.uDstImage == uCopyImages2Dst
                   && CopyImages2.cbRegionStride == 80);
+    uint8_t abCopyBufferToImage2Command[136] = { 0 };
+    uint32_t uCopyBufferToImage2Type = 209;
+    uint32_t uCopyBufferToImage2InfoType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2;
+    uint64_t uCopyBufferToImage2Src = 9;
+    uint64_t uCopyBufferToImage2Dst = 7;
+    uint32_t uCopyBufferToImage2Layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    uint32_t uCopyBufferToImage2Count = 1;
+    uint64_t uCopyBufferToImage2ArrayCount = 1;
+    uint32_t uCopyBufferToImage2RegionType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2;
+    memcpy(abCopyBufferToImage2Command + 0, &uCopyBufferToImage2Type, sizeof(uCopyBufferToImage2Type));
+    memcpy(abCopyBufferToImage2Command + 8, &uCopyImagesCommandBuffer, sizeof(uCopyImagesCommandBuffer));
+    memcpy(abCopyBufferToImage2Command + 16, &uCopyImages2InfoPtr, sizeof(uCopyImages2InfoPtr));
+    memcpy(abCopyBufferToImage2Command + 24, &uCopyBufferToImage2InfoType, sizeof(uCopyBufferToImage2InfoType));
+    memcpy(abCopyBufferToImage2Command + 36, &uCopyBufferToImage2Src, sizeof(uCopyBufferToImage2Src));
+    memcpy(abCopyBufferToImage2Command + 44, &uCopyBufferToImage2Dst, sizeof(uCopyBufferToImage2Dst));
+    memcpy(abCopyBufferToImage2Command + 52, &uCopyBufferToImage2Layout, sizeof(uCopyBufferToImage2Layout));
+    memcpy(abCopyBufferToImage2Command + 56, &uCopyBufferToImage2Count, sizeof(uCopyBufferToImage2Count));
+    memcpy(abCopyBufferToImage2Command + 60, &uCopyBufferToImage2ArrayCount, sizeof(uCopyBufferToImage2ArrayCount));
+    memcpy(abCopyBufferToImage2Command + 68, &uCopyBufferToImage2RegionType, sizeof(uCopyBufferToImage2RegionType));
+    memcpy(abCopyBufferToImage2Command + 96, auCopyImagesSrcSubresource, sizeof(auCopyImagesSrcSubresource));
+    memcpy(abCopyBufferToImage2Command + 124, auCopyImagesExtent, sizeof(auCopyImagesExtent));
+    VIRTIOGPUCOPYBUFFERTOIMAGECMD CopyBufferToImage2;
+    RTTESTI_CHECK(virtioGpuR3DecodeCopyBufferToImage2(abCopyBufferToImage2Command,
+                                                      sizeof(abCopyBufferToImage2Command), &CopyBufferToImage2)
+                  && CopyBufferToImage2.uCommandBuffer == uCopyImagesCommandBuffer
+                  && CopyBufferToImage2.uSrcBuffer == uCopyBufferToImage2Src
+                  && CopyBufferToImage2.uDstImage == uCopyBufferToImage2Dst
+                  && CopyBufferToImage2.cbRegionStride == 68);
+    uint8_t abCopyImageToBuffer2Command[136] = { 0 };
+    uint32_t uCopyImageToBuffer2Type = 210;
+    uint32_t uCopyImageToBuffer2InfoType = VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2;
+    uint64_t uCopyImageToBuffer2Src = 7;
+    uint64_t uCopyImageToBuffer2Dst = 9;
+    memcpy(abCopyImageToBuffer2Command + 0, &uCopyImageToBuffer2Type, sizeof(uCopyImageToBuffer2Type));
+    memcpy(abCopyImageToBuffer2Command + 8, &uCopyImagesCommandBuffer, sizeof(uCopyImagesCommandBuffer));
+    memcpy(abCopyImageToBuffer2Command + 16, &uCopyImages2InfoPtr, sizeof(uCopyImages2InfoPtr));
+    memcpy(abCopyImageToBuffer2Command + 24, &uCopyImageToBuffer2InfoType, sizeof(uCopyImageToBuffer2InfoType));
+    memcpy(abCopyImageToBuffer2Command + 36, &uCopyImageToBuffer2Src, sizeof(uCopyImageToBuffer2Src));
+    memcpy(abCopyImageToBuffer2Command + 44, &uCopyImagesSrcLayout, sizeof(uCopyImagesSrcLayout));
+    memcpy(abCopyImageToBuffer2Command + 48, &uCopyImageToBuffer2Dst, sizeof(uCopyImageToBuffer2Dst));
+    memcpy(abCopyImageToBuffer2Command + 56, &uCopyImageToBuffer2Count, sizeof(uCopyImageToBuffer2Count));
+    memcpy(abCopyImageToBuffer2Command + 60, &uCopyImageToBuffer2ArrayCount, sizeof(uCopyImageToBuffer2ArrayCount));
+    memcpy(abCopyImageToBuffer2Command + 68, &uCopyBufferToImage2RegionType, sizeof(uCopyBufferToImage2RegionType));
+    memcpy(abCopyImageToBuffer2Command + 96, auCopyImagesSrcSubresource, sizeof(auCopyImagesSrcSubresource));
+    memcpy(abCopyImageToBuffer2Command + 124, auCopyImagesExtent, sizeof(auCopyImagesExtent));
+    VIRTIOGPUCOPYIMAGETOBUFFERCMD CopyImageToBuffer2;
+    RTTESTI_CHECK(virtioGpuR3DecodeCopyImageToBuffer2(abCopyImageToBuffer2Command,
+                                                      sizeof(abCopyImageToBuffer2Command), &CopyImageToBuffer2)
+                  && CopyImageToBuffer2.uCommandBuffer == uCopyImagesCommandBuffer
+                  && CopyImageToBuffer2.uSrcImage == uCopyImageToBuffer2Src
+                  && CopyImageToBuffer2.uDstBuffer == uCopyImageToBuffer2Dst
+                  && CopyImageToBuffer2.cbRegionStride == 68);
 #endif
     Unref.id = 9;
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
