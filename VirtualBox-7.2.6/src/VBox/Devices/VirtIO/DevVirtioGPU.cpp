@@ -2256,7 +2256,8 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
     int rcReq = virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Req, sizeof(Req));
     uint32_t uResponse = RT_FAILURE(rcReq) || (RT_SUCCESS(rcReq) && (Req.uFlags & ~VIRTIOGPU_FLAG_FENCE))
                         ? VIRTIOGPU_RESP_ERR_INVALID_PARAMETER : VIRTIOGPU_RESP_ERR_UNSPEC;
-    if (uQueue == VIRTIOGPU_QUEUE_CONTROL && pBuf->cbPhysReturn >= sizeof(Resp.Hdr))
+    if ((uQueue == VIRTIOGPU_QUEUE_CONTROL || uQueue == VIRTIOGPU_QUEUE_CURSOR)
+        && pBuf->cbPhysReturn >= sizeof(Resp.Hdr))
     {
         virtioGpuR3Response(&Resp, &Req, uResponse);
         cbResp = sizeof(Resp.Hdr);
@@ -3213,6 +3214,82 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                 break;
             }
             default:
+                break;
+        }
+    }
+    else if (RT_SUCCESS(rcReq) && !(Req.uFlags & ~VIRTIOGPU_FLAG_FENCE)
+             && uQueue == VIRTIOGPU_QUEUE_CURSOR)
+    {
+        PVIRTIOGPUCC pThisCC = PDMDEVINS_2_DATA_CC(pDevIns, PVIRTIOGPUCC);
+        switch (Req.uType)
+        {
+            case VIRTIOGPU_CMD_UPDATE_CURSOR:
+            {
+                VIRTIOGPUUPDATECURSOR Cmd;
+                RT_ZERO(Cmd);
+                if (pBuf->cbPhysSend < sizeof(Cmd)
+                    || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Cmd.Pos,
+                                                   sizeof(Cmd) - sizeof(Cmd.Hdr)))
+                    || Cmd.Pos.uPadding != 0 || Cmd.Pos.uScanoutId >= VIRTIOGPU_MAX_SCANOUTS
+                    || Cmd.uHotX > 64 || Cmd.uHotY > 64)
+                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                else if (!Cmd.uResourceId)
+                {
+                    int rcCursor = VINF_SUCCESS;
+                    if (pThisCC->pDrv && pThisCC->pDrv->pfnVBVAMousePointerShape)
+                        rcCursor = pThisCC->pDrv->pfnVBVAMousePointerShape(pThisCC->pDrv, false, false,
+                                                                          0, 0, 0, 0, NULL);
+                    Resp.Hdr.uType = RT_SUCCESS(rcCursor) ? VIRTIOGPU_RESP_OK_NODATA
+                                                            : VIRTIOGPU_RESP_ERR_UNSPEC;
+                }
+                else
+                {
+                    PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResource(pThis, Cmd.uResourceId);
+                    bool const fValid = pRes && pRes->pbPixels
+                        && pRes->uFormat == VIRTIOGPU_FORMAT_B8G8R8X8_UNORM
+                        && pRes->uWidth && pRes->uHeight
+                        && pRes->uWidth <= 64 && pRes->uHeight <= 64
+                        && Cmd.uHotX < pRes->uWidth && Cmd.uHotY < pRes->uHeight
+                        && (uint64_t)pRes->uWidth * pRes->uHeight * 4 <= pRes->cbPixels;
+                    if (!fValid)
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                    else
+                    {
+                        int rcCursor = VINF_SUCCESS;
+                        if (pThisCC->pDrv && pThisCC->pDrv->pfnVBVAMousePointerShape)
+                            rcCursor = pThisCC->pDrv->pfnVBVAMousePointerShape(pThisCC->pDrv, true, true,
+                                                                              Cmd.uHotX, Cmd.uHotY,
+                                                                              pRes->uWidth, pRes->uHeight,
+                                                                              pRes->pbPixels);
+                        Resp.Hdr.uType = RT_SUCCESS(rcCursor) ? VIRTIOGPU_RESP_OK_NODATA
+                                                                : VIRTIOGPU_RESP_ERR_UNSPEC;
+                    }
+                }
+                break;
+            }
+            case VIRTIOGPU_CMD_MOVE_CURSOR:
+            {
+                VIRTIOGPUMOVECURSOR Cmd;
+                RT_ZERO(Cmd);
+                if (pBuf->cbPhysSend < sizeof(Cmd)
+                    || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Cmd.Pos,
+                                                   sizeof(Cmd) - sizeof(Cmd.Hdr)))
+                    || Cmd.Pos.uPadding != 0 || Cmd.Pos.uScanoutId >= VIRTIOGPU_MAX_SCANOUTS)
+                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                else
+                {
+                    if (pThisCC->pDrv && pThisCC->pDrv->pfnVBVAReportCursorPosition)
+                        pThisCC->pDrv->pfnVBVAReportCursorPosition(pThisCC->pDrv,
+                                                                    VBVA_CURSOR_VALID_DATA
+                                                                    | VBVA_CURSOR_SCREEN_RELATIVE,
+                                                                    Cmd.Pos.uScanoutId,
+                                                                    (uint32_t)Cmd.Pos.x, (uint32_t)Cmd.Pos.y);
+                    Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
+                }
+                break;
+            }
+            default:
+                Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
                 break;
         }
     }

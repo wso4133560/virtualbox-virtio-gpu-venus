@@ -15,6 +15,16 @@ static unsigned g_cIrqs;
 static unsigned g_cMemoryErrors;
 static unsigned g_cDisplayResizes;
 static unsigned g_cDisplayUpdates;
+static unsigned g_cCursorShapes;
+static unsigned g_cCursorMoves;
+static bool g_fCursorVisible;
+static uint32_t g_cCursorWidth;
+static uint32_t g_cCursorHeight;
+static uint32_t g_uCursorHotX;
+static uint32_t g_uCursorHotY;
+static uint32_t g_uCursorScreen;
+static int32_t g_iCursorX;
+static int32_t g_iCursorY;
 static PDMDEVHLPR3 g_Helpers;
 
 static DECLCALLBACK(int) tstDisplayResize(PPDMIDISPLAYCONNECTOR pInterface, uint32_t cBits, void *pvVRAM,
@@ -30,6 +40,30 @@ static DECLCALLBACK(void) tstDisplayUpdate(PPDMIDISPLAYCONNECTOR pInterface, uin
 {
     RT_NOREF(pInterface, x, y, cx, cy);
     g_cDisplayUpdates++;
+}
+
+static DECLCALLBACK(int) tstDisplayCursorShape(PPDMIDISPLAYCONNECTOR pInterface, bool fVisible, bool fAlpha,
+                                               uint32_t xHot, uint32_t yHot, uint32_t cx, uint32_t cy,
+                                               const void *pvShape)
+{
+    RT_NOREF(pInterface, fAlpha, pvShape);
+    g_cCursorShapes++;
+    g_fCursorVisible = fVisible;
+    g_uCursorHotX = xHot;
+    g_uCursorHotY = yHot;
+    g_cCursorWidth = cx;
+    g_cCursorHeight = cy;
+    return VINF_SUCCESS;
+}
+
+static DECLCALLBACK(void) tstDisplayCursorPosition(PPDMIDISPLAYCONNECTOR pInterface, uint32_t fFlags,
+                                                   uint32_t uScreen, uint32_t x, uint32_t y)
+{
+    RT_NOREF(pInterface, fFlags);
+    g_cCursorMoves++;
+    g_uCursorScreen = uScreen;
+    g_iCursorX = (int32_t)x;
+    g_iCursorY = (int32_t)y;
 }
 
 static DECLCALLBACK(int) tstRead(PPDMDEVINS pDevIns, PPDMPCIDEV pPci, RTGCPHYS off, void *pv, size_t cb, uint32_t fFlags)
@@ -435,6 +469,8 @@ int main(int argc, char **argv)
     static PDMIDISPLAYCONNECTOR DisplayConnector;
     DisplayConnector.pfnResize = tstDisplayResize;
     DisplayConnector.pfnUpdateRect = tstDisplayUpdate;
+    DisplayConnector.pfnVBVAMousePointerShape = tstDisplayCursorShape;
+    DisplayConnector.pfnVBVAReportCursorPosition = tstDisplayCursorPosition;
     pCC->pDrv = &DisplayConnector;
     pCC->Virtio.pfnStatusChanged = virtioGpuR3StatusChanged;
     pCC->Virtio.pfnVirtqNotified = virtioGpuR3VirtqNotified;
@@ -625,6 +661,39 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && pGpu->aScanouts[0].uResourceId == 7
                   && (pGpu->Config.fEventsRead & VIRTIOGPU_EVENT_DISPLAY) != 0);
     RTTESTI_CHECK(g_cDisplayResizes == 1);
+
+    RTTestSub(g_hTest, "cursor queue shape, move and hide");
+    struct { VIRTIOGPUCURSORPOS Pos; uint32_t uResourceId, uHotX, uHotY; } CursorShape =
+        { { 0, 0, 0, 0 }, 7, 1, 1 };
+    uint16_t uCursorBefore = pGpu->Virtio.aVirtqueues[VIRTIOGPU_QUEUE_CURSOR].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, VIRTIOGPU_QUEUE_CURSOR, VIRTIOGPU_CMD_UPDATE_CURSOR,
+                   &CursorShape.Pos, sizeof(CursorShape), sizeof(VIRTIOGPUCTRLHDR));
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, VIRTIOGPU_QUEUE_CURSOR);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, VIRTIOGPU_QUEUE_CURSOR, uCursorBefore) == sizeof(VIRTIOGPUCTRLHDR));
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && g_cCursorShapes == 1
+                  && g_fCursorVisible && g_cCursorWidth == 2 && g_cCursorHeight == 2
+                  && g_uCursorHotX == 1 && g_uCursorHotY == 1);
+
+    VIRTIOGPUCURSORPOS CursorPos = { 0, 123, -7, 0 };
+    uCursorBefore = pGpu->Virtio.aVirtqueues[VIRTIOGPU_QUEUE_CURSOR].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, VIRTIOGPU_QUEUE_CURSOR, VIRTIOGPU_CMD_MOVE_CURSOR,
+                   &CursorPos, sizeof(CursorPos), sizeof(VIRTIOGPUCTRLHDR));
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, VIRTIOGPU_QUEUE_CURSOR);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, VIRTIOGPU_QUEUE_CURSOR, uCursorBefore) == sizeof(VIRTIOGPUCTRLHDR));
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && g_cCursorMoves == 1
+                  && g_uCursorScreen == 0 && g_iCursorX == 123 && g_iCursorY == -7);
+
+    struct { VIRTIOGPUCURSORPOS Pos; uint32_t uResourceId, uHotX, uHotY; } CursorHide =
+        { { 0, 0, 0, 0 }, 0, 0, 0 };
+    uCursorBefore = pGpu->Virtio.aVirtqueues[VIRTIOGPU_QUEUE_CURSOR].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, VIRTIOGPU_QUEUE_CURSOR, VIRTIOGPU_CMD_UPDATE_CURSOR,
+                   &CursorHide, sizeof(CursorHide), sizeof(VIRTIOGPUCTRLHDR));
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, VIRTIOGPU_QUEUE_CURSOR);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, VIRTIOGPU_QUEUE_CURSOR, uCursorBefore) == sizeof(VIRTIOGPUCTRLHDR));
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && g_cCursorShapes == 2 && !g_fCursorVisible);
 
     struct { uint32_t x, y, w, h, id, padding; } Flush = { 0, 0, 2, 2, 7, 0 };
     /* RESOURCE_FLUSH must expose image contents back to the display shadow. */
@@ -1504,9 +1573,10 @@ int main(int argc, char **argv)
     }
 
     RTTestSub(g_hTest, "cursor completion and 16-bit index wrap");
-    tstPost(&pGpu->Virtio, 1, 56, 24, 0x300);
+    uint16_t const uCursorWrapBefore = pGpu->Virtio.aVirtqueues[1].uUsedIdxShadow;
+    tstPost(&pGpu->Virtio, 1, 56, 24, UINT32_C(0x03ff));
     virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 1);
-    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 1, 0) == 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 1, uCursorWrapBefore) == sizeof(VIRTIOGPUCTRLHDR));
     tstInitQueue(&pGpu->Virtio, 0, UINT16_MAX);
     tstPost(&pGpu->Virtio, 0, 24, 408);
     RTTESTI_CHECK(virtioCoreVirtqAvailBufCount(pDev, &pGpu->Virtio, 0) == 1);
