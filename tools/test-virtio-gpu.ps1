@@ -1,7 +1,10 @@
 # Runs the production VirtIO transport/GPU callbacks with bounded test RAM.
 # Does not register services, install drivers, or launch a VM.
 [CmdletBinding()]
-param([ValidateRange(1, 300)][int]$TimeoutSeconds = 60)
+param(
+    [ValidateRange(1, 300)][int]$TimeoutSeconds = 60,
+    [switch]$IncludeRegistration
+)
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
 $bin = Join-Path $repoRoot 'VirtualBox-7.2.6\out\win.amd64\release\bin'
@@ -13,7 +16,7 @@ foreach ($path in @($exe, $module)) {
 }
 New-Item -ItemType Directory -Force $outputDir | Out-Null
 $start = [Diagnostics.ProcessStartInfo]::new($exe)
-$start.ArgumentList.Add($module)
+if ($IncludeRegistration) { $start.ArgumentList.Add($module) }
 $start.WorkingDirectory = $bin
 $start.UseShellExecute = $false
 $start.CreateNoWindow = $true
@@ -55,11 +58,17 @@ if ($hostVulkanDeviceMatch.Success -and $hostVulkanApiMatch.Success -and $hostVu
     }
 }
 $artifacts = @($exe, $module) | ForEach-Object {
-    [ordered]@{ path = [IO.Path]::GetRelativePath($repoRoot, $_); sha256 = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash }
+    $fullPath = [IO.Path]::GetFullPath($_)
+    $relativePath = $fullPath.Substring($repoRoot.Length).TrimStart([char]92, [char]47)
+    [ordered]@{ path = $relativePath; sha256 = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash }
 }
 $report = [ordered]@{
     timestamp = (Get-Date).ToString('o')
-    scope = 'Windows amd64 userspace transport and device callbacks with test RAM, plus registration from the built VBoxDD.dll'
+    scope = if ($IncludeRegistration) {
+        'Windows amd64 userspace transport and device callbacks with test RAM, plus registration from the built VBoxDD.dll'
+    } else {
+        'Windows amd64 userspace transport and device callbacks with test RAM'
+    }
     passed = $passed
     exitCode = $testExit
     timedOut = $timedOut
