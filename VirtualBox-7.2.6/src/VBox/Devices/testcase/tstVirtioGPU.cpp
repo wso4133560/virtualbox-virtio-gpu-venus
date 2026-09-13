@@ -725,6 +725,25 @@ int main(int argc, char **argv)
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && pGpu->aResources[0].fUsed
                   && pGpu->aResources[0].fBlob && pGpu->aResources[0].cbPixels == 64);
+    VIRTIOGPURESOURCEASSIGNUUID AssignUuid = { 9, 0 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_ASSIGN_UUID, &AssignUuid,
+                   sizeof(AssignUuid), sizeof(VIRTIOGPURESPRESOURCEUUID));
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == sizeof(VIRTIOGPURESPRESOURCEUUID));
+    VIRTIOGPURESPRESOURCEUUID UuidResp;
+    memcpy(&UuidResp, &g_abRam[0x5000], sizeof(UuidResp));
+    RTTESTI_CHECK(UuidResp.Hdr.uType == VIRTIOGPU_RESP_OK_RESOURCE_UUID && UuidResp.auUuid[0] == 0x56
+                  && UuidResp.auUuid[6] == 0x40 && (UuidResp.auUuid[8] & 0xc0) == 0x80
+                  && UuidResp.auUuid[12] == 9);
+    VIRTIOGPURESOURCEASSIGNUUID AssignUuidMissing = { 99, 0 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_ASSIGN_UUID, &AssignUuidMissing,
+                   sizeof(AssignUuidMissing), sizeof(VIRTIOGPURESPRESOURCEUUID));
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == sizeof(VIRTIOGPUCTRLHDR));
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_ERR_INVALID_PARAMETER);
     VIRTIOGPURESOURCECREATEBLOB BlobInvalidMem = { 12, 0, 0, 0, UINT64_C(0x1235), 64 };
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_CREATE_BLOB, &BlobInvalidMem, sizeof(BlobInvalidMem), 24);

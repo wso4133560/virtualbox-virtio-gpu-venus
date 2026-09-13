@@ -221,6 +221,20 @@ static PVIRTIOGPURESOURCE virtioGpuR3FindResource(PVIRTIOGPU pThis, uint32_t uRe
     return NULL;
 }
 
+/** Derive a stable per-resource UUID without exposing a host pointer or handle. */
+static void virtioGpuR3ResourceUuid(uint32_t uResourceId, uint8_t auUuid[16])
+{
+    static const uint8_t s_auNamespace[12] =
+        { 0x56, 0x42, 0x4f, 0x58, 0x2d, 0x47, 0x50, 0x55, 0x2d, 0x52, 0x45, 0x53 };
+    memcpy(auUuid, s_auNamespace, sizeof(s_auNamespace));
+    auUuid[12] = (uint8_t)(uResourceId >> 0);
+    auUuid[13] = (uint8_t)(uResourceId >> 8);
+    auUuid[14] = (uint8_t)(uResourceId >> 16);
+    auUuid[15] = (uint8_t)(uResourceId >> 24);
+    auUuid[6] = (uint8_t)((auUuid[6] & 0x0f) | 0x40);
+    auUuid[8] = (uint8_t)((auUuid[8] & 0x3f) | 0x80);
+}
+
 static PVIRTIOGPUCONTEXT virtioGpuR3FindContext(PVIRTIOGPU pThis, uint32_t uContextId)
 {
     if (!uContextId)
@@ -2304,6 +2318,29 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                                 Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
                         }
                     }
+                }
+                break;
+            }
+            case VIRTIOGPU_CMD_RESOURCE_ASSIGN_UUID:
+            {
+                VIRTIOGPURESOURCEASSIGNUUID Cmd;
+                RT_ZERO(Cmd);
+                if (pBuf->cbPhysSend < sizeof(Cmd)
+                    || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Cmd, sizeof(Cmd)))
+                    || Cmd.uPadding != 0
+                    || !virtioGpuR3FindResource(pThis, Cmd.uResourceId)
+                    || pBuf->cbPhysReturn < sizeof(VIRTIOGPURESPRESOURCEUUID))
+                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                else
+                {
+                    VIRTIOGPURESPRESOURCEUUID UuidResp;
+                    RT_ZERO(UuidResp);
+                    UuidResp.Hdr = Resp.Hdr;
+                    UuidResp.Hdr.uType = VIRTIOGPU_RESP_OK_RESOURCE_UUID;
+                    virtioGpuR3ResourceUuid(Cmd.uResourceId, UuidResp.auUuid);
+                    memcpy(&Resp, &UuidResp, sizeof(UuidResp));
+                    cbResp = sizeof(UuidResp);
+                    fPreserveResponse = true;
                 }
                 break;
             }
