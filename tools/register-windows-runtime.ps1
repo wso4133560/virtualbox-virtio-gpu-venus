@@ -85,8 +85,10 @@ try {
     if (Test-Path -LiteralPath $errorPath) { Remove-Item -LiteralPath $errorPath -Force }
 }
 
-$progId = 'HKCR:\VirtualBox.VirtualBox'
-$clsid = 'HKCR:\CLSID\{B1A7A4F2-47B9-4A1E-82B2-07CCD5323C3F}'
+# Use the provider-independent Registry:: form. The HKCR: PSDrive is not
+# mounted by every PowerShell host, including elevated PowerShell 7 sessions.
+$progId = 'Registry::HKEY_CLASSES_ROOT\VirtualBox.VirtualBox'
+$clsid = 'Registry::HKEY_CLASSES_ROOT\CLSID\{B1A7A4F2-47B9-4A1E-82B2-07CCD5323C3F}'
 $registered = (Test-Path -LiteralPath $progId) -and (Test-Path -LiteralPath $clsid)
 $report = [ordered]@{
     runtimeDirectory = $runtime
