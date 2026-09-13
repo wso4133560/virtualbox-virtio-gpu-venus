@@ -62,7 +62,19 @@ catch {
 }
 finally {
     if ($started) {
-        try { Invoke-VBoxManage @('controlvm', $VmName, 'acpipowerbutton') | Out-Null } catch { }
+        try {
+            Invoke-VBoxManage @('controlvm', $VmName, 'acpipowerbutton') | Out-Null
+            $shutdownDeadline = [DateTime]::UtcNow.AddSeconds(15)
+            do {
+                Start-Sleep -Milliseconds 500
+                $shutdownInfo = Invoke-VBoxManage @('showvminfo', $VmName, '--machinereadable')
+                $shutdownLine = $shutdownInfo | Where-Object { $_ -match '^VMState="([^"]+)"' } | Select-Object -First 1
+                $shutdownState = if ($shutdownLine -match '^VMState="([^"]+)"') { $Matches[1] } else { 'unknown' }
+            } while ($shutdownState -notin @('poweroff', 'aborted') -and [DateTime]::UtcNow -lt $shutdownDeadline)
+            if ($shutdownState -notin @('poweroff', 'aborted')) {
+                Invoke-VBoxManage @('controlvm', $VmName, 'poweroff') | Out-Null
+            }
+        } catch { }
     }
     if ($created -and -not $KeepVm) {
         try { Invoke-VBoxManage @('unregistervm', $VmName, '--delete') | Out-Null } catch { }
