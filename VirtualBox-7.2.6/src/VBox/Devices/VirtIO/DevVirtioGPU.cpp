@@ -29,7 +29,7 @@
 # error "VirtIO-GPU currently runs entirely in ring 3."
 #endif
 
-#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(4)
+#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(5)
 #define VIRTIOGPU_MAX_RESOURCES 256
 #define VIRTIOGPU_MAX_CONTEXTS 64
 #define VIRTIOGPU_MAX_CONTEXT_RESOURCES 64
@@ -2747,6 +2747,8 @@ static DECLCALLBACK(int) virtioGpuR3SaveExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
 {
     PVIRTIOGPU pThis = PDMDEVINS_2_DATA(pDevIns, PVIRTIOGPU);
     int rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, pThis->Config.fEventsRead);
+    if (RT_SUCCESS(rc))
+        rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, (uint32_t)pThis->enmBackend);
     for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aResources); ++i)
     {
         rc = pDevIns->pHlpR3->pfnSSMPutBool(pSSM, pThis->aResources[i].fUsed);
@@ -2792,6 +2794,12 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
         return VINF_SUCCESS;
     PVIRTIOGPU pThis = PDMDEVINS_2_DATA(pDevIns, PVIRTIOGPU);
     int rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &pThis->Config.fEventsRead);
+    uint32_t uSavedBackend = UINT32_MAX;
+    if (RT_SUCCESS(rc))
+        rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &uSavedBackend);
+    if (RT_SUCCESS(rc) && (uSavedBackend > VIRTIOGPU_BACKEND_VENUS
+                           || uSavedBackend != (uint32_t)pThis->enmBackend))
+        rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
     virtioGpuR3FreeResources(pThis);
     for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aResources); ++i)
     {

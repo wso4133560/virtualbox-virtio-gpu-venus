@@ -1226,6 +1226,11 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(pGpu->Virtio.aVirtqueues[0].fAttached && pGpu->Virtio.aVirtqueues[1].fAttached);
     virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, 0) == 408);
+    pGpu->enmBackend = VIRTIOGPU_BACKEND_SOFTWARE;
+    Ssm.off = 0;
+    RTTESTI_CHECK_RC(virtioGpuR3LoadExec(pDev, pSSM, VIRTIOGPU_SAVED_STATE_VERSION, SSM_PASS_FINAL),
+                     VERR_SSM_LOAD_CONFIG_MISMATCH);
+    pGpu->enmBackend = VIRTIOGPU_BACKEND_AUTO;
     RTTESTI_CHECK_RC(virtioGpuR3LoadExec(pDev, pSSM, 42, SSM_PASS_FINAL), VERR_SSM_UNSUPPORTED_DATA_UNIT_VERSION);
     Ssm.off = 0;
     Ssm.cb--;
