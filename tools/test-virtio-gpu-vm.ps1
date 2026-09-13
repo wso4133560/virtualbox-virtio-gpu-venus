@@ -6,6 +6,7 @@ param(
     [Parameter(Mandatory = $true)][string]$IsoPath,
     [string]$RuntimeDirectory,
     [string]$VmName,
+    [ValidateSet('auto', 'software', 'venus')][string]$GpuBackend = 'venus',
     [ValidateRange(1024, 131072)][int]$MemoryMB = 4096,
     [ValidateRange(1, 300)][int]$TimeoutSeconds = 60,
     [switch]$KeepVm,
@@ -47,7 +48,7 @@ try {
     Invoke-VBoxManage @('createvm', '--name', $VmName, '--register') | Out-Null
     $created = $true
     Invoke-VBoxManage @('modifyvm', $VmName, '--memory', $MemoryMB, '--vram', 64,
-                        '--graphicscontroller', 'virtio-gpu', '--gpu-backend', 'venus',
+                        '--graphicscontroller', 'virtio-gpu', '--gpu-backend', $GpuBackend,
                         '--firmware', 'efi', '--audio-enabled', 'off') | Out-Null
     Invoke-VBoxManage @('storagectl', $VmName, '--name', 'SATA', '--add', 'sata', '--controller', 'IntelAhci') | Out-Null
     Invoke-VBoxManage @('storageattach', $VmName, '--storagectl', 'SATA', '--port', 0,
@@ -94,7 +95,7 @@ finally {
         iso = $iso
         runtimeDirectory = $runtime
         graphicsController = 'virtio-gpu'
-        gpuBackend = 'venus'
+        gpuBackend = $GpuBackend
         memoryMB = $MemoryMB
         created = $created
         started = $started
