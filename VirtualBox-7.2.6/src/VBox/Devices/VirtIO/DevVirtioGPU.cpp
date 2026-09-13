@@ -322,29 +322,59 @@ static int virtioGpuR3VulkanInit(PVIRTIOGPU pThis)
     vkrc = pfnEnumeratePhysicalDevices(pThis->hVkInstance, &cDevicesFetch, aDevices);
     if (vkrc != VK_SUCCESS || !cDevicesFetch)
         return VERR_NOT_SUPPORTED;
-    pThis->hVkPhysicalDevice = aDevices[0];
-    RT_ZERO(pThis->VkProperties);
-    pfnGetPhysicalDeviceProperties(pThis->hVkPhysicalDevice, &pThis->VkProperties);
-    pThis->fVulkanDevice = true;
-    RT_ZERO(pThis->VkMemoryProperties);
-    pfnGetPhysicalDeviceMemoryProperties(pThis->hVkPhysicalDevice, &pThis->VkMemoryProperties);
-    pThis->fVulkanMemory = pThis->VkMemoryProperties.memoryTypeCount != 0;
-    if (!pThis->fVulkanMemory)
-        return VERR_NOT_SUPPORTED;
-    uint32_t cQueueFamilies = 0;
-    pfnGetPhysicalDeviceQueueFamilyProperties(pThis->hVkPhysicalDevice, &cQueueFamilies, NULL);
-    VkQueueFamilyProperties aQueueFamilies[16];
-    uint32_t cQueueFamiliesFetch = RT_MIN(cQueueFamilies, (uint32_t)RT_ELEMENTS(aQueueFamilies));
-    pfnGetPhysicalDeviceQueueFamilyProperties(pThis->hVkPhysicalDevice, &cQueueFamiliesFetch, aQueueFamilies);
-    for (uint32_t i = 0; i < cQueueFamiliesFetch; ++i)
-        if ((aQueueFamilies[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))
-            == (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))
+    VkPhysicalDevice hSelectedDevice = VK_NULL_HANDLE;
+    VkPhysicalDeviceProperties SelectedProperties;
+    VkPhysicalDeviceMemoryProperties SelectedMemoryProperties;
+    RT_ZERO(SelectedProperties);
+    RT_ZERO(SelectedMemoryProperties);
+    uint32_t uSelectedQueueFamily = UINT32_MAX;
+    int iSelectedScore = -1;
+    for (uint32_t iDevice = 0; iDevice < cDevicesFetch; ++iDevice)
+    {
+        VkPhysicalDeviceProperties Properties;
+        RT_ZERO(Properties);
+        pfnGetPhysicalDeviceProperties(aDevices[iDevice], &Properties);
+        uint32_t cQueueFamilies = 0;
+        pfnGetPhysicalDeviceQueueFamilyProperties(aDevices[iDevice], &cQueueFamilies, NULL);
+        VkQueueFamilyProperties aQueueFamilies[16];
+        uint32_t cQueueFamiliesFetch = RT_MIN(cQueueFamilies, (uint32_t)RT_ELEMENTS(aQueueFamilies));
+        pfnGetPhysicalDeviceQueueFamilyProperties(aDevices[iDevice], &cQueueFamiliesFetch, aQueueFamilies);
+        uint32_t uQueueFamily = UINT32_MAX;
+        for (uint32_t iQueue = 0; iQueue < cQueueFamiliesFetch; ++iQueue)
+            if ((aQueueFamilies[iQueue].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))
+                == (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))
+            {
+                uQueueFamily = iQueue;
+                break;
+            }
+        if (uQueueFamily == UINT32_MAX)
+            continue;
+        VkPhysicalDeviceMemoryProperties MemoryProperties;
+        RT_ZERO(MemoryProperties);
+        pfnGetPhysicalDeviceMemoryProperties(aDevices[iDevice], &MemoryProperties);
+        if (!MemoryProperties.memoryTypeCount)
+            continue;
+        int iScore = Properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 400
+                   : Properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 300
+                   : Properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU ? 200
+                   : Properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU ? 100 : 150;
+        if (hSelectedDevice == VK_NULL_HANDLE || iScore > iSelectedScore)
         {
-            pThis->uVkQueueFamily = i;
-            break;
+            hSelectedDevice = aDevices[iDevice];
+            SelectedProperties = Properties;
+            SelectedMemoryProperties = MemoryProperties;
+            uSelectedQueueFamily = uQueueFamily;
+            iSelectedScore = iScore;
         }
-    if (pThis->uVkQueueFamily == UINT32_MAX)
+    }
+    if (hSelectedDevice == VK_NULL_HANDLE)
         return VERR_NOT_SUPPORTED;
+    pThis->hVkPhysicalDevice = hSelectedDevice;
+    pThis->VkProperties = SelectedProperties;
+    pThis->VkMemoryProperties = SelectedMemoryProperties;
+    pThis->uVkQueueFamily = uSelectedQueueFamily;
+    pThis->fVulkanDevice = true;
+    pThis->fVulkanMemory = true;
     PFN_vkCreateDevice pfnCreateDevice =
         (PFN_vkCreateDevice)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkCreateDevice");
     if (!pfnCreateDevice)
