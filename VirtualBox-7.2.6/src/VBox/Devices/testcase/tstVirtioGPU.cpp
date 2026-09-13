@@ -1395,6 +1395,34 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(virtioGpuR3DecodeCopyImage(abCopyImagesCommand, sizeof(abCopyImagesCommand), &CopyImages)
                   && CopyImages.uCommandBuffer == uCopyImagesCommandBuffer
                   && CopyImages.uSrcImage == uCopyImagesSrc && CopyImages.uDstImage == uCopyImagesDst);
+    uint8_t abCopyImages2Command[152] = { 0 };
+    uint32_t uCopyImages2Type = 208;
+    uint64_t uCopyImages2InfoPtr = 1;
+    uint32_t uCopyImages2InfoType = VK_STRUCTURE_TYPE_COPY_IMAGE_INFO_2;
+    uint64_t uCopyImages2Src = 7;
+    uint64_t uCopyImages2Dst = 11;
+    uint32_t uCopyImages2Count = 1;
+    uint64_t uCopyImages2ArrayCount = 1;
+    uint32_t uCopyImages2RegionType = VK_STRUCTURE_TYPE_IMAGE_COPY_2;
+    memcpy(abCopyImages2Command + 0, &uCopyImages2Type, sizeof(uCopyImages2Type));
+    memcpy(abCopyImages2Command + 8, &uCopyImagesCommandBuffer, sizeof(uCopyImagesCommandBuffer));
+    memcpy(abCopyImages2Command + 16, &uCopyImages2InfoPtr, sizeof(uCopyImages2InfoPtr));
+    memcpy(abCopyImages2Command + 24, &uCopyImages2InfoType, sizeof(uCopyImages2InfoType));
+    memcpy(abCopyImages2Command + 36, &uCopyImages2Src, sizeof(uCopyImages2Src));
+    memcpy(abCopyImages2Command + 44, &uCopyImagesSrcLayout, sizeof(uCopyImagesSrcLayout));
+    memcpy(abCopyImages2Command + 48, &uCopyImages2Dst, sizeof(uCopyImages2Dst));
+    memcpy(abCopyImages2Command + 56, &uCopyImagesDstLayout, sizeof(uCopyImagesDstLayout));
+    memcpy(abCopyImages2Command + 60, &uCopyImages2Count, sizeof(uCopyImages2Count));
+    memcpy(abCopyImages2Command + 64, &uCopyImages2ArrayCount, sizeof(uCopyImages2ArrayCount));
+    memcpy(abCopyImages2Command + 72, &uCopyImages2RegionType, sizeof(uCopyImages2RegionType));
+    memcpy(abCopyImages2Command + 84, auCopyImagesSrcSubresource, sizeof(auCopyImagesSrcSubresource));
+    memcpy(abCopyImages2Command + 112, auCopyImagesDstSubresource, sizeof(auCopyImagesDstSubresource));
+    memcpy(abCopyImages2Command + 140, auCopyImagesExtent, sizeof(auCopyImagesExtent));
+    VIRTIOGPUCOPYIMAGECMD CopyImages2;
+    RTTESTI_CHECK(virtioGpuR3DecodeCopyImage2(abCopyImages2Command, sizeof(abCopyImages2Command), &CopyImages2)
+                  && CopyImages2.uCommandBuffer == uCopyImagesCommandBuffer
+                  && CopyImages2.uSrcImage == uCopyImages2Src && CopyImages2.uDstImage == uCopyImages2Dst
+                  && CopyImages2.cbRegionStride == 80);
 #endif
     Unref.id = 9;
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;

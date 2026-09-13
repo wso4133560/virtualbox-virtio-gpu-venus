@@ -47,8 +47,12 @@ if (Test-Path -LiteralPath $testExe -PathType Leaf) {
     New-Item -ItemType Directory -Force (Join-Path $runtimeBin 'testcase') | Out-Null
     Copy-Item -LiteralPath $testExe -Destination (Join-Path $runtimeBin 'testcase')
 }
-Copy-Item -LiteralPath (Join-Path $repoRoot 'doc\实现进度.md') -Destination $runtimeDocs
-Copy-Item -LiteralPath (Join-Path $repoRoot 'doc\开发计划.md') -Destination $runtimeDocs
+$docRoot = Join-Path $repoRoot 'doc'
+$docFiles = @(Get-ChildItem -LiteralPath $docRoot -Filter '*.md' -File)
+if (-not $docFiles.Count) { throw "Missing runtime documentation under $docRoot" }
+foreach ($docFile in $docFiles) {
+    Copy-Item -LiteralPath $docFile.FullName -Destination $runtimeDocs
+}
 
 $validationFiles = @(
     'virtio-gpu-validation.json', 'baseline-validation.json',
