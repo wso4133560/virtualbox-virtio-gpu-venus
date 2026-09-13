@@ -26,8 +26,12 @@ if (-not $isAdmin) {
         $forward = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $PSCommandPath.Replace('"', '\"') + '"'))
         $forward += @('-RuntimeDirectory', ('"' + $runtime.Replace('"', '\"') + '"'))
         if ($NoProxy) { $forward += '-NoProxy' }
-        if ($ReportPath) { $forward += @('-ReportPath', ('"' + $ReportPath.Replace('"', '\"') + '"')) }
-        $elevated = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList ($forward -join ' ') -Wait -PassThru
+        if ($ReportPath) {
+            $reportFullPath = [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $ReportPath))
+            $forward += @('-ReportPath', ('"' + $reportFullPath.Replace('"', '\"') + '"'))
+        }
+        $elevated = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WorkingDirectory (Get-Location).Path `
+                    -ArgumentList ($forward -join ' ') -Wait -PassThru
         exit $elevated.ExitCode
     }
     throw 'Administrator token required. Open an elevated PowerShell and rerun this script.'
