@@ -418,6 +418,39 @@ static void tstVulkanCopyReadback(PVIRTIOGPU pGpu)
                                                                                        aCopyImageToBuffer,
                                                                                        RT_ELEMENTS(aCopyImageToBuffer));
         RTTESTI_CHECK_RC(rcCopyImageToBufferBatch, VINF_SUCCESS);
+
+        RTTestSub(g_hTest, "Venus PipelineBarrier2 execution");
+        uint8_t abBarrier2Exec[88] = { 0 };
+        uint32_t const uBarrier2ExecSType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        uint64_t const uBarrier2ExecStage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        uint64_t const uBarrier2ExecAccess = VK_ACCESS_2_TRANSFER_READ_BIT;
+        uint32_t const uBarrier2ExecOld = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        uint32_t const uBarrier2ExecNew = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        uint32_t const uBarrier2ExecQueue = VK_QUEUE_FAMILY_IGNORED;
+        uint64_t const uBarrier2ExecImage = 101;
+        memcpy(abBarrier2Exec + 0, &uBarrier2ExecSType, sizeof(uBarrier2ExecSType));
+        memcpy(abBarrier2Exec + 12, &uBarrier2ExecStage, sizeof(uBarrier2ExecStage));
+        memcpy(abBarrier2Exec + 20, &uBarrier2ExecAccess, sizeof(uBarrier2ExecAccess));
+        memcpy(abBarrier2Exec + 28, &uBarrier2ExecStage, sizeof(uBarrier2ExecStage));
+        memcpy(abBarrier2Exec + 36, &uBarrier2ExecAccess, sizeof(uBarrier2ExecAccess));
+        memcpy(abBarrier2Exec + 44, &uBarrier2ExecOld, sizeof(uBarrier2ExecOld));
+        memcpy(abBarrier2Exec + 48, &uBarrier2ExecNew, sizeof(uBarrier2ExecNew));
+        memcpy(abBarrier2Exec + 52, &uBarrier2ExecQueue, sizeof(uBarrier2ExecQueue));
+        memcpy(abBarrier2Exec + 56, &uBarrier2ExecQueue, sizeof(uBarrier2ExecQueue));
+        memcpy(abBarrier2Exec + 60, &uBarrier2ExecImage, sizeof(uBarrier2ExecImage));
+        uint32_t const auBarrier2ExecRange[5] = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        memcpy(abBarrier2Exec + 68, auBarrier2ExecRange, sizeof(auBarrier2ExecRange));
+        VIRTIOGPUPIPELINEBARRIERCMD Barrier2Exec;
+        RT_ZERO(Barrier2Exec);
+        Barrier2Exec.uCommandBuffer = 44;
+        Barrier2Exec.fSrcStage = (uint32_t)uBarrier2ExecStage;
+        Barrier2Exec.fDstStage = (uint32_t)uBarrier2ExecStage;
+        Barrier2Exec.fModern = true;
+        Barrier2Exec.cImageBarriers = 1;
+        Barrier2Exec.pbImageBarrier = abBarrier2Exec;
+        ImageDst.uResourceId = 101;
+        int const rcBarrier2Exec = virtioGpuR3VulkanPipelineBarrier(pGpu, &ImageDst, &Barrier2Exec);
+        RTTESTI_CHECK_RC(rcBarrier2Exec, VINF_SUCCESS);
     }
     else
         RTTestFailed(g_hTest, "GPU image backing required for buffer-to-image test");

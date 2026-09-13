@@ -2294,6 +2294,8 @@ static int virtioGpuR3VulkanPipelineBarrier(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE
     uint32_t const offDstQueue = pBarrier->fModern ? 56 : 32;
     uint32_t const offImage = pBarrier->fModern ? 60 : 36;
     uint32_t const offRange = pBarrier->fModern ? 68 : 44;
+    uint32_t const uExpectedSType = pBarrier->fModern ? (uint32_t)VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2
+                                                      : (uint32_t)VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     memcpy(&sType, pBarrier->pbImageBarrier + 0, sizeof(sType));
     memcpy(&cbNext, pBarrier->pbImageBarrier + 4, sizeof(cbNext));
     memcpy(&fSrcAccess, pBarrier->pbImageBarrier + offAccessSrc, sizeof(fSrcAccess));
@@ -2304,12 +2306,15 @@ static int virtioGpuR3VulkanPipelineBarrier(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE
     memcpy(&uDstQueue, pBarrier->pbImageBarrier + offDstQueue, sizeof(uDstQueue));
     memcpy(&uImage, pBarrier->pbImageBarrier + offImage, sizeof(uImage));
     memcpy(auRange, pBarrier->pbImageBarrier + offRange, sizeof(auRange));
-    if (sType != VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER || cbNext != 0 || uImage == 0
+    if (sType != uExpectedSType
+        || cbNext != 0 || uImage == 0
         || uImage > UINT32_MAX || (uint32_t)uImage != pRes->uResourceId
         || uSrcQueue != VK_QUEUE_FAMILY_IGNORED || uDstQueue != VK_QUEUE_FAMILY_IGNORED
         || auRange[0] != VK_IMAGE_ASPECT_COLOR_BIT || auRange[1] || auRange[2] != 1
         || auRange[3] || auRange[4] != 1)
+    {
         return VERR_INVALID_PARAMETER;
+    }
     if (pRes->enmVkImageLayout != VK_IMAGE_LAYOUT_UNDEFINED
         && enmOldLayout != (uint32_t)pRes->enmVkImageLayout)
         return VERR_INVALID_PARAMETER;
