@@ -362,6 +362,29 @@ static void tstVulkanCopyReadback(PVIRTIOGPU pGpu)
             RTTestIPrintf(RTTESTLVL_ALWAYS, "persistent Vulkan buffer copy: single8=%llu ns, batch8=%llu ns (%llu ns/copy)\n",
                           (unsigned long long)tsSingleNs, (unsigned long long)tsBatchNs,
                           (unsigned long long)(tsBatchNs / RT_ELEMENTS(aThroughputCopy)));
+            VIRTIOGPUCOPYCMD aThroughputCopy64[64];
+            RT_ZERO(aThroughputCopy64);
+            for (unsigned i = 0; i < RT_ELEMENTS(aThroughputCopy64); ++i)
+            {
+                aThroughputCopy64[i].offSrc = 0;
+                aThroughputCopy64[i].offDst = 0;
+                aThroughputCopy64[i].cbCopy = sizeof(abSrc);
+            }
+            uint64_t const tsSingle64Start = RTTimeNanoTS();
+            int rcThroughput64 = VINF_SUCCESS;
+            for (unsigned i = 0; i < RT_ELEMENTS(aThroughputCopy64) && RT_SUCCESS(rcThroughput64); ++i)
+                rcThroughput64 = virtioGpuR3VulkanCopyBuffer(pGpu, &Src, &Dst, 0, 0, sizeof(abSrc));
+            uint64_t const tsSingle64Ns = RTTimeNanoTS() - tsSingle64Start;
+            uint64_t const tsBatch64Start = RTTimeNanoTS();
+            if (RT_SUCCESS(rcThroughput64))
+                rcThroughput64 = virtioGpuR3VulkanCopyBufferBatch(pGpu, &Src, &Dst,
+                                                                    aThroughputCopy64,
+                                                                    RT_ELEMENTS(aThroughputCopy64));
+            uint64_t const tsBatch64Ns = RTTimeNanoTS() - tsBatch64Start;
+            RTTESTI_CHECK_RC(rcThroughput64, VINF_SUCCESS);
+            RTTestIPrintf(RTTESTLVL_ALWAYS, "persistent Vulkan buffer copy64: single64=%llu ns, batch64=%llu ns (%llu ns/copy)\n",
+                          (unsigned long long)tsSingle64Ns, (unsigned long long)tsBatch64Ns,
+                          (unsigned long long)(tsBatch64Ns / RT_ELEMENTS(aThroughputCopy64)));
         }
     }
     else

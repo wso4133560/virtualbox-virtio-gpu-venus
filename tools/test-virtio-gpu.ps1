@@ -63,7 +63,17 @@ if ($bufferCopyMatch.Success) {
     }
 }
 $bufferCopyValid = $null -ne $bufferCopy -and $bufferCopy.single8Ns -gt 0 -and $bufferCopy.batch8Ns -gt 0 -and $bufferCopy.batchNsPerCopy -gt 0
-$passed = $passed -and $bufferCopyValid
+$bufferCopy64Match = [regex]::Match($text, '(?m)^tstVirtioGPU: persistent Vulkan buffer copy64: single64=(?<single>\d+) ns, batch64=(?<batch>\d+) ns \((?<perCopy>\d+) ns/copy\)\s*$')
+$bufferCopy64 = $null
+if ($bufferCopy64Match.Success) {
+    $bufferCopy64 = [ordered]@{
+        single64Ns = [uint64]$bufferCopy64Match.Groups['single'].Value
+        batch64Ns = [uint64]$bufferCopy64Match.Groups['batch'].Value
+        batch64NsPerCopy = [uint64]$bufferCopy64Match.Groups['perCopy'].Value
+    }
+}
+$bufferCopy64Valid = $null -ne $bufferCopy64 -and $bufferCopy64.single64Ns -gt 0 -and $bufferCopy64.batch64Ns -gt 0 -and $bufferCopy64.batch64NsPerCopy -gt 0
+$passed = $passed -and $bufferCopyValid -and $bufferCopy64Valid
 
 # Verify the production configuration hand-off that the standalone callback test
 # cannot exercise without a registered COM server and a bootable guest image.
@@ -127,6 +137,8 @@ $report = [ordered]@{
     missingGroups = $missingGroups
     persistentBufferCopy = $bufferCopy
     persistentBufferCopyValid = $bufferCopyValid
+    persistentBufferCopy64 = $bufferCopy64
+    persistentBufferCopy64Valid = $bufferCopy64Valid
     hostVulkan = $hostVulkan
     configurationChain = $configChain
     artifacts = @($artifacts)
