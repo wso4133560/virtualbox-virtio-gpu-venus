@@ -28,7 +28,7 @@ $required = @(
     'VBoxRT.dll', 'VBoxVMM.dll', 'VBoxSVC.exe', 'VBoxSDS.exe', 'VBoxHeadless.exe',
     'VBoxManage.exe', 'VBoxC.dll', 'VBoxProxyStub.dll', 'VBoxDD.dll',
     'VBoxDD2.dll', 'VBoxDDU.dll', 'VMMR0.r0', 'VBoxSup.sys',
-    'VBoxEFI-amd64.fd', 'comregister.cmd'
+    'VBoxEFI-amd64.fd', 'VBoxSup.inf', 'comregister.cmd'
 )
 foreach ($name in $required) {
     Require-File (Join-Path $binRoot $name) "Windows runtime artifact $name"
