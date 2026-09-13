@@ -391,6 +391,67 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(g_cDisplayUpdates == 2);
     for (unsigned i = 0; i < RT_ELEMENTS(abPixels) / sizeof(uint32_t); ++i)
         RTTESTI_CHECK(((uint32_t *)pGpu->aResources[0].pbPixels)[i] == UINT32_C(0x11223344));
+
+    uint8_t abClearSubmitCommand[84] = { 0 };
+    uint32_t uClearSubmitType = 119;
+    uint64_t uClearSubmitCommandBuffer = 43;
+    uint64_t uClearSubmitImage = 7;
+    uint32_t uClearSubmitLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    uint64_t cbClearSubmitColor = 1;
+    uint32_t auClearSubmitColor[4] = { 0, 0, 0, UINT32_C(0x3f800000) };
+    uint32_t cClearSubmitRanges = 1;
+    uint64_t cbClearSubmitRanges = 20;
+    uint32_t auClearSubmitRange[5] = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    memcpy(abClearSubmitCommand + 0, &uClearSubmitType, sizeof(uClearSubmitType));
+    memcpy(abClearSubmitCommand + 8, &uClearSubmitCommandBuffer, sizeof(uClearSubmitCommandBuffer));
+    memcpy(abClearSubmitCommand + 16, &uClearSubmitImage, sizeof(uClearSubmitImage));
+    memcpy(abClearSubmitCommand + 24, &uClearSubmitLayout, sizeof(uClearSubmitLayout));
+    memcpy(abClearSubmitCommand + 28, &cbClearSubmitColor, sizeof(cbClearSubmitColor));
+    memcpy(abClearSubmitCommand + 36, auClearSubmitColor, sizeof(auClearSubmitColor));
+    memcpy(abClearSubmitCommand + 52, &cClearSubmitRanges, sizeof(cClearSubmitRanges));
+    memcpy(abClearSubmitCommand + 56, &cbClearSubmitRanges, sizeof(cbClearSubmitRanges));
+    memcpy(abClearSubmitCommand + 64, auClearSubmitRange, sizeof(auClearSubmitRange));
+    struct { uint32_t cchName, fInit; char szName[64]; } ClearContextCreate = { 5, 0, "clear" };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_CTX_CREATE, &ClearContextCreate,
+                   sizeof(ClearContextCreate), 24, 43);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    uint32_t uClearResource = 7;
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_CTX_ATTACH_RESOURCE, &uClearResource,
+                   sizeof(uClearResource), 24, 43);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    struct { VIRTIOGPUSUBMIT3D Hdr; uint32_t uResourceId; uint8_t abCommand[84]; }
+        SubmitClear = { { 84, 1 }, 7, { 0 } };
+    memcpy(SubmitClear.abCommand, abClearSubmitCommand, sizeof(abClearSubmitCommand));
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SUBMIT_3D, &SubmitClear,
+                   sizeof(SubmitClear), 24, 43);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
+    memset(pGpu->aResources[0].pbPixels, 0, sizeof(abPixels));
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_FLUSH, &Flush, sizeof(Flush), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && pGpu->aScanouts[0].uFlushSequence == 3);
+    RTTESTI_CHECK(g_cDisplayUpdates == 3);
+    for (unsigned i = 0; i < RT_ELEMENTS(abPixels) / sizeof(uint32_t); ++i)
+        RTTESTI_CHECK(((uint32_t *)pGpu->aResources[0].pbPixels)[i] == UINT32_C(0xff000000));
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_CTX_DETACH_RESOURCE, &uClearResource,
+                   sizeof(uClearResource), 24, 43);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_CTX_DESTROY, NULL, 0, 24, 43);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
 #endif
 
     struct { uint32_t id, padding; } Detach = { 7, 0 };
@@ -473,6 +534,29 @@ int main(int argc, char **argv)
                   && Fill.cbBuffer == cbBuffer && Fill.uData == uData);
     abCommand[4] = 1;
     RTTESTI_CHECK(!virtioGpuR3DecodeFillBuffer(abCommand, sizeof(abCommand), &Fill));
+    uint8_t abClearCommand[84] = { 0 };
+    uint32_t uClearType = 119;
+    uint64_t uClearCommandBuffer = 42;
+    uint64_t uClearImage = 7;
+    uint32_t uClearLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    uint64_t cbClearColor = 1;
+    uint32_t auClearColor[4] = { 0, 0, 0, UINT32_C(0x3f800000) };
+    uint32_t cClearRanges = 1;
+    uint64_t cbClearRanges = 20;
+    uint32_t auClearRange[5] = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    memcpy(abClearCommand + 0, &uClearType, sizeof(uClearType));
+    memcpy(abClearCommand + 8, &uClearCommandBuffer, sizeof(uClearCommandBuffer));
+    memcpy(abClearCommand + 16, &uClearImage, sizeof(uClearImage));
+    memcpy(abClearCommand + 24, &uClearLayout, sizeof(uClearLayout));
+    memcpy(abClearCommand + 28, &cbClearColor, sizeof(cbClearColor));
+    memcpy(abClearCommand + 36, auClearColor, sizeof(auClearColor));
+    memcpy(abClearCommand + 52, &cClearRanges, sizeof(cClearRanges));
+    memcpy(abClearCommand + 56, &cbClearRanges, sizeof(cbClearRanges));
+    memcpy(abClearCommand + 64, auClearRange, sizeof(auClearRange));
+    VIRTIOGPUCLEARCOLORCMD Clear;
+    RTTESTI_CHECK(virtioGpuR3DecodeClearColorImage(abClearCommand, sizeof(abClearCommand), &Clear)
+                  && Clear.uCommandBuffer == uClearCommandBuffer && Clear.uImage == uClearImage
+                  && Clear.enmImageLayout == uClearLayout && Clear.cRanges == 1);
 #endif
     Unref.id = 9;
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
