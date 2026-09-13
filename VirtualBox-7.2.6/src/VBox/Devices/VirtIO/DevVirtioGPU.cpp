@@ -2369,7 +2369,8 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                 if (pBuf->cbPhysSend < sizeof(Cmd) || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Cmd, sizeof(Cmd))))
                     Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
                 else if (Cmd.id == 0 || virtioGpuR3FindResource(pThis, Cmd.id)
-                         || Cmd.format != VIRTIOGPU_FORMAT_B8G8R8X8_UNORM
+                         || (Cmd.format != VIRTIOGPU_FORMAT_B8G8R8A8_UNORM
+                             && Cmd.format != VIRTIOGPU_FORMAT_B8G8R8X8_UNORM)
                          || Cmd.width == 0 || Cmd.height == 0 || Cmd.width > 16384 || Cmd.height > 16384
                          || (uint64_t)Cmd.width * Cmd.height * 4 > VIRTIOGPU_MAX_RESOURCE_BYTES
                          || pThis->cbAllocated + (uint64_t)Cmd.width * Cmd.height * 4 > VIRTIOGPU_MAX_RESOURCE_BYTES)
@@ -3246,7 +3247,8 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                 {
                     PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResource(pThis, Cmd.uResourceId);
                     bool const fValid = pRes && pRes->pbPixels
-                        && pRes->uFormat == VIRTIOGPU_FORMAT_B8G8R8X8_UNORM
+                        && (pRes->uFormat == VIRTIOGPU_FORMAT_B8G8R8A8_UNORM
+                            || pRes->uFormat == VIRTIOGPU_FORMAT_B8G8R8X8_UNORM)
                         && pRes->uWidth && pRes->uHeight
                         && pRes->uWidth <= 64 && pRes->uHeight <= 64
                         && Cmd.uHotX < pRes->uWidth && Cmd.uHotY < pRes->uHeight
@@ -3471,7 +3473,8 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &pRes->uHeight);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &pRes->cBacking);
             if (RT_SUCCESS(rc) && (pRes->cBacking > VIRTIOGPU_MAX_BACKING_ENTRIES || !pRes->uResourceId
-                                   || (!pRes->fBlob && pRes->uFormat != VIRTIOGPU_FORMAT_B8G8R8X8_UNORM)
+                                   || (!pRes->fBlob && pRes->uFormat != VIRTIOGPU_FORMAT_B8G8R8A8_UNORM
+                                       && pRes->uFormat != VIRTIOGPU_FORMAT_B8G8R8X8_UNORM)
                                    || (pRes->fBlob && (pRes->uFormat != 0 || pRes->uHeight != 1))
                                    || !pRes->uWidth
                                    || (uint64_t)pRes->uWidth * pRes->uHeight * 4 > VIRTIOGPU_MAX_RESOURCE_BYTES))
