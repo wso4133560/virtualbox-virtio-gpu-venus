@@ -194,6 +194,8 @@ static uint32_t tstCompletion(PVIRTIOCORE pCore, unsigned uQueue, uint16_t uBefo
 static PFN_vkGetInstanceProcAddr g_pfnCopyTestInstanceProc;
 static PFN_vkGetDeviceProcAddr g_pfnCopyTestDeviceProc;
 static unsigned g_cDroppedCopies;
+static bool g_fDropBufferToImage;
+static unsigned g_cDroppedBufferToImage;
 
 /* Suppress only the copy recording. Submission, fences and mapped memory still
  * use the real GPU driver, so a CPU replacement copy cannot pass this test. */
@@ -204,10 +206,20 @@ static VKAPI_ATTR void VKAPI_CALL tstVkDropCopyBuffer(VkCommandBuffer hCmd, VkBu
     ++g_cDroppedCopies;
 }
 
+static VKAPI_ATTR void VKAPI_CALL tstVkDropCopyBufferToImage(VkCommandBuffer hCmd, VkBuffer hSrc, VkImage hDst,
+                                                             VkImageLayout enmLayout, uint32_t cRegions,
+                                                             const VkBufferImageCopy *paRegions)
+{
+    RT_NOREF(hCmd, hSrc, hDst, enmLayout, cRegions, paRegions);
+    ++g_cDroppedBufferToImage;
+}
+
 static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL tstVkCopyDeviceProc(VkDevice hDevice, const char *pszName)
 {
     if (!strcmp(pszName, "vkCmdCopyBuffer"))
         return (PFN_vkVoidFunction)tstVkDropCopyBuffer;
+    if (g_fDropBufferToImage && !strcmp(pszName, "vkCmdCopyBufferToImage"))
+        return (PFN_vkVoidFunction)tstVkDropCopyBufferToImage;
     return g_pfnCopyTestDeviceProc(hDevice, pszName);
 }
 
@@ -284,6 +296,58 @@ static void tstVulkanCopyReadback(PVIRTIOGPU pGpu)
     }
     else
         RTTestFailed(g_hTest, "GPU buffer backing required for copy readback test");
+
+    /* buffer -> image must also leave the staging buffer untouched when the
+       GPU copy is suppressed; the old CPU replacement would fail this. */
+    uint8_t abImageSrc[16], abImageDst[16], abImageRegion[56];
+    memset(abImageSrc, 0x17, sizeof(abImageSrc));
+    memset(abImageDst, 0xc3, sizeof(abImageDst));
+    memset(abImageRegion, 0, sizeof(abImageRegion));
+    uint32_t const uAspect = VK_IMAGE_ASPECT_COLOR_BIT;
+    uint32_t const uLayerCount = 1;
+    uint32_t const auExtent[3] = { 2, 2, 1 };
+    memcpy(abImageRegion + 16, &uAspect, sizeof(uAspect));
+    memcpy(abImageRegion + 28, &uLayerCount, sizeof(uLayerCount));
+    memcpy(abImageRegion + 44, auExtent, sizeof(auExtent));
+    VIRTIOGPURESOURCE ImageSrc, ImageDst;
+    RT_ZERO(ImageSrc);
+    RT_ZERO(ImageDst);
+    ImageSrc.fBlob = true;
+    ImageSrc.cbPixels = sizeof(abImageSrc);
+    ImageSrc.pbPixels = abImageSrc;
+    ImageDst.cbPixels = sizeof(abImageDst);
+    ImageDst.pbPixels = abImageDst;
+    ImageDst.uWidth = ImageDst.uHeight = 2;
+    int const rcImageSrc = virtioGpuR3VulkanResourceCreate(pGpu, &ImageSrc);
+    int const rcImageDst = virtioGpuR3VulkanResourceCreate(pGpu, &ImageDst);
+    RTTESTI_CHECK_RC(rcImageSrc, VINF_SUCCESS);
+    RTTESTI_CHECK_RC(rcImageDst, VINF_SUCCESS);
+    if (RT_SUCCESS(rcImageSrc) && RT_SUCCESS(rcImageDst) && ImageSrc.fVulkanBuffer && ImageDst.fVulkanImage)
+    {
+        VIRTIOGPUCOPYBUFFERTOIMAGECMD CopyToImage;
+        RT_ZERO(CopyToImage);
+        CopyToImage.uCommandBuffer = 42;
+        CopyToImage.uSrcBuffer = 100;
+        CopyToImage.uDstImage = 101;
+        CopyToImage.enmDstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        CopyToImage.cRegions = 1;
+        CopyToImage.cbRegions = sizeof(abImageRegion);
+        CopyToImage.pbRegions = abImageRegion;
+        g_cDroppedBufferToImage = 0;
+        g_fDropBufferToImage = true;
+        pGpu->pfnVkGetInstanceProcAddr = tstVkCopyInstanceProc;
+        int const rcCopyToImage = virtioGpuR3VulkanCopyBufferToImage(pGpu, &ImageSrc, &ImageDst, &CopyToImage);
+        pGpu->pfnVkGetInstanceProcAddr = g_pfnCopyTestInstanceProc;
+        g_fDropBufferToImage = false;
+        RTTESTI_CHECK_RC(rcCopyToImage, VINF_SUCCESS);
+        RTTESTI_CHECK(g_cDroppedBufferToImage == 1 && ImageDst.fVulkanImageDirty);
+        RTTESTI_CHECK(memcmp(ImageDst.pvVkMapped, abImageDst, sizeof(abImageDst)) == 0);
+        RTTESTI_CHECK(memcmp(ImageDst.pbPixels, abImageDst, sizeof(abImageDst)) == 0);
+    }
+    else
+        RTTestFailed(g_hTest, "GPU image backing required for buffer-to-image test");
+    virtioGpuR3VulkanResourceDestroy(pGpu, &ImageDst);
+    virtioGpuR3VulkanResourceDestroy(pGpu, &ImageSrc);
     virtioGpuR3VulkanResourceDestroy(pGpu, &Dst);
     virtioGpuR3VulkanResourceDestroy(pGpu, &Src);
 }

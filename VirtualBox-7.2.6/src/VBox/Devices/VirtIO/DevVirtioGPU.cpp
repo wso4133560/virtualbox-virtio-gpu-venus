@@ -1571,10 +1571,8 @@ static int virtioGpuR3VulkanCopyBufferToImage(PVIRTIOGPU pThis, PVIRTIOGPURESOUR
         || pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, hFence) != VK_SUCCESS
         || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
         return VERR_NOT_SUPPORTED;
-    memcpy(pDst->pvVkMapped, pSrc->pvVkMapped, (size_t)pDst->cbPixels);
-    memcpy(pDst->pbPixels, pDst->pvVkMapped, (size_t)pDst->cbPixels);
     pDst->enmVkImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    pDst->fVulkanImageDirty = false;
+    pDst->fVulkanImageDirty = true;
     return VINF_SUCCESS;
 # undef VK_COPY_IMAGE_PROC
 }
