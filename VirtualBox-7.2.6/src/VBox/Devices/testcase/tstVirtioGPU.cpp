@@ -1368,6 +1368,42 @@ int main(int argc, char **argv)
     VIRTIOGPUPIPELINEBARRIERCMD Barrier;
     RTTESTI_CHECK(virtioGpuR3DecodePipelineBarrier(abBarrierCommand, sizeof(abBarrierCommand), &Barrier)
                   && Barrier.uCommandBuffer == uBarrierCommandBuffer && Barrier.cImageBarriers == 1);
+    uint8_t abBarrier2Command[164] = { 0 };
+    uint32_t uBarrier2Type = 204;
+    uint64_t uBarrier2InfoPtr = 1;
+    uint32_t uBarrier2InfoType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    uint32_t uBarrier2ImageCount = 1;
+    uint64_t uBarrier2ImageArray = 1;
+    uint32_t uBarrier2SType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    uint64_t uBarrier2SrcStage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    uint64_t uBarrier2SrcAccess = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    uint64_t uBarrier2DstStage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    uint64_t uBarrier2DstAccess = VK_ACCESS_2_TRANSFER_READ_BIT;
+    uint32_t uBarrier2OldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    uint32_t uBarrier2NewLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    uint32_t uBarrier2Queue = VK_QUEUE_FAMILY_IGNORED;
+    uint64_t uBarrier2Image = 7;
+    memcpy(abBarrier2Command + 0, &uBarrier2Type, sizeof(uBarrier2Type));
+    memcpy(abBarrier2Command + 8, &uBarrierCommandBuffer, sizeof(uBarrierCommandBuffer));
+    memcpy(abBarrier2Command + 16, &uBarrier2InfoPtr, sizeof(uBarrier2InfoPtr));
+    memcpy(abBarrier2Command + 24, &uBarrier2InfoType, sizeof(uBarrier2InfoType));
+    memcpy(abBarrier2Command + 64, &uBarrier2ImageCount, sizeof(uBarrier2ImageCount));
+    memcpy(abBarrier2Command + 68, &uBarrier2ImageArray, sizeof(uBarrier2ImageArray));
+    memcpy(abBarrier2Command + 76, &uBarrier2SType, sizeof(uBarrier2SType));
+    memcpy(abBarrier2Command + 88, &uBarrier2SrcStage, sizeof(uBarrier2SrcStage));
+    memcpy(abBarrier2Command + 96, &uBarrier2SrcAccess, sizeof(uBarrier2SrcAccess));
+    memcpy(abBarrier2Command + 104, &uBarrier2DstStage, sizeof(uBarrier2DstStage));
+    memcpy(abBarrier2Command + 112, &uBarrier2DstAccess, sizeof(uBarrier2DstAccess));
+    memcpy(abBarrier2Command + 120, &uBarrier2OldLayout, sizeof(uBarrier2OldLayout));
+    memcpy(abBarrier2Command + 124, &uBarrier2NewLayout, sizeof(uBarrier2NewLayout));
+    memcpy(abBarrier2Command + 128, &uBarrier2Queue, sizeof(uBarrier2Queue));
+    memcpy(abBarrier2Command + 132, &uBarrier2Queue, sizeof(uBarrier2Queue));
+    memcpy(abBarrier2Command + 136, &uBarrier2Image, sizeof(uBarrier2Image));
+    memcpy(abBarrier2Command + 144, auClearRange, sizeof(auClearRange));
+    VIRTIOGPUPIPELINEBARRIERCMD Barrier2;
+    RTTESTI_CHECK(virtioGpuR3DecodePipelineBarrier2(abBarrier2Command, sizeof(abBarrier2Command), &Barrier2)
+                  && Barrier2.uCommandBuffer == uBarrierCommandBuffer && Barrier2.fModern
+                  && Barrier2.cImageBarriers == 1);
     uint8_t abCopyImagesCommand[120] = { 0 };
     uint32_t uCopyImagesType = 113;
     uint64_t uCopyImagesCommandBuffer = 42;
