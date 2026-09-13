@@ -857,6 +857,9 @@ int main(int argc, char **argv)
     struct { uint32_t x, y, w, h, id, padding; } Flush = { 0, 0, 2, 2, 7, 0 };
     /* RESOURCE_FLUSH must expose image contents back to the display shadow. */
     memset(pGpu->aResources[0].pbPixels, 0, sizeof(abPixels));
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    pGpu->aResources[0].fVulkanImageDirty = true;
+#endif
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_FLUSH, &Flush, sizeof(Flush), 24);
     virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
@@ -869,6 +872,7 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(RT_SUCCESS(virtioGpuR3VulkanFillBuffer(pGpu, &pGpu->aResources[0], 0,
                                                          sizeof(abPixels), UINT32_C(0x11223344))));
     memset(pGpu->aResources[0].pbPixels, 0, sizeof(abPixels));
+    pGpu->aResources[0].fVulkanImageDirty = true;
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_FLUSH, &Flush, sizeof(Flush), 24);
     virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
@@ -1026,6 +1030,7 @@ int main(int argc, char **argv)
                   && !memcmp(pGpu->aResources[1].pbPixels, pGpu->aResources[0].pbPixels, sizeof(abPixels)));
 
     memset(pGpu->aResources[0].pbPixels, 0, sizeof(abPixels));
+    pGpu->aResources[0].fVulkanImageDirty = true;
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_FLUSH, &Flush, sizeof(Flush), 24);
     virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
@@ -1240,6 +1245,7 @@ int main(int argc, char **argv)
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
     memset(pGpu->aResources[0].pbPixels, 0, sizeof(abPixels));
+    pGpu->aResources[0].fVulkanImageDirty = true;
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_FLUSH, &Flush, sizeof(Flush), 24);
     virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);

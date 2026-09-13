@@ -4523,7 +4523,15 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                         int rcReadback = VINF_SUCCESS;
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
                         if (fScanout)
-                            rcReadback = virtioGpuR3VulkanResourceReadbackImage(pThis, pRes);
+                        {
+                            /* Mappable blobs are guest-owned BAR memory.  Push
+                             * those writes to the host buffer before display;
+                             * reading the stale image back would overwrite them. */
+                            if (pRes->fSharedMemory)
+                                rcReadback = virtioGpuR3VulkanResourceSync(pThis, pRes);
+                            else if (pRes->fVulkanImageDirty)
+                                rcReadback = virtioGpuR3VulkanResourceReadbackImage(pThis, pRes);
+                        }
 #endif
                         if (RT_FAILURE(rcReadback))
                             Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
