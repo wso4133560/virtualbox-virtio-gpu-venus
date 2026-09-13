@@ -681,6 +681,16 @@ static int virtioGpuR3VulkanResourceCreate(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE 
         if (RT_FAILURE(rcImage))
             LogRel2(("virtio-gpu: image backing unavailable for resource %u (%Rrc); using buffer backing\n",
                      pRes->uResourceId, rcImage));
+        else
+        {
+            int const rcSync = virtioGpuR3VulkanResourceSync(pThis, pRes);
+            if (RT_FAILURE(rcSync))
+            {
+                LogRel2(("virtio-gpu: image initialization failed for resource %u (%Rrc); using buffer backing\n",
+                         pRes->uResourceId, rcSync));
+                virtioGpuR3VulkanResourceDestroy(pThis, pRes);
+            }
+        }
     }
     return VINF_SUCCESS;
 resource_cleanup:
