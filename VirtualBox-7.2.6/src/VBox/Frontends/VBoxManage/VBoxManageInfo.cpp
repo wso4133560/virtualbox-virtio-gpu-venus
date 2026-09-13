@@ -1551,6 +1551,17 @@ HRESULT showVMInfo(ComPtr<IVirtualBox> pVirtualBox,
             RTPrintf("graphicscontroller=\"%s\"\n", pszCtrl);
         else
             RTPrintf("%-28s %s\n", Info::tr("Graphics Controller:"), pszCtrl);
+
+        Bstr strGpuBackend;
+        if (SUCCEEDED(machine->GetExtraData(Bstr("VBoxInternal/Devices/virtio-gpu/0/Config/Backend").raw(),
+                                             strGpuBackend.asOutParam()))
+            && !strGpuBackend.isEmpty())
+        {
+            if (details == VMINFO_MACHINEREADABLE)
+                RTPrintf("gpu-backend=\"%ls\"\n", strGpuBackend.raw());
+            else
+                RTPrintf("%-28s %ls\n", Info::tr("GPU Backend:"), strGpuBackend.raw());
+        }
     }
 
     SHOW_ULONG_PROP(pGraphicsAdapter, MonitorCount,             "monitorcount",             Info::tr("Monitor count:"), "");
