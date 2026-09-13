@@ -42,6 +42,7 @@
 #define VIRTIOGPU_VK_CMD_COPY_IMAGE_TO_BUFFER UINT32_C(116)
 #define VIRTIOGPU_VK_CMD_PIPELINE_BARRIER UINT32_C(126)
 #define VIRTIOGPU_VK_CMD_COPY_IMAGE UINT32_C(113)
+#define VIRTIOGPU_VK_CMD_COPY_BUFFER2 UINT32_C(207)
 #define VIRTIOGPU_MAX_BACKING_ENTRIES 64
 #define VIRTIOGPU_MAX_RESOURCE_BYTES (UINT64_C(256) * _1M)
 #define VIRTIOGPU_SHARED_MEMORY_BYTES (UINT64_C(256) * _1M)
@@ -1182,6 +1183,7 @@ typedef struct VIRTIOGPUCOPYCMD
     uint64_t uDstBuffer;
     uint32_t cRegions;
     uint64_t cbRegions;
+    uint32_t cbRegionStride;
     const uint8_t *pbRegions;
     uint64_t offSrc;
     uint64_t offDst;
@@ -1291,11 +1293,57 @@ static bool virtioGpuR3DecodeCopyBuffer(const uint8_t *pbCommand, size_t cbComma
         || cbCommand != 44 + (size_t)pCopy->cbRegions)
         return false;
     pCopy->pbRegions = pbCommand + 44;
+    pCopy->cbRegionStride = 24;
     memcpy(&pCopy->offSrc, pCopy->pbRegions + 0, sizeof(pCopy->offSrc));
     memcpy(&pCopy->offDst, pCopy->pbRegions + 8, sizeof(pCopy->offDst));
     memcpy(&pCopy->cbCopy, pCopy->pbRegions + 16, sizeof(pCopy->cbCopy));
     return pCopy->uCommandBuffer != 0 && pCopy->uSrcBuffer != 0 && pCopy->uDstBuffer != 0
         && pCopy->cbCopy != 0;
+}
+
+/* Decode the Vulkan 1.3 vkCmdCopyBuffer2 serialization emitted by Mesa
+ * Venus.  The nested VkCopyBufferInfo2/VkBufferCopy2 pNext pointers are
+ * encoded as simple pointers and must be null for this bounded backend. */
+static bool virtioGpuR3DecodeCopyBuffer2(const uint8_t *pbCommand, size_t cbCommand,
+                                         VIRTIOGPUCOPYCMD *pCopy)
+{
+    if (!pbCommand || !pCopy || cbCommand < 100)
+        return false;
+    uint32_t uCommandType = 0, fCommand = 0, uInfoType = 0;
+    uint64_t uInfoPtrRaw = 0, uNext = 0, uArrayCount = 0;
+    uint32_t cRegions = 0;
+    memcpy(&uCommandType, pbCommand + 0, sizeof(uCommandType));
+    memcpy(&fCommand, pbCommand + 4, sizeof(fCommand));
+    memcpy(&uInfoPtrRaw, pbCommand + 16, sizeof(uInfoPtrRaw));
+    if (uCommandType != VIRTIOGPU_VK_CMD_COPY_BUFFER2 || fCommand || uInfoPtrRaw != 1)
+        return false;
+    memcpy(&uInfoType, pbCommand + 24, sizeof(uInfoType));
+    memcpy(&uNext, pbCommand + 28, sizeof(uNext));
+    if (uInfoType != VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2 || uNext)
+        return false;
+    memcpy(&pCopy->uCommandBuffer, pbCommand + 36, sizeof(pCopy->uCommandBuffer));
+    memcpy(&pCopy->uSrcBuffer, pbCommand + 36, sizeof(pCopy->uSrcBuffer));
+    memcpy(&pCopy->uDstBuffer, pbCommand + 44, sizeof(pCopy->uDstBuffer));
+    memcpy(&cRegions, pbCommand + 52, sizeof(cRegions));
+    memcpy(&uArrayCount, pbCommand + 56, sizeof(uArrayCount));
+    if (!pCopy->uCommandBuffer || !pCopy->uSrcBuffer || cRegions == 0 || cRegions > 256
+        || uArrayCount != cRegions || cbCommand != 64 + (size_t)cRegions * 36)
+        return false;
+    pCopy->cRegions = cRegions;
+    pCopy->cbRegions = (uint64_t)cRegions * 36;
+    pCopy->cbRegionStride = 36;
+    pCopy->pbRegions = pbCommand + 64;
+    for (uint32_t i = 0; i < cRegions; ++i)
+    {
+        const uint8_t *pbRegion = pCopy->pbRegions + (size_t)i * pCopy->cbRegionStride;
+        uint32_t uRegionNextType = 0;
+        uint64_t uRegionNext = 0;
+        memcpy(&uRegionNextType, pbRegion + 0, sizeof(uRegionNextType));
+        memcpy(&uRegionNext, pbRegion + 4, sizeof(uRegionNext));
+        if (uRegionNextType != VK_STRUCTURE_TYPE_BUFFER_COPY_2 || uRegionNext)
+            return false;
+    }
+    return pCopy->uSrcBuffer != 0 && pCopy->uDstBuffer != 0;
 }
 
 static bool virtioGpuR3DecodeUpdateBuffer(const uint8_t *pbCommand, size_t cbCommand, VIRTIOGPUUPDATECMD *pUpdate)
@@ -2031,11 +2079,16 @@ static int virtioGpuR3VulkanCopyBufferRegions(PVIRTIOGPU pThis, PVIRTIOGPURESOUR
     if (RT_FAILURE(rcEnsure))
         return rcEnsure;
     VkBufferCopy aRegions[256];
+    uint32_t const cbRegionStride = pCopy->cbRegionStride ? pCopy->cbRegionStride : 24;
+    if (cbRegionStride < 24 || (pCopy->cbRegions && pCopy->cbRegions != (uint64_t)pCopy->cRegions * cbRegionStride))
+        return VERR_INVALID_PARAMETER;
     for (uint32_t i = 0; i < pCopy->cRegions; ++i)
     {
-        memcpy(&aRegions[i].srcOffset, pCopy->pbRegions + i * 24 + 0, sizeof(aRegions[i].srcOffset));
-        memcpy(&aRegions[i].dstOffset, pCopy->pbRegions + i * 24 + 8, sizeof(aRegions[i].dstOffset));
-        memcpy(&aRegions[i].size, pCopy->pbRegions + i * 24 + 16, sizeof(aRegions[i].size));
+        const uint8_t *pbRegion = pCopy->pbRegions + (size_t)i * cbRegionStride;
+        uint32_t const offFields = cbRegionStride == 36 ? 12 : 0;
+        memcpy(&aRegions[i].srcOffset, pbRegion + offFields + 0, sizeof(aRegions[i].srcOffset));
+        memcpy(&aRegions[i].dstOffset, pbRegion + offFields + 8, sizeof(aRegions[i].dstOffset));
+        memcpy(&aRegions[i].size, pbRegion + offFields + 16, sizeof(aRegions[i].size));
         if (aRegions[i].srcOffset > pSrc->cbPixels || aRegions[i].size > pSrc->cbPixels - aRegions[i].srcOffset
             || aRegions[i].dstOffset > pDst->cbPixels || aRegions[i].size > pDst->cbPixels - aRegions[i].dstOffset
             || !aRegions[i].size)
@@ -2952,20 +3005,25 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                             else
                             {
                                 VIRTIOGPUCOPYCMD Copy;
+                                VIRTIOGPUCOPYCMD Copy2;
                                 PVIRTIOGPURESOURCE pSrc = NULL;
                                 PVIRTIOGPURESOURCE pDst = NULL;
-                                if (!virtioGpuR3DecodeCopyBuffer(pbCommand, Cmd.cbCommand, &Copy)
-                                    || Copy.uSrcBuffer > UINT32_MAX || Copy.uDstBuffer > UINT32_MAX
-                                    || !(pSrc = virtioGpuR3FindResource(pThis, (uint32_t)Copy.uSrcBuffer))
-                                    || !(pDst = virtioGpuR3FindResource(pThis, (uint32_t)Copy.uDstBuffer))
-                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)Copy.uSrcBuffer)
-                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)Copy.uDstBuffer))
+                                bool const fCopy2 = virtioGpuR3DecodeCopyBuffer2(pbCommand, Cmd.cbCommand, &Copy2);
+                                VIRTIOGPUCOPYCMD const *pCopy = fCopy2 ? &Copy2 : &Copy;
+                                bool const fDecoded = fCopy2
+                                    || virtioGpuR3DecodeCopyBuffer(pbCommand, Cmd.cbCommand, &Copy);
+                                if (!fDecoded
+                                    || pCopy->uSrcBuffer > UINT32_MAX || pCopy->uDstBuffer > UINT32_MAX
+                                    || !(pSrc = virtioGpuR3FindResource(pThis, (uint32_t)pCopy->uSrcBuffer))
+                                    || !(pDst = virtioGpuR3FindResource(pThis, (uint32_t)pCopy->uDstBuffer))
+                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)pCopy->uSrcBuffer)
+                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)pCopy->uDstBuffer))
                                     Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
                                 else
                                 {
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
                                     Resp.Hdr.uType = RT_SUCCESS(virtioGpuR3VulkanCopyBufferRegions(pThis, pSrc, pDst,
-                                                                                                     &Copy))
+                                                                                                     pCopy))
                                                    ? VIRTIOGPU_RESP_OK_NODATA : VIRTIOGPU_RESP_ERR_UNSPEC;
 #else
                                     Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;

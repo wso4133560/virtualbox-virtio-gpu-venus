@@ -790,6 +790,50 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
+
+    RTTestSub(g_hTest, "Venus vkCmdCopyBuffer2 serialization");
+    uint8_t abCopyBuffer2Command[100] = { 0 };
+    uint32_t const uCopyBuffer2Type = 207;
+    uint64_t const uCopyBuffer2CommandBuffer = 43;
+    uint64_t const uCopyBuffer2InfoPtr = 1;
+    uint32_t const uCopyBuffer2InfoType = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2;
+    uint64_t const uCopyBuffer2Next = 0;
+    uint64_t const uCopyBuffer2Src = 7;
+    uint64_t const uCopyBuffer2Dst = 11;
+    uint32_t const cCopyBuffer2Regions = 1;
+    uint64_t const cbCopyBuffer2Array = 1;
+    uint32_t const uCopyBuffer2RegionType = VK_STRUCTURE_TYPE_BUFFER_COPY_2;
+    uint64_t const uCopyBuffer2RegionNext = 0;
+    uint64_t const offCopyBuffer2Src = 0;
+    uint64_t const offCopyBuffer2Dst = 0;
+    uint64_t const cbCopyBuffer2 = sizeof(abPixels);
+    memcpy(abCopyBuffer2Command + 0, &uCopyBuffer2Type, sizeof(uCopyBuffer2Type));
+    memcpy(abCopyBuffer2Command + 8, &uCopyBuffer2CommandBuffer, sizeof(uCopyBuffer2CommandBuffer));
+    memcpy(abCopyBuffer2Command + 16, &uCopyBuffer2InfoPtr, sizeof(uCopyBuffer2InfoPtr));
+    memcpy(abCopyBuffer2Command + 24, &uCopyBuffer2InfoType, sizeof(uCopyBuffer2InfoType));
+    memcpy(abCopyBuffer2Command + 28, &uCopyBuffer2Next, sizeof(uCopyBuffer2Next));
+    memcpy(abCopyBuffer2Command + 36, &uCopyBuffer2Src, sizeof(uCopyBuffer2Src));
+    memcpy(abCopyBuffer2Command + 44, &uCopyBuffer2Dst, sizeof(uCopyBuffer2Dst));
+    memcpy(abCopyBuffer2Command + 52, &cCopyBuffer2Regions, sizeof(cCopyBuffer2Regions));
+    memcpy(abCopyBuffer2Command + 56, &cbCopyBuffer2Array, sizeof(cbCopyBuffer2Array));
+    memcpy(abCopyBuffer2Command + 64, &uCopyBuffer2RegionType, sizeof(uCopyBuffer2RegionType));
+    memcpy(abCopyBuffer2Command + 68, &uCopyBuffer2RegionNext, sizeof(uCopyBuffer2RegionNext));
+    memcpy(abCopyBuffer2Command + 76, &offCopyBuffer2Src, sizeof(offCopyBuffer2Src));
+    memcpy(abCopyBuffer2Command + 84, &offCopyBuffer2Dst, sizeof(offCopyBuffer2Dst));
+    memcpy(abCopyBuffer2Command + 92, &cbCopyBuffer2, sizeof(cbCopyBuffer2));
+    struct { VIRTIOGPUSUBMIT3D Hdr; uint32_t auResourceIds[2]; uint8_t abCommand[100]; }
+        SubmitCopyBuffer2 = { { 100, 2 }, { 7, 11 }, { 0 } };
+    memcpy(SubmitCopyBuffer2.abCommand, abCopyBuffer2Command, sizeof(abCopyBuffer2Command));
+    memset(pGpu->aResources[1].pbPixels, 0, sizeof(abPixels));
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SUBMIT_3D, &SubmitCopyBuffer2,
+                   sizeof(SubmitCopyBuffer2), 24, 43);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA
+                  && !memcmp(pGpu->aResources[1].pbPixels, pGpu->aResources[0].pbPixels, sizeof(abPixels)));
+
     memset(pGpu->aResources[0].pbPixels, 0, sizeof(abPixels));
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_FLUSH, &Flush, sizeof(Flush), 24);
