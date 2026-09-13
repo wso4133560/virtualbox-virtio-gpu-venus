@@ -40,7 +40,21 @@ $runtimeValidation = Join-Path $OutputDirectory 'validation'
 New-Item -ItemType Directory -Force $runtimeBin, $runtimeDocs, $runtimeValidation | Out-Null
 
 foreach ($name in $required) {
-    Copy-Item -LiteralPath (Join-Path $binRoot $name) -Destination $runtimeBin
+    $sourcePath = Join-Path $binRoot $name
+    # kBuild may finish a locked executable in the object directory while the
+    # install copy is still held by Windows. Prefer that newer, complete target
+    # so the package does not silently contain an older CLI.
+    if ($name -eq 'VBoxManage.exe') {
+        $candidate = Join-Path $repoRoot 'VirtualBox-7.2.6\out\win.amd64\release\obj\VBoxManage\VBoxManage.exe'
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            $installed = Get-Item -LiteralPath $sourcePath
+            $built = Get-Item -LiteralPath $candidate
+            if ($built.LastWriteTimeUtc -gt $installed.LastWriteTimeUtc -and $built.Length -gt 0) {
+                $sourcePath = $candidate
+            }
+        }
+    }
+    Copy-Item -LiteralPath $sourcePath -Destination (Join-Path $runtimeBin $name)
 }
 $testExe = Join-Path $binRoot 'testcase\tstVirtioGPU.exe'
 if (Test-Path -LiteralPath $testExe -PathType Leaf) {
