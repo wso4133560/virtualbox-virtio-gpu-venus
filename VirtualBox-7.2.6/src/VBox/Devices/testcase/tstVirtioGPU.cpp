@@ -597,7 +597,9 @@ int main(int argc, char **argv)
                   && CapsetResp.Capset.uVkMesaVenusProtocolSpecVersion == 1
                   && CapsetResp.Capset.fSupportsBlobId0 == 1
                   && CapsetResp.Capset.fUseGuestVram == 1
-                  && CapsetResp.Capset.auVkExtensionMask1[0] == 1);
+                  && CapsetResp.Capset.auVkExtensionMask1[0] == 1
+                  && (CapsetResp.Capset.auVkExtensionMask1[315 / 32] & (UINT32_C(1) << (315 % 32)))
+                  && (CapsetResp.Capset.auVkExtensionMask1[338 / 32] & (UINT32_C(1) << (338 % 32))));
     GetCapset.uCapsetVersion = 1;
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_GET_CAPSET, &GetCapset, sizeof(GetCapset), 24);

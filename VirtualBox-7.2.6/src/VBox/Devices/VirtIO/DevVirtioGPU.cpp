@@ -2456,14 +2456,17 @@ static void virtioGpuR3FillVenusCapset(VIRTIOGPUCAPSETVENUS *pCapset)
 {
     RT_ZERO(*pCapset);
     /* These versions match the Mesa 24.0 Venus protocol sources bundled with
-       this checkout.  The extension mask is deliberately limited to the
-       protocol validity bit until the corresponding command coverage grows. */
+       this checkout.  Only extensions with corresponding bounded command
+       coverage are advertised in the renderer mask. */
     pCapset->uWireFormatVersion = 1;
     pCapset->uVkXmlVersion = UINT32_C(0x0040310d); /* VK 1.3.269 */
     pCapset->uVkExtCommandSerializationSpecVersion = 1;
     pCapset->uVkMesaVenusProtocolSpecVersion = 1;
     pCapset->fSupportsBlobId0 = 1;
     pCapset->auVkExtensionMask1[0] = 1;
+    /* VK_KHR_synchronization2 (315) and VK_KHR_copy_commands2 (338). */
+    pCapset->auVkExtensionMask1[315 / 32] |= UINT32_C(1) << (315 % 32);
+    pCapset->auVkExtensionMask1[338 / 32] |= UINT32_C(1) << (338 % 32);
     /* The renderer exposes a dedicated host-visible shared BAR for HOST3D
        blobs.  Mesa's virtgpu backend uses this bit to select that guest VRAM
        heap instead of trying to inject ordinary guest pages. */
