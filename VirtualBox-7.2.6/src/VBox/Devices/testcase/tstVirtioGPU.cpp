@@ -337,8 +337,31 @@ static void tstVulkanCopyReadback(PVIRTIOGPU pGpu)
                     RTTESTI_CHECK(g_cDroppedCopies == (fDrop ? (iMode == 1 ? 2U : 1U) : 0U));
                     RTTESTI_CHECK(memcmp(Dst.pvVkMapped, abExpected, sizeof(abExpected)) == 0);
                     RTTESTI_CHECK(memcmp(abDst, abExpected, sizeof(abExpected)) == 0);
-                    RTTESTI_CHECK(memcmp(Src.pvVkMapped, abSrc, sizeof(abSrc)) == 0);
+        RTTESTI_CHECK(memcmp(Src.pvVkMapped, abSrc, sizeof(abSrc)) == 0);
                 }
+            RTTestSub(g_hTest, "Vulkan persistent buffer transfer throughput");
+            VIRTIOGPUCOPYCMD aThroughputCopy[8];
+            RT_ZERO(aThroughputCopy);
+            for (unsigned i = 0; i < RT_ELEMENTS(aThroughputCopy); ++i)
+            {
+                aThroughputCopy[i].offSrc = 0;
+                aThroughputCopy[i].offDst = 0;
+                aThroughputCopy[i].cbCopy = sizeof(abSrc);
+            }
+            uint64_t const tsSingleStart = RTTimeNanoTS();
+            int rcThroughput = VINF_SUCCESS;
+            for (unsigned i = 0; i < RT_ELEMENTS(aThroughputCopy) && RT_SUCCESS(rcThroughput); ++i)
+                rcThroughput = virtioGpuR3VulkanCopyBuffer(pGpu, &Src, &Dst, 0, 0, sizeof(abSrc));
+            uint64_t const tsSingleNs = RTTimeNanoTS() - tsSingleStart;
+            uint64_t const tsBatchStart = RTTimeNanoTS();
+            if (RT_SUCCESS(rcThroughput))
+                rcThroughput = virtioGpuR3VulkanCopyBufferBatch(pGpu, &Src, &Dst,
+                                                                 aThroughputCopy, RT_ELEMENTS(aThroughputCopy));
+            uint64_t const tsBatchNs = RTTimeNanoTS() - tsBatchStart;
+            RTTESTI_CHECK_RC(rcThroughput, VINF_SUCCESS);
+            RTTestIPrintf(RTTESTLVL_ALWAYS, "persistent Vulkan buffer copy: single8=%llu ns, batch8=%llu ns (%llu ns/copy)\n",
+                          (unsigned long long)tsSingleNs, (unsigned long long)tsBatchNs,
+                          (unsigned long long)(tsBatchNs / RT_ELEMENTS(aThroughputCopy)));
         }
     }
     else
