@@ -16,7 +16,10 @@ foreach ($path in @($exe, $module)) {
 }
 New-Item -ItemType Directory -Force $outputDir | Out-Null
 $start = [Diagnostics.ProcessStartInfo]::new($exe)
-if ($IncludeRegistration) { $start.ArgumentList.Add($module) }
+if ($IncludeRegistration) {
+    # Windows PowerShell 5.1 does not expose ProcessStartInfo.ArgumentList.
+    $start.Arguments = '"' + $module.Replace('"', '\"') + '"'
+}
 $start.WorkingDirectory = $bin
 $start.UseShellExecute = $false
 $start.CreateNoWindow = $true
