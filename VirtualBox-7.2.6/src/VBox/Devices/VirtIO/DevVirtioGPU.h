@@ -204,6 +204,15 @@ AssertCompileSize(VIRTIOGPUDISPLAYRESP, 408);
 #define VIRTIOGPU_F_RESOURCE_BLOB            (UINT64_C(1) << 3)
 #define VIRTIOGPU_F_CONTEXT_INIT             (UINT64_C(1) << 4)
 
+/* RESOURCE_CREATE_BLOB memory domains and flags from virtio_gpu.h. */
+#define VIRTIOGPU_BLOB_MEM_GUEST             UINT32_C(1)
+#define VIRTIOGPU_BLOB_MEM_HOST3D            UINT32_C(2)
+#define VIRTIOGPU_BLOB_MEM_HOST3D_GUEST      UINT32_C(3)
+#define VIRTIOGPU_BLOB_FLAG_USE_MAPPABLE     UINT32_C(1) /* bit 0 */
+#define VIRTIOGPU_BLOB_FLAG_USE_SHAREABLE    UINT32_C(2) /* bit 1 */
+#define VIRTIOGPU_BLOB_FLAG_USE_CROSS_DEVICE UINT32_C(4) /* bit 2 */
+#define VIRTIOGPU_BLOB_FLAG_MASK             UINT32_C(7)
+
 #define VIRTIOGPU_QUEUE_CONTROL             0
 #define VIRTIOGPU_QUEUE_CURSOR              1
 #define VIRTIOGPU_QUEUE_COUNT               2

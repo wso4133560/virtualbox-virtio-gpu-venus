@@ -2242,6 +2242,8 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                 RT_ZERO(Cmd);
                 if (pBuf->cbPhysSend < sizeof(Cmd) || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Cmd, sizeof(Cmd)))
                     || !Cmd.uResourceId || virtioGpuR3FindResource(pThis, Cmd.uResourceId)
+                    || Cmd.uBlobMem < VIRTIOGPU_BLOB_MEM_GUEST || Cmd.uBlobMem > VIRTIOGPU_BLOB_MEM_HOST3D_GUEST
+                    || (Cmd.fBlob & ~VIRTIOGPU_BLOB_FLAG_MASK)
                     || !Cmd.cbBlob || Cmd.cbBlob > VIRTIOGPU_MAX_RESOURCE_BYTES || (Cmd.cbBlob & 3)
                     || Cmd.cEntries > VIRTIOGPU_MAX_BACKING_ENTRIES
                     || pBuf->cbPhysSend < sizeof(Cmd) + (size_t)Cmd.cEntries * sizeof(VIRTIOGPUMEMENTRY))
