@@ -271,6 +271,16 @@ int main(int argc, char **argv)
     tstInitQueue(&pGpu->Virtio, 0);
     tstInitQueue(&pGpu->Virtio, 1);
 
+    RTTestSub(g_hTest, "backend selection boundaries");
+    VIRTIOGPUBACKEND enmBackend = VIRTIOGPU_BACKEND_AUTO;
+    RTTESTI_CHECK_RC(virtioGpuR3ParseBackend("auto", &enmBackend), VINF_SUCCESS);
+    RTTESTI_CHECK(enmBackend == VIRTIOGPU_BACKEND_AUTO);
+    RTTESTI_CHECK_RC(virtioGpuR3ParseBackend("SOFTWARE", &enmBackend), VINF_SUCCESS);
+    RTTESTI_CHECK(enmBackend == VIRTIOGPU_BACKEND_SOFTWARE);
+    RTTESTI_CHECK_RC(virtioGpuR3ParseBackend("Venus", &enmBackend), VINF_SUCCESS);
+    RTTESTI_CHECK(enmBackend == VIRTIOGPU_BACKEND_VENUS);
+    RTTESTI_CHECK_RC(virtioGpuR3ParseBackend("invalid", &enmBackend), VERR_INVALID_PARAMETER);
+
     RTTestSub(g_hTest, "wire layout, read-only config, events_clear");
     uint32_t auConfig[4];
     RTTESTI_CHECK_RC(virtioGpuR3DevCapRead(pDev, 0, auConfig, sizeof(auConfig)), VINF_SUCCESS);

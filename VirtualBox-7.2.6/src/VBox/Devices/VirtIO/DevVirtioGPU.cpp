@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /** @file
- * VirtIO-GPU host device. Initial transport/control milestone; no renderer yet.
+ * VirtIO-GPU host device with the optional R3 Vulkan/Venus resource backend.
  */
 #define LOG_GROUP LOG_GROUP_DEV_VIRTIO
 #include <iprt/assert.h>
@@ -44,6 +44,13 @@
 #define VIRTIOGPU_VK_CMD_COPY_IMAGE UINT32_C(113)
 #define VIRTIOGPU_MAX_BACKING_ENTRIES 64
 #define VIRTIOGPU_MAX_RESOURCE_BYTES (UINT64_C(256) * _1M)
+
+typedef enum VIRTIOGPUBACKEND
+{
+    VIRTIOGPU_BACKEND_AUTO = 0,
+    VIRTIOGPU_BACKEND_SOFTWARE,
+    VIRTIOGPU_BACKEND_VENUS
+} VIRTIOGPUBACKEND;
 
 typedef struct VIRTIOGPURESOURCE
 {
@@ -100,6 +107,7 @@ typedef struct VIRTIOGPU
     VIRTIOGPUCONTEXT aContexts[VIRTIOGPU_MAX_CONTEXTS];
     VIRTIOGPUSCANOUT aScanouts[VIRTIOGPU_MAX_SCANOUTS];
     uint64_t cbAllocated;
+    VIRTIOGPUBACKEND enmBackend;
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     RTLDRMOD hVulkan;
     PFN_vkGetInstanceProcAddr pfnVkGetInstanceProcAddr;
@@ -157,6 +165,21 @@ static DECLCALLBACK(int) virtioGpuR3DevCapWrite(PPDMDEVINS pDevIns, uint32_t off
         memcpy((uint8_t *)&fClear + offCap - 4, pvBuf, cbWrite);
         pThis->Config.fEventsRead &= ~fClear;
     }
+    return VINF_SUCCESS;
+}
+
+static int virtioGpuR3ParseBackend(const char *pszBackend, VIRTIOGPUBACKEND *penmBackend)
+{
+    if (!pszBackend || !*pszBackend || !penmBackend)
+        return VERR_INVALID_PARAMETER;
+    if (!RTStrICmp(pszBackend, "auto"))
+        *penmBackend = VIRTIOGPU_BACKEND_AUTO;
+    else if (!RTStrICmp(pszBackend, "software"))
+        *penmBackend = VIRTIOGPU_BACKEND_SOFTWARE;
+    else if (!RTStrICmp(pszBackend, "venus"))
+        *penmBackend = VIRTIOGPU_BACKEND_VENUS;
+    else
+        return VERR_INVALID_PARAMETER;
     return VINF_SUCCESS;
 }
 
@@ -2870,18 +2893,36 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
 
 static DECLCALLBACK(int) virtioGpuR3Construct(PPDMDEVINS pDevIns, int iInstance, PCFGMNODE pCfg)
 {
-    RT_NOREF(pCfg);
     PDMDEV_CHECK_VERSIONS_RETURN(pDevIns);
     PDMDEV_VALIDATE_CONFIG_RETURN(pDevIns, "", "");
     PVIRTIOGPU pThis = PDMDEVINS_2_DATA(pDevIns, PVIRTIOGPU);
     PVIRTIOGPUCC pThisCC = PDMDEVINS_2_DATA_CC(pDevIns, PVIRTIOGPUCC);
+    char szBackend[16];
+    int rc = pDevIns->pHlpR3->pfnCFGMQueryStringDef(pCfg, "Backend", szBackend, sizeof(szBackend), "auto");
+    if (RT_FAILURE(rc))
+        return PDMDEV_SET_ERROR(pDevIns, rc, N_("virtio-gpu: failed to read Backend configuration"));
+    rc = virtioGpuR3ParseBackend(szBackend, &pThis->enmBackend);
+    if (RT_FAILURE(rc))
+        return PDMDEV_SET_ERROR(pDevIns, VERR_INVALID_PARAMETER,
+                                N_("virtio-gpu: Backend must be auto, software or venus"));
+#ifndef VBOX_WITH_VIRTIO_GPU_VENUS
+    if (pThis->enmBackend == VIRTIOGPU_BACKEND_VENUS)
+        return PDMDEV_SET_ERROR(pDevIns, VERR_NOT_SUPPORTED,
+                                N_("virtio-gpu: Venus backend is not included in this build"));
+#endif
     pThis->Config.cScanouts = 1;
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
-    int rcVulkan = virtioGpuR3VulkanInit(pThis);
-    if (RT_FAILURE(rcVulkan))
+    if (pThis->enmBackend != VIRTIOGPU_BACKEND_SOFTWARE)
     {
-        LogRel(("virtio-gpu: Vulkan host probe failed (%Rrc), using software path\n", rcVulkan));
-        virtioGpuR3VulkanTerm(pThis);
+        int rcVulkan = virtioGpuR3VulkanInit(pThis);
+        if (RT_FAILURE(rcVulkan))
+        {
+            if (pThis->enmBackend == VIRTIOGPU_BACKEND_VENUS)
+                return PDMDEV_SET_ERROR(pDevIns, rcVulkan,
+                                         N_("virtio-gpu: Venus backend requested but host Vulkan is unavailable"));
+            LogRel(("virtio-gpu: Vulkan host probe failed (%Rrc), using software path\n", rcVulkan));
+            virtioGpuR3VulkanTerm(pThis);
+        }
     }
 #endif
     pThisCC->Virtio.pfnStatusChanged = virtioGpuR3StatusChanged;
@@ -2899,7 +2940,7 @@ static DECLCALLBACK(int) virtioGpuR3Construct(PPDMDEVINS pDevIns, int iInstance,
     Pci.uDeviceType = VIRTIO_DEVICE_TYPE_GPU;
     char szName[16];
     RTStrPrintf(szName, sizeof(szName), "virtio-gpu%u", iInstance);
-    int rc = virtioCoreR3Init(pDevIns, &pThis->Virtio, &pThisCC->Virtio, &Pci, szName,
+    rc = virtioCoreR3Init(pDevIns, &pThis->Virtio, &pThisCC->Virtio, &Pci, szName,
                             0, 0, &pThis->Config, sizeof(pThis->Config), VIRTIOGPU_QUEUE_COUNT);
     if (RT_FAILURE(rc))
         return PDMDEV_SET_ERROR(pDevIns, rc, N_("virtio-gpu: failed to initialize VirtIO core"));
