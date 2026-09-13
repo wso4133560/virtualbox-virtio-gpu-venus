@@ -29,7 +29,7 @@
 # error "VirtIO-GPU currently runs entirely in ring 3."
 #endif
 
-#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(5)
+#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(6)
 #define VIRTIOGPU_MAX_RESOURCES 256
 #define VIRTIOGPU_MAX_CONTEXTS 64
 #define VIRTIOGPU_MAX_CONTEXT_RESOURCES 64
@@ -108,6 +108,7 @@ typedef struct VIRTIOGPU
     VIRTIOGPUSCANOUT aScanouts[VIRTIOGPU_MAX_SCANOUTS];
     uint64_t cbAllocated;
     VIRTIOGPUBACKEND enmBackend;
+    VIRTIOGPUBACKEND enmActiveBackend;
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     RTLDRMOD hVulkan;
     PFN_vkGetInstanceProcAddr pfnVkGetInstanceProcAddr;
@@ -2749,6 +2750,8 @@ static DECLCALLBACK(int) virtioGpuR3SaveExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
     int rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, pThis->Config.fEventsRead);
     if (RT_SUCCESS(rc))
         rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, (uint32_t)pThis->enmBackend);
+    if (RT_SUCCESS(rc))
+        rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, (uint32_t)pThis->enmActiveBackend);
     for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aResources); ++i)
     {
         rc = pDevIns->pHlpR3->pfnSSMPutBool(pSSM, pThis->aResources[i].fUsed);
@@ -2795,10 +2798,15 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
     PVIRTIOGPU pThis = PDMDEVINS_2_DATA(pDevIns, PVIRTIOGPU);
     int rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &pThis->Config.fEventsRead);
     uint32_t uSavedBackend = UINT32_MAX;
+    uint32_t uSavedActiveBackend = UINT32_MAX;
     if (RT_SUCCESS(rc))
         rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &uSavedBackend);
+    if (RT_SUCCESS(rc))
+        rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &uSavedActiveBackend);
     if (RT_SUCCESS(rc) && (uSavedBackend > VIRTIOGPU_BACKEND_VENUS
-                           || uSavedBackend != (uint32_t)pThis->enmBackend))
+                           || uSavedActiveBackend > VIRTIOGPU_BACKEND_VENUS
+                           || uSavedBackend != (uint32_t)pThis->enmBackend
+                           || uSavedActiveBackend != (uint32_t)pThis->enmActiveBackend))
         rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
     virtioGpuR3FreeResources(pThis);
     for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aResources); ++i)
@@ -2926,6 +2934,7 @@ static DECLCALLBACK(int) virtioGpuR3Construct(PPDMDEVINS pDevIns, int iInstance,
                                 N_("virtio-gpu: Venus backend is not included in this build"));
 #endif
     pThis->Config.cScanouts = 1;
+    pThis->enmActiveBackend = VIRTIOGPU_BACKEND_SOFTWARE;
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     if (pThis->enmBackend != VIRTIOGPU_BACKEND_SOFTWARE)
     {
@@ -2941,6 +2950,8 @@ static DECLCALLBACK(int) virtioGpuR3Construct(PPDMDEVINS pDevIns, int iInstance,
             LogRel(("virtio-gpu: Vulkan host probe failed (%Rrc), using software path\n", rcVulkan));
             virtioGpuR3VulkanTerm(pThis);
         }
+        else
+            pThis->enmActiveBackend = VIRTIOGPU_BACKEND_VENUS;
     }
 #endif
     pThisCC->Virtio.pfnStatusChanged = virtioGpuR3StatusChanged;
