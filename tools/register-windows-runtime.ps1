@@ -1,11 +1,14 @@
 [CmdletBinding()]
 param(
-    [string]$RuntimeDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) 'VirtualBox-7.2.6\out\win.amd64\release\bin'),
+    [string]$RuntimeDirectory,
     [switch]$NoProxy,
     [string]$ReportPath
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $RuntimeDirectory) {
+    $RuntimeDirectory = Join-Path (Split-Path $PSScriptRoot -Parent) 'VirtualBox-7.2.6\out\win.amd64\release\bin'
+}
 $runtime = (Resolve-Path -LiteralPath $RuntimeDirectory).Path
 $required = @('VBoxSVC.exe', 'VBoxC.dll', 'VBoxProxyStub.dll', 'comregister.cmd')
 foreach ($name in $required) {
