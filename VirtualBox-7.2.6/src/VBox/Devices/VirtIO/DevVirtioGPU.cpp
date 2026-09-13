@@ -1011,9 +1011,7 @@ static int virtioGpuR3VulkanResourceEnsureBuffer(PVIRTIOGPU pThis, PVIRTIOGPURES
     if (pRes->fSharedMemory && pRes->pvVkMapped && pRes->pbPixels)
     {
         memcpy(pRes->pvVkMapped, pRes->pbPixels, (size_t)pRes->cbPixels);
-        int const rcFlush = virtioGpuR3VulkanResourceMemoryOp(pThis, pRes, false);
-        if (RT_FAILURE(rcFlush))
-            return rcFlush;
+        return virtioGpuR3VulkanResourceMemoryOp(pThis, pRes, false);
     }
     return virtioGpuR3VulkanResourceMemoryOp(pThis, pRes, false);
 }
