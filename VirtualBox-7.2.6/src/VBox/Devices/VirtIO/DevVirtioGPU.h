@@ -152,6 +152,26 @@ typedef struct VIRTIOGPUGETCAPSET
     uint32_t uCapsetVersion;
 } VIRTIOGPUGETCAPSET;
 
+/* Mesa Venus capset (virgl_renderer_capset_venus, version 0). */
+typedef struct VIRTIOGPUCAPSETVENUS
+{
+    uint32_t uWireFormatVersion;
+    uint32_t uVkXmlVersion;
+    uint32_t uVkExtCommandSerializationSpecVersion;
+    uint32_t uVkMesaVenusProtocolSpecVersion;
+    uint32_t fSupportsBlobId0;
+    uint32_t auVkExtensionMask1[32];
+    uint32_t fAllowVkWaitSyncs;
+    uint32_t fSupportsMultipleTimelines;
+    uint32_t fUseGuestVram;
+} VIRTIOGPUCAPSETVENUS;
+
+typedef struct VIRTIOGPURESPCAPSETVENUS
+{
+    VIRTIOGPUCTRLHDR Hdr;
+    VIRTIOGPUCAPSETVENUS Capset;
+} VIRTIOGPURESPCAPSETVENUS;
+
 typedef struct VIRTIOGPUTRANSFERTOHOST2D
 {
     VIRTIOGPUCTRLHDR Hdr;
@@ -210,6 +230,8 @@ AssertCompileSize(VIRTIOGPUSUBMIT3D, 8);
 AssertCompileSize(VIRTIOGPUCAPSETINFO, 4);
 AssertCompileSize(VIRTIOGPUCAPSETINFORESP, 36);
 AssertCompileSize(VIRTIOGPUGETCAPSET, 8);
+AssertCompileSize(VIRTIOGPUCAPSETVENUS, 160);
+AssertCompileSize(VIRTIOGPURESPCAPSETVENUS, 184);
 AssertCompileSize(VIRTIOGPUTRANSFERTOHOST2D, 56);
 AssertCompileSize(VIRTIOGPURESOURCEFLUSH, 48);
 AssertCompileSize(VIRTIOGPUDISPLAYONE, 24);
@@ -241,6 +263,9 @@ AssertCompileSize(VIRTIOGPUDISPLAYRESP, 408);
 #define VIRTIOGPU_RESP_OK_CAPSET               UINT32_C(0x1103)
 #define VIRTIOGPU_RESP_OK_EDID                 UINT32_C(0x1104)
 #define VIRTIOGPU_RESP_OK_RESOURCE_UUID        UINT32_C(0x1105)
+#define VIRTIOGPU_CAPSET_VENUS_ID              UINT32_C(4)
+#define VIRTIOGPU_CAPSET_VENUS_VERSION         UINT32_C(0)
+#define VIRTIOGPU_CAPSET_VENUS_SIZE             ((uint32_t)sizeof(VIRTIOGPUCAPSETVENUS))
 #define VIRTIOGPU_CMD_CTX_CREATE               UINT32_C(0x0200)
 #define VIRTIOGPU_CMD_CTX_DESTROY              UINT32_C(0x0201)
 #define VIRTIOGPU_CMD_CTX_ATTACH_RESOURCE      UINT32_C(0x0202)

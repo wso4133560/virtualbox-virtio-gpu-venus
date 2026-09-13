@@ -2136,6 +2136,20 @@ static void virtioGpuR3Response(VIRTIOGPUDISPLAYRESP *pResp, const VIRTIOGPUCTRL
     }
 }
 
+static void virtioGpuR3FillVenusCapset(VIRTIOGPUCAPSETVENUS *pCapset)
+{
+    RT_ZERO(*pCapset);
+    /* These versions match the Mesa 24.0 Venus protocol sources bundled with
+       this checkout.  The extension mask is deliberately limited to the
+       protocol validity bit until the corresponding command coverage grows. */
+    pCapset->uWireFormatVersion = 1;
+    pCapset->uVkXmlVersion = UINT32_C(0x0040310d); /* VK 1.3.269 */
+    pCapset->uVkExtCommandSerializationSpecVersion = 1;
+    pCapset->uVkMesaVenusProtocolSpecVersion = 1;
+    pCapset->fSupportsBlobId0 = 1;
+    pCapset->auVkExtensionMask1[0] = 1;
+}
+
 /** Process one control/cursor command and enqueue one used entry. */
 static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t uQueue, PVIRTQBUF pBuf)
 {
@@ -2218,6 +2232,9 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                     RT_ZERO(CapResp);
                     CapResp.Hdr = Resp.Hdr;
                     CapResp.Hdr.uType = VIRTIOGPU_RESP_OK_CAPSET_INFO;
+                    CapResp.uCapsetId = VIRTIOGPU_CAPSET_VENUS_ID;
+                    CapResp.uMaxVersion = VIRTIOGPU_CAPSET_VENUS_VERSION;
+                    CapResp.cbMaxSize = VIRTIOGPU_CAPSET_VENUS_SIZE;
                     memcpy(&Resp, &CapResp, sizeof(CapResp));
                     cbResp = sizeof(CapResp);
                     fPreserveResponse = true;
@@ -2229,10 +2246,27 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                 VIRTIOGPUGETCAPSET Cmd;
                 RT_ZERO(Cmd);
                 if (pBuf->cbPhysSend < sizeof(Cmd)
-                    || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Cmd, sizeof(Cmd))))
+                    || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Cmd, sizeof(Cmd)))
+                    || pThis->Config.cCapsets == 0
+                    || Cmd.uCapsetId != VIRTIOGPU_CAPSET_VENUS_ID
+                    || Cmd.uCapsetVersion != VIRTIOGPU_CAPSET_VENUS_VERSION
+                    || pBuf->cbPhysReturn < sizeof(VIRTIOGPURESPCAPSETVENUS))
                     Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
                 else
-                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                {
+                    VIRTIOGPURESPCAPSETVENUS *pCapsetResp = (VIRTIOGPURESPCAPSETVENUS *)RTMemAllocZ(sizeof(*pCapsetResp));
+                    if (!pCapsetResp)
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_OUT_OF_MEMORY;
+                    else
+                    {
+                        pCapsetResp->Hdr = Resp.Hdr;
+                        pCapsetResp->Hdr.uType = VIRTIOGPU_RESP_OK_CAPSET;
+                        virtioGpuR3FillVenusCapset(&pCapsetResp->Capset);
+                        pvResponse = pCapsetResp;
+                        cbResp = sizeof(*pCapsetResp);
+                        fPreserveResponse = true;
+                    }
+                }
                 break;
             }
             case VIRTIOGPU_CMD_RESOURCE_CREATE_2D:
@@ -3312,6 +3346,7 @@ static DECLCALLBACK(int) virtioGpuR3Construct(PPDMDEVINS pDevIns, int iInstance,
             pThis->enmActiveBackend = VIRTIOGPU_BACKEND_VENUS;
     }
 #endif
+    pThis->Config.cCapsets = pThis->enmActiveBackend == VIRTIOGPU_BACKEND_VENUS ? 1 : 0;
     pThisCC->Virtio.pfnStatusChanged = virtioGpuR3StatusChanged;
     pThisCC->Virtio.pfnVirtqNotified = virtioGpuR3VirtqNotified;
     pThisCC->Virtio.pfnDevCapRead = virtioGpuR3DevCapRead;

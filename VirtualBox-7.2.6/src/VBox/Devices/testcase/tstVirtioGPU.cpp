@@ -279,6 +279,10 @@ int main(int argc, char **argv)
     pGpu->Virtio.fDeviceStatus = VIRTIO_STATUS_DRIVER_OK;
     pGpu->Virtio.uDeviceFeatures = VIRTIO_F_VERSION_1;
     pGpu->Config.cScanouts = 1;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    pGpu->enmActiveBackend = VIRTIOGPU_BACKEND_VENUS;
+    pGpu->Config.cCapsets = 1;
+#endif
     tstInitQueue(&pGpu->Virtio, 0);
     tstInitQueue(&pGpu->Virtio, 1);
 
@@ -295,7 +299,11 @@ int main(int argc, char **argv)
     RTTestSub(g_hTest, "wire layout, read-only config, events_clear");
     uint32_t auConfig[4];
     RTTESTI_CHECK_RC(virtioGpuR3DevCapRead(pDev, 0, auConfig, sizeof(auConfig)), VINF_SUCCESS);
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    RTTESTI_CHECK(auConfig[0] == 0 && auConfig[1] == 0 && auConfig[2] == 1 && auConfig[3] == 1);
+#else
     RTTESTI_CHECK(auConfig[0] == 0 && auConfig[1] == 0 && auConfig[2] == 1 && auConfig[3] == 0);
+#endif
     uint32_t uValue = UINT32_MAX;
     virtioGpuR3DevCapWrite(pDev, 8, &uValue, sizeof(uValue));
     RTTESTI_CHECK(pGpu->Config.cScanouts == 1);
@@ -346,13 +354,47 @@ int main(int argc, char **argv)
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_ERR_INVALID_PARAMETER);
 
-    RTTestSub(g_hTest, "capset query without advertised capabilities");
+    RTTestSub(g_hTest, "capset query and Venus capability negotiation");
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     VIRTIOGPUCAPSETINFO CapsetInfo = { 0 };
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_GET_CAPSET_INFO, &CapsetInfo, sizeof(CapsetInfo), 36);
     virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == sizeof(VIRTIOGPUCAPSETINFORESP));
+#else
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+#endif
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    VIRTIOGPUCAPSETINFORESP CapsetInfoResp;
+    memcpy(&CapsetInfoResp, &g_abRam[0x5000], sizeof(CapsetInfoResp));
+    RTTESTI_CHECK(CapsetInfoResp.Hdr.uType == VIRTIOGPU_RESP_OK_CAPSET_INFO
+                  && CapsetInfoResp.uCapsetId == VIRTIOGPU_CAPSET_VENUS_ID
+                  && CapsetInfoResp.uMaxVersion == VIRTIOGPU_CAPSET_VENUS_VERSION
+                  && CapsetInfoResp.cbMaxSize == VIRTIOGPU_CAPSET_VENUS_SIZE);
+    VIRTIOGPUGETCAPSET GetCapset = { VIRTIOGPU_CAPSET_VENUS_ID, VIRTIOGPU_CAPSET_VENUS_VERSION };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_GET_CAPSET, &GetCapset, sizeof(GetCapset),
+                   sizeof(VIRTIOGPURESPCAPSETVENUS));
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == sizeof(VIRTIOGPURESPCAPSETVENUS));
+    VIRTIOGPURESPCAPSETVENUS CapsetResp;
+    memcpy(&CapsetResp, &g_abRam[0x5000], sizeof(CapsetResp));
+    RTTESTI_CHECK(CapsetResp.Hdr.uType == VIRTIOGPU_RESP_OK_CAPSET
+                  && CapsetResp.Capset.uWireFormatVersion == 1
+                  && CapsetResp.Capset.uVkXmlVersion == UINT32_C(0x0040310d)
+                  && CapsetResp.Capset.uVkExtCommandSerializationSpecVersion == 1
+                  && CapsetResp.Capset.uVkMesaVenusProtocolSpecVersion == 1
+                  && CapsetResp.Capset.fSupportsBlobId0 == 1
+                  && CapsetResp.Capset.auVkExtensionMask1[0] == 1);
+    GetCapset.uCapsetVersion = 1;
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_GET_CAPSET, &GetCapset, sizeof(GetCapset), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_ERR_INVALID_PARAMETER);
+#else
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_ERR_INVALID_PARAMETER);
     VIRTIOGPUGETCAPSET GetCapset = { 4, 1 };
@@ -362,6 +404,7 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_ERR_INVALID_PARAMETER);
+#endif
 
     RTTestSub(g_hTest, "2D resource, backing transfer and scanout flush");
     struct { uint32_t id, format, width, height; } Create = { 7, VIRTIOGPU_FORMAT_B8G8R8X8_UNORM, 2, 2 };
