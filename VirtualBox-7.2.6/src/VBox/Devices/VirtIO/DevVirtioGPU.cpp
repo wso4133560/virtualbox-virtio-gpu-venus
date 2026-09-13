@@ -1840,6 +1840,79 @@ static int virtioGpuR3VulkanClearColorImage(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE
 # undef VK_CLEAR_IMAGE_PROC
 }
 
+static int virtioGpuR3VulkanClearColorImageBatch(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes,
+                                                 const VIRTIOGPUCLEARCOLORCMD *paClear, uint32_t cClear)
+{
+    if (!pRes || !paClear || !cClear || cClear > 64 || !pRes->fVulkanImage
+        || !pThis->fVulkanQueue || !pThis->fVulkanSubmit)
+        return VERR_INVALID_PARAMETER;
+    VkClearColorValue aColors[64];
+    RT_ZERO(aColors);
+    for (uint32_t i = 0; i < cClear; ++i)
+    {
+        const VIRTIOGPUCLEARCOLORCMD *pClear = &paClear[i];
+        if (pClear->uImage != paClear[0].uImage || pClear->enmImageLayout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+            || !pClear->pbRanges || pClear->cRanges != 1 || pClear->cbRanges != 20)
+            return VERR_INVALID_PARAMETER;
+        VkImageSubresourceRange Range;
+        memcpy(&Range.aspectMask, pClear->pbRanges + 0, sizeof(Range.aspectMask));
+        memcpy(&Range.baseMipLevel, pClear->pbRanges + 4, sizeof(Range.baseMipLevel));
+        memcpy(&Range.levelCount, pClear->pbRanges + 8, sizeof(Range.levelCount));
+        memcpy(&Range.baseArrayLayer, pClear->pbRanges + 12, sizeof(Range.baseArrayLayer));
+        memcpy(&Range.layerCount, pClear->pbRanges + 16, sizeof(Range.layerCount));
+        if (Range.aspectMask != VK_IMAGE_ASPECT_COLOR_BIT || Range.baseMipLevel != 0
+            || Range.levelCount != 1 || Range.baseArrayLayer != 0 || Range.layerCount != 1)
+            return VERR_INVALID_PARAMETER;
+        memcpy(&aColors[i], pClear->auColor, sizeof(aColors[i]));
+    }
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr =
+        (PFN_vkGetDeviceProcAddr)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetDeviceProcAddr");
+    if (!pfnGetDeviceProcAddr)
+        return VERR_NOT_FOUND;
+# define VK_CLEAR_BATCH_PROC(type, name) (type)pfnGetDeviceProcAddr(pThis->hVkDevice, name)
+    PFN_vkResetCommandBuffer pfnResetCommandBuffer = VK_CLEAR_BATCH_PROC(PFN_vkResetCommandBuffer, "vkResetCommandBuffer");
+    PFN_vkBeginCommandBuffer pfnBeginCommandBuffer = VK_CLEAR_BATCH_PROC(PFN_vkBeginCommandBuffer, "vkBeginCommandBuffer");
+    PFN_vkEndCommandBuffer pfnEndCommandBuffer = VK_CLEAR_BATCH_PROC(PFN_vkEndCommandBuffer, "vkEndCommandBuffer");
+    PFN_vkCmdPipelineBarrier pfnCmdPipelineBarrier = VK_CLEAR_BATCH_PROC(PFN_vkCmdPipelineBarrier, "vkCmdPipelineBarrier");
+    PFN_vkCmdClearColorImage pfnCmdClearColorImage = VK_CLEAR_BATCH_PROC(PFN_vkCmdClearColorImage, "vkCmdClearColorImage");
+    PFN_vkResetFences pfnResetFences = VK_CLEAR_BATCH_PROC(PFN_vkResetFences, "vkResetFences");
+    PFN_vkQueueSubmit pfnQueueSubmit = VK_CLEAR_BATCH_PROC(PFN_vkQueueSubmit, "vkQueueSubmit");
+    PFN_vkWaitForFences pfnWaitForFences = VK_CLEAR_BATCH_PROC(PFN_vkWaitForFences, "vkWaitForFences");
+    if (!pfnResetCommandBuffer || !pfnBeginCommandBuffer || !pfnEndCommandBuffer || !pfnCmdPipelineBarrier
+        || !pfnCmdClearColorImage || !pfnResetFences || !pfnQueueSubmit || !pfnWaitForFences)
+        return VERR_NOT_FOUND;
+    VkCommandBuffer hCmd = pThis->hVkSubmitCommandBuffer;
+    VkFence hFence = pThis->hVkSubmitFence;
+    VkCommandBufferBeginInfo BeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
+                                           VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, NULL };
+    VkSubmitInfo SubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, 0, NULL, NULL, 1, &hCmd, 0, NULL };
+    VkPipelineStageFlags fSrcStage = pRes->enmVkImageLayout == VK_IMAGE_LAYOUT_UNDEFINED
+                                   ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkAccessFlags fSrcAccess = pRes->enmVkImageLayout == VK_IMAGE_LAYOUT_UNDEFINED
+                             ? (VkAccessFlags)0 : VK_ACCESS_TRANSFER_WRITE_BIT;
+    VkImageMemoryBarrier Barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, fSrcAccess,
+                                     VK_ACCESS_TRANSFER_WRITE_BIT, pRes->enmVkImageLayout,
+                                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED,
+                                     VK_QUEUE_FAMILY_IGNORED, pRes->hVkImage,
+                                     { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+    VkImageSubresourceRange Range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    if (pfnResetFences(pThis->hVkDevice, 1, &hFence) != VK_SUCCESS
+        || pfnResetCommandBuffer(hCmd, 0) != VK_SUCCESS || pfnBeginCommandBuffer(hCmd, &BeginInfo) != VK_SUCCESS)
+        return VERR_NOT_SUPPORTED;
+    pfnCmdPipelineBarrier(hCmd, fSrcStage, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                          0, NULL, 0, NULL, 1, &Barrier);
+    for (uint32_t i = 0; i < cClear; ++i)
+        pfnCmdClearColorImage(hCmd, pRes->hVkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              &aColors[i], 1, &Range);
+    if (pfnEndCommandBuffer(hCmd) != VK_SUCCESS || pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, hFence) != VK_SUCCESS
+        || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
+        return VERR_NOT_SUPPORTED;
+    pRes->enmVkImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    pRes->fVulkanImageDirty = true;
+    return VINF_SUCCESS;
+# undef VK_CLEAR_BATCH_PROC
+}
+
 static int virtioGpuR3VulkanCopyBufferToImage(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pSrc,
                                               PVIRTIOGPURESOURCE pDst,
                                               const VIRTIOGPUCOPYBUFFERTOIMAGECMD *pCopy)
@@ -3340,6 +3413,7 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
                         VIRTIOGPUUPDATECMD Update;
                         VIRTIOGPUCLEARCOLORCMD Clear;
+                        VIRTIOGPUCLEARCOLORCMD aClearBatch[64];
                         VIRTIOGPUCOPYBUFFERTOIMAGECMD CopyBufferToImage;
                         VIRTIOGPUCOPYBUFFERTOIMAGECMD CopyBufferToImage2;
                         VIRTIOGPUCOPYIMAGETOBUFFERCMD CopyImageToBuffer;
@@ -3355,6 +3429,7 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                         RT_ZERO(CopyImage);
                         RT_ZERO(CopyImage2);
                         RT_ZERO(aCopyImageBatch);
+                        RT_ZERO(aClearBatch);
                         RT_ZERO(BlitImage);
                         RT_ZERO(BlitImage2);
                         RT_ZERO(aBlitBatch);
@@ -3420,6 +3495,32 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                                 Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
 #endif
                             }
+                        }
+                        else if (Cmd.cbCommand >= 168 && Cmd.cbCommand % 84 == 0
+                                 && Cmd.cbCommand / 84 <= RT_ELEMENTS(aClearBatch))
+                        {
+                            uint32_t const cClear = Cmd.cbCommand / 84;
+                            bool fClearBatchValid = cClear >= 2;
+                            PVIRTIOGPURESOURCE pImageRes = NULL;
+                            for (uint32_t i = 0; fClearBatchValid && i < cClear; ++i)
+                                fClearBatchValid = virtioGpuR3DecodeClearColorImage(pbCommand + i * 84, 84,
+                                                                                    &aClearBatch[i]);
+                            if (fClearBatchValid)
+                            {
+                                if (aClearBatch[0].uImage > UINT32_MAX
+                                    || !(pImageRes = virtioGpuR3FindResource(pThis, (uint32_t)aClearBatch[0].uImage))
+                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)aClearBatch[0].uImage))
+                                    fClearBatchValid = false;
+                                for (uint32_t i = 1; fClearBatchValid && i < cClear; ++i)
+                                    if (aClearBatch[i].uImage != aClearBatch[0].uImage)
+                                        fClearBatchValid = false;
+                            }
+                            if (fClearBatchValid)
+                                Resp.Hdr.uType = RT_SUCCESS(virtioGpuR3VulkanClearColorImageBatch(pThis, pImageRes,
+                                                                                                    aClearBatch, cClear))
+                                               ? VIRTIOGPU_RESP_OK_NODATA : VIRTIOGPU_RESP_ERR_UNSPEC;
+                            else
+                                Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
                         }
                         else if (virtioGpuR3DecodeClearColorImage(pbCommand, Cmd.cbCommand, &Clear))
                         {

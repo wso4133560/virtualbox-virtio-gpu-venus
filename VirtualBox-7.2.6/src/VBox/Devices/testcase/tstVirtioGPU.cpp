@@ -792,6 +792,21 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
+    RTTestSub(g_hTest, "Venus ClearColorImage batch submission");
+    uint8_t abClearBatchCommand[168] = { 0 };
+    memcpy(abClearBatchCommand, abClearSubmitCommand, sizeof(abClearSubmitCommand));
+    memcpy(abClearBatchCommand + sizeof(abClearSubmitCommand), abClearSubmitCommand,
+           sizeof(abClearSubmitCommand));
+    struct { VIRTIOGPUSUBMIT3D Hdr; uint32_t uResourceId; uint8_t abCommand[168]; }
+        SubmitClearBatch = { { 168, 1 }, 7, { 0 } };
+    memcpy(SubmitClearBatch.abCommand, abClearBatchCommand, sizeof(abClearBatchCommand));
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SUBMIT_3D, &SubmitClearBatch,
+                   sizeof(SubmitClearBatch), 24, 43);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
     RTTestSub(g_hTest, "Venus vkCmdCopyBuffer2 serialization");
     uint8_t abCopyBuffer2Command[100] = { 0 };
     uint32_t const uCopyBuffer2Type = 207;
