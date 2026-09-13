@@ -377,6 +377,47 @@ static void tstVulkanCopyReadback(PVIRTIOGPU pGpu)
         RTTESTI_CHECK(g_cDroppedBufferToImage == 1 && ImageDst.fVulkanImageDirty);
         RTTESTI_CHECK(memcmp(ImageDst.pvVkMapped, abImageDst, sizeof(abImageDst)) == 0);
         RTTESTI_CHECK(memcmp(ImageDst.pbPixels, abImageDst, sizeof(abImageDst)) == 0);
+
+        RTTestSub(g_hTest, "Venus CopyBufferToImage batch submission");
+        /* Two serialized uploads for the same image are recorded as one host
+         * copy call.  The interception proves the batching path is selected
+         * without relying on a CPU-side replacement. */
+        VIRTIOGPUCOPYBUFFERTOIMAGECMD aCopyToImage[2];
+        RT_ZERO(aCopyToImage);
+        for (unsigned i = 0; i < RT_ELEMENTS(aCopyToImage); ++i)
+        {
+            aCopyToImage[i] = CopyToImage;
+            aCopyToImage[i].uSrcBuffer = 100;
+            aCopyToImage[i].uDstImage = 101;
+        }
+        g_cDroppedBufferToImage = 0;
+        g_fDropBufferToImage = true;
+        pGpu->pfnVkGetInstanceProcAddr = tstVkCopyInstanceProc;
+        int const rcCopyToImageBatch = virtioGpuR3VulkanCopyBufferToImageBatch(pGpu, &ImageSrc, &ImageDst,
+                                                                                 aCopyToImage, RT_ELEMENTS(aCopyToImage));
+        pGpu->pfnVkGetInstanceProcAddr = g_pfnCopyTestInstanceProc;
+        g_fDropBufferToImage = false;
+        RTTESTI_CHECK_RC(rcCopyToImageBatch, VINF_SUCCESS);
+        RTTESTI_CHECK(g_cDroppedBufferToImage == 1 && ImageDst.fVulkanImageDirty);
+
+        RTTestSub(g_hTest, "Venus CopyImageToBuffer batch submission");
+        VIRTIOGPUCOPYIMAGETOBUFFERCMD aCopyImageToBuffer[2];
+        RT_ZERO(aCopyImageToBuffer);
+        for (unsigned i = 0; i < RT_ELEMENTS(aCopyImageToBuffer); ++i)
+        {
+            aCopyImageToBuffer[i].uCommandBuffer = 43;
+            aCopyImageToBuffer[i].uSrcImage = 101;
+            aCopyImageToBuffer[i].uDstBuffer = 100;
+            aCopyImageToBuffer[i].enmSrcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            aCopyImageToBuffer[i].cRegions = 1;
+            aCopyImageToBuffer[i].cbRegions = sizeof(abImageRegion);
+            aCopyImageToBuffer[i].pbRegions = abImageRegion;
+        }
+        ImageDst.enmVkImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        int const rcCopyImageToBufferBatch = virtioGpuR3VulkanCopyImageToBufferBatch(pGpu, &ImageDst, &ImageSrc,
+                                                                                       aCopyImageToBuffer,
+                                                                                       RT_ELEMENTS(aCopyImageToBuffer));
+        RTTESTI_CHECK_RC(rcCopyImageToBufferBatch, VINF_SUCCESS);
     }
     else
         RTTestFailed(g_hTest, "GPU image backing required for buffer-to-image test");
