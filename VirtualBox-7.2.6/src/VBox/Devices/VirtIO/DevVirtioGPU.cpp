@@ -2183,6 +2183,92 @@ static int virtioGpuR3VulkanCopyImage(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pSrc,
 # undef VK_COPY_IMAGE_CMD_PROC
 }
 
+static int virtioGpuR3VulkanCopyImageBatch(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pSrc,
+                                           PVIRTIOGPURESOURCE pDst, const VIRTIOGPUCOPYIMAGECMD *paCopy,
+                                           uint32_t cCopy)
+{
+    if (!pSrc || !pDst || !paCopy || !cCopy || cCopy > 64 || !pSrc->fVulkanImage || !pDst->fVulkanImage
+        || !pThis->fVulkanQueue || !pThis->fVulkanSubmit)
+        return VERR_INVALID_PARAMETER;
+    VkImageCopy aRegions[64];
+    RT_ZERO(aRegions);
+    for (uint32_t i = 0; i < cCopy; ++i)
+    {
+        const VIRTIOGPUCOPYIMAGECMD *pCopy = &paCopy[i];
+        if (pCopy->uSrcImage != paCopy[0].uSrcImage || pCopy->uDstImage != paCopy[0].uDstImage
+            || pCopy->enmSrcImageLayout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+            || pCopy->enmDstImageLayout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL || pCopy->cRegions != 1
+            || !pCopy->pbRegions)
+            return VERR_INVALID_PARAMETER;
+        uint32_t auSrcSubresource[4], auDstSubresource[4], auExtent[3];
+        int32_t aiSrcOffset[3], aiDstOffset[3];
+        uint32_t const offFields = pCopy->cbRegionStride == 80 ? 12 : 0;
+        uint32_t const cbStride = pCopy->cbRegionStride ? pCopy->cbRegionStride : 68;
+        if (cbStride < 68 || pCopy->cbRegions != cbStride)
+            return VERR_INVALID_PARAMETER;
+        memcpy(auSrcSubresource, pCopy->pbRegions + offFields + 0, sizeof(auSrcSubresource));
+        memcpy(aiSrcOffset, pCopy->pbRegions + offFields + 16, sizeof(aiSrcOffset));
+        memcpy(auDstSubresource, pCopy->pbRegions + offFields + 28, sizeof(auDstSubresource));
+        memcpy(aiDstOffset, pCopy->pbRegions + offFields + 44, sizeof(aiDstOffset));
+        memcpy(auExtent, pCopy->pbRegions + offFields + 56, sizeof(auExtent));
+        if (auSrcSubresource[0] != VK_IMAGE_ASPECT_COLOR_BIT || auSrcSubresource[1]
+            || auSrcSubresource[2] || auSrcSubresource[3] != 1 || aiSrcOffset[0] || aiSrcOffset[1]
+            || aiSrcOffset[2] || auDstSubresource[0] != VK_IMAGE_ASPECT_COLOR_BIT || auDstSubresource[1]
+            || auDstSubresource[2] || auDstSubresource[3] != 1 || aiDstOffset[0] || aiDstOffset[1]
+            || aiDstOffset[2] || auExtent[0] != pSrc->uWidth || auExtent[1] != pSrc->uHeight
+            || auExtent[2] != 1 || pSrc->uWidth != pDst->uWidth || pSrc->uHeight != pDst->uHeight)
+            return VERR_INVALID_PARAMETER;
+        aRegions[i].srcSubresource = { auSrcSubresource[0], auSrcSubresource[1], auSrcSubresource[2], auSrcSubresource[3] };
+        aRegions[i].srcOffset = { aiSrcOffset[0], aiSrcOffset[1], aiSrcOffset[2] };
+        aRegions[i].dstSubresource = { auDstSubresource[0], auDstSubresource[1], auDstSubresource[2], auDstSubresource[3] };
+        aRegions[i].dstOffset = { aiDstOffset[0], aiDstOffset[1], aiDstOffset[2] };
+        aRegions[i].extent = { auExtent[0], auExtent[1], auExtent[2] };
+    }
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr =
+        (PFN_vkGetDeviceProcAddr)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetDeviceProcAddr");
+    if (!pfnGetDeviceProcAddr)
+        return VERR_NOT_FOUND;
+# define VK_COPY_IMAGE_BATCH_PROC(type, name) (type)pfnGetDeviceProcAddr(pThis->hVkDevice, name)
+    PFN_vkResetCommandBuffer pfnResetCommandBuffer = VK_COPY_IMAGE_BATCH_PROC(PFN_vkResetCommandBuffer, "vkResetCommandBuffer");
+    PFN_vkBeginCommandBuffer pfnBeginCommandBuffer = VK_COPY_IMAGE_BATCH_PROC(PFN_vkBeginCommandBuffer, "vkBeginCommandBuffer");
+    PFN_vkEndCommandBuffer pfnEndCommandBuffer = VK_COPY_IMAGE_BATCH_PROC(PFN_vkEndCommandBuffer, "vkEndCommandBuffer");
+    PFN_vkCmdPipelineBarrier pfnCmdPipelineBarrier = VK_COPY_IMAGE_BATCH_PROC(PFN_vkCmdPipelineBarrier, "vkCmdPipelineBarrier");
+    PFN_vkCmdCopyImage pfnCmdCopyImage = VK_COPY_IMAGE_BATCH_PROC(PFN_vkCmdCopyImage, "vkCmdCopyImage");
+    PFN_vkResetFences pfnResetFences = VK_COPY_IMAGE_BATCH_PROC(PFN_vkResetFences, "vkResetFences");
+    PFN_vkQueueSubmit pfnQueueSubmit = VK_COPY_IMAGE_BATCH_PROC(PFN_vkQueueSubmit, "vkQueueSubmit");
+    PFN_vkWaitForFences pfnWaitForFences = VK_COPY_IMAGE_BATCH_PROC(PFN_vkWaitForFences, "vkWaitForFences");
+    if (!pfnResetCommandBuffer || !pfnBeginCommandBuffer || !pfnEndCommandBuffer || !pfnCmdPipelineBarrier
+        || !pfnCmdCopyImage || !pfnResetFences || !pfnQueueSubmit || !pfnWaitForFences)
+        return VERR_NOT_FOUND;
+    VkCommandBuffer hCmd = pThis->hVkSubmitCommandBuffer;
+    VkFence hFence = pThis->hVkSubmitFence;
+    VkCommandBufferBeginInfo BeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
+                                           VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, NULL };
+    VkSubmitInfo SubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, 0, NULL, NULL, 1, &hCmd, 0, NULL };
+    VkImageMemoryBarrier aBarriers[2] = {
+        { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+          pSrc->enmVkImageLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_QUEUE_FAMILY_IGNORED,
+          VK_QUEUE_FAMILY_IGNORED, pSrc->hVkImage, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } },
+        { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+          pDst->enmVkImageLayout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED,
+          VK_QUEUE_FAMILY_IGNORED, pDst->hVkImage, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } }
+    };
+    if (pfnResetFences(pThis->hVkDevice, 1, &hFence) != VK_SUCCESS
+        || pfnResetCommandBuffer(hCmd, 0) != VK_SUCCESS || pfnBeginCommandBuffer(hCmd, &BeginInfo) != VK_SUCCESS)
+        return VERR_NOT_SUPPORTED;
+    pfnCmdPipelineBarrier(hCmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                          0, NULL, 0, NULL, 2, aBarriers);
+    pfnCmdCopyImage(hCmd, pSrc->hVkImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    pDst->hVkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, cCopy, aRegions);
+    if (pfnEndCommandBuffer(hCmd) != VK_SUCCESS || pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, hFence) != VK_SUCCESS
+        || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
+        return VERR_NOT_SUPPORTED;
+    pDst->enmVkImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    pDst->fVulkanImageDirty = true;
+    return VINF_SUCCESS;
+# undef VK_COPY_IMAGE_BATCH_PROC
+}
+
 static int virtioGpuR3VulkanBlitImage(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pSrc,
                                       PVIRTIOGPURESOURCE pDst, const VIRTIOGPUBLITIMAGECMD *pBlit)
 {
@@ -3262,11 +3348,13 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                         VIRTIOGPUPIPELINEBARRIERCMD PipelineBarrier2;
                         VIRTIOGPUCOPYIMAGECMD CopyImage;
                         VIRTIOGPUCOPYIMAGECMD CopyImage2;
+                        VIRTIOGPUCOPYIMAGECMD aCopyImageBatch[64];
                         VIRTIOGPUBLITIMAGECMD BlitImage;
                         VIRTIOGPUBLITIMAGECMD BlitImage2;
                         VIRTIOGPUBLITIMAGECMD aBlitBatch[64];
                         RT_ZERO(CopyImage);
                         RT_ZERO(CopyImage2);
+                        RT_ZERO(aCopyImageBatch);
                         RT_ZERO(BlitImage);
                         RT_ZERO(BlitImage2);
                         RT_ZERO(aBlitBatch);
@@ -3426,6 +3514,36 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                                 Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
 #endif
                             }
+                        }
+                        else if (Cmd.cbCommand >= 304 && Cmd.cbCommand % 152 == 0
+                                 && Cmd.cbCommand / 152 <= RT_ELEMENTS(aCopyImageBatch))
+                        {
+                            uint32_t const cCopyImage = Cmd.cbCommand / 152;
+                            bool fCopyImageBatchValid = cCopyImage >= 2;
+                            PVIRTIOGPURESOURCE pSrcRes = NULL;
+                            PVIRTIOGPURESOURCE pDstRes = NULL;
+                            for (uint32_t i = 0; fCopyImageBatchValid && i < cCopyImage; ++i)
+                                fCopyImageBatchValid = virtioGpuR3DecodeCopyImage2(pbCommand + i * 152, 152,
+                                                                                   &aCopyImageBatch[i]);
+                            if (fCopyImageBatchValid)
+                            {
+                                if (aCopyImageBatch[0].uSrcImage > UINT32_MAX || aCopyImageBatch[0].uDstImage > UINT32_MAX
+                                    || !(pSrcRes = virtioGpuR3FindResource(pThis, (uint32_t)aCopyImageBatch[0].uSrcImage))
+                                    || !(pDstRes = virtioGpuR3FindResource(pThis, (uint32_t)aCopyImageBatch[0].uDstImage))
+                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)aCopyImageBatch[0].uSrcImage)
+                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)aCopyImageBatch[0].uDstImage))
+                                    fCopyImageBatchValid = false;
+                                for (uint32_t i = 1; fCopyImageBatchValid && i < cCopyImage; ++i)
+                                    if (aCopyImageBatch[i].uSrcImage != aCopyImageBatch[0].uSrcImage
+                                        || aCopyImageBatch[i].uDstImage != aCopyImageBatch[0].uDstImage)
+                                        fCopyImageBatchValid = false;
+                            }
+                            if (fCopyImageBatchValid)
+                                Resp.Hdr.uType = RT_SUCCESS(virtioGpuR3VulkanCopyImageBatch(pThis, pSrcRes, pDstRes,
+                                                                                              aCopyImageBatch, cCopyImage))
+                                               ? VIRTIOGPU_RESP_OK_NODATA : VIRTIOGPU_RESP_ERR_UNSPEC;
+                            else
+                                Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
                         }
                         else if (virtioGpuR3DecodeCopyImage2(pbCommand, Cmd.cbCommand, &CopyImage2)
                                  || virtioGpuR3DecodeCopyImage(pbCommand, Cmd.cbCommand, &CopyImage))
