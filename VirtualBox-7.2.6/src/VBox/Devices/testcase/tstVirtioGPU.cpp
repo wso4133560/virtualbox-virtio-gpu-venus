@@ -778,6 +778,34 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_ERR_INVALID_PARAMETER && !virtioGpuR3FindResource(pGpu, 13));
+    VIRTIOGPUSETSCANOUTBLOB BlobScanout = { 0, 0, 2, 2, 0, 9, VIRTIOGPU_FORMAT_B8G8R8X8_UNORM,
+                                            2, 2, { 8, 0, 0, 0 }, { 0, 0, 0, 0 } };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SET_SCANOUT_BLOB, &BlobScanout,
+                   sizeof(BlobScanout), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && pGpu->aScanouts[0].uResourceId == 9
+                  && pGpu->aScanouts[0].uStride == 8 && pGpu->aScanouts[0].uOffset == 0
+                  && pGpu->aResources[0].uWidth == 2 && pGpu->aResources[0].uHeight == 2);
+    struct { uint32_t x, y, w, h, id, padding; } BlobFlush = { 0, 0, 2, 2, 9, 0 };
+    unsigned const cDisplayUpdatesBeforeBlob = g_cDisplayUpdates;
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_FLUSH, &BlobFlush, sizeof(BlobFlush), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA
+                  && g_cDisplayUpdates == cDisplayUpdatesBeforeBlob + 1);
+    VIRTIOGPUSETSCANOUTBLOB BlobScanoutDisable = { 0 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SET_SCANOUT_BLOB, &BlobScanoutDisable,
+                   sizeof(BlobScanoutDisable), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && pGpu->aScanouts[0].uResourceId == 0);
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     RTTESTI_CHECK(pGpu->aResources[0].fVulkanBuffer && pGpu->aResources[0].hVkBuffer != VK_NULL_HANDLE);
 #endif

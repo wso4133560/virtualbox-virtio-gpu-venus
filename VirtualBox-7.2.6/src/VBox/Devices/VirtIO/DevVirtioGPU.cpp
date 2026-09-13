@@ -29,7 +29,7 @@
 # error "VirtIO-GPU currently runs entirely in ring 3."
 #endif
 
-#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(6)
+#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(7)
 #define VIRTIOGPU_MAX_RESOURCES 256
 #define VIRTIOGPU_MAX_CONTEXTS 64
 #define VIRTIOGPU_MAX_CONTEXT_RESOURCES 64
@@ -86,6 +86,8 @@ typedef struct VIRTIOGPUSCANOUT
     uint32_t uY;
     uint32_t uWidth;
     uint32_t uHeight;
+    uint32_t uStride;
+    uint32_t uOffset;
     uint64_t uFlushSequence;
 } VIRTIOGPUSCANOUT;
 
@@ -2893,7 +2895,69 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                             pThis->aScanouts[Cmd.uScanoutId].uY=Cmd.uY;
                             pThis->aScanouts[Cmd.uScanoutId].uWidth=Cmd.uWidth;
                             pThis->aScanouts[Cmd.uScanoutId].uHeight=Cmd.uHeight;
+                            pThis->aScanouts[Cmd.uScanoutId].uStride=pRes->uWidth * 4;
+                            pThis->aScanouts[Cmd.uScanoutId].uOffset=0;
                             Resp.Hdr.uType=VIRTIOGPU_RESP_OK_NODATA;
+                        }
+                    }
+                }
+                break;
+            }
+            case VIRTIOGPU_CMD_SET_SCANOUT_BLOB:
+            {
+                VIRTIOGPUSETSCANOUTBLOB Cmd;
+                RT_ZERO(Cmd);
+                if (pBuf->cbPhysSend < sizeof(Cmd)
+                    || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Cmd, sizeof(Cmd)))
+                    || Cmd.uScanoutId >= VIRTIOGPU_MAX_SCANOUTS
+                    || Cmd.auStrides[1] || Cmd.auStrides[2] || Cmd.auStrides[3]
+                    || Cmd.auOffsets[1] || Cmd.auOffsets[2] || Cmd.auOffsets[3])
+                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                else if (!Cmd.uResourceId)
+                {
+                    RT_ZERO(pThis->aScanouts[Cmd.uScanoutId]);
+                    Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
+                }
+                else
+                {
+                    PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResource(pThis, Cmd.uResourceId);
+                    uint64_t const cbLastRow = Cmd.uHeight
+                        ? (uint64_t)(Cmd.uHeight - 1) * Cmd.auStrides[0] : 0;
+                    uint64_t const cbEnd = (uint64_t)Cmd.auOffsets[0] + cbLastRow
+                                         + (uint64_t)Cmd.uWidth * 4;
+                    uint32_t const uResourceWidth = Cmd.uResourceWidth ? Cmd.uResourceWidth : Cmd.uWidth;
+                    uint32_t const uResourceHeight = Cmd.uResourceHeight ? Cmd.uResourceHeight : Cmd.uHeight;
+                    bool const fValid = pRes && pRes->fBlob && Cmd.uFormat == VIRTIOGPU_FORMAT_B8G8R8X8_UNORM
+                        && Cmd.uWidth && Cmd.uHeight
+                        && Cmd.uWidth <= 16384 && Cmd.uHeight <= 16384
+                        && uResourceWidth && uResourceHeight
+                        && (uint64_t)uResourceWidth * uResourceHeight * 4 <= pRes->cbPixels
+                        && Cmd.auStrides[0] >= Cmd.uWidth * 4 && cbEnd <= pRes->cbPixels
+                        && Cmd.uX <= UINT32_MAX - Cmd.uWidth && Cmd.uY <= UINT32_MAX - Cmd.uHeight;
+                    if (!fValid)
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                    else
+                    {
+                        PVIRTIOGPUCC pThisCC = PDMDEVINS_2_DATA_CC(pDevIns, PVIRTIOGPUCC);
+                        int rcResize = VINF_SUCCESS;
+                        if (pThisCC->pDrv && pThisCC->pDrv->pfnResize)
+                            rcResize = pThisCC->pDrv->pfnResize(pThisCC->pDrv, 32,
+                                                               pRes->pbPixels + Cmd.auOffsets[0],
+                                                               Cmd.auStrides[0], Cmd.uWidth, Cmd.uHeight);
+                        if (RT_FAILURE(rcResize))
+                            Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                        else
+                        {
+                            pRes->uWidth = uResourceWidth;
+                            pRes->uHeight = uResourceHeight;
+                            pThis->aScanouts[Cmd.uScanoutId].uResourceId = Cmd.uResourceId;
+                            pThis->aScanouts[Cmd.uScanoutId].uX = Cmd.uX;
+                            pThis->aScanouts[Cmd.uScanoutId].uY = Cmd.uY;
+                            pThis->aScanouts[Cmd.uScanoutId].uWidth = Cmd.uWidth;
+                            pThis->aScanouts[Cmd.uScanoutId].uHeight = Cmd.uHeight;
+                            pThis->aScanouts[Cmd.uScanoutId].uStride = Cmd.auStrides[0];
+                            pThis->aScanouts[Cmd.uScanoutId].uOffset = Cmd.auOffsets[0];
+                            Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
                         }
                     }
                 }

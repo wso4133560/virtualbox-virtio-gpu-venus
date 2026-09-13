@@ -98,6 +98,21 @@ typedef struct VIRTIOGPUGETEDID
     uint32_t uPadding;
 } VIRTIOGPUGETEDID;
 
+typedef struct VIRTIOGPUSETSCANOUTBLOB
+{
+    uint32_t uX;
+    uint32_t uY;
+    uint32_t uWidth;
+    uint32_t uHeight;
+    uint32_t uScanoutId;
+    uint32_t uResourceId;
+    uint32_t uFormat;
+    uint32_t uResourceWidth;
+    uint32_t uResourceHeight;
+    uint32_t auStrides[4];
+    uint32_t auOffsets[4];
+} VIRTIOGPUSETSCANOUTBLOB;
+
 typedef struct VIRTIOGPURESPRESOURCEUUID
 {
     VIRTIOGPUCTRLHDR Hdr;
@@ -188,6 +203,7 @@ AssertCompileSize(VIRTIOGPURESOURCEDETACHBACKING, 32);
 AssertCompileSize(VIRTIOGPURESOURCECREATEBLOB, 32);
 AssertCompileSize(VIRTIOGPURESOURCEASSIGNUUID, 8);
 AssertCompileSize(VIRTIOGPUGETEDID, 8);
+AssertCompileSize(VIRTIOGPUSETSCANOUTBLOB, 68);
 AssertCompileSize(VIRTIOGPURESPRESOURCEUUID, 40);
 AssertCompileSize(VIRTIOGPURESPEDID, 1056);
 AssertCompileSize(VIRTIOGPUSUBMIT3D, 8);
