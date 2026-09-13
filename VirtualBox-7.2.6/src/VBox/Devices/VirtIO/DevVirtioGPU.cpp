@@ -3151,6 +3151,36 @@ static int virtioGpuR3ReadGuest(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, PVIRTIO
     return cb ? VERR_BUFFER_UNDERFLOW : VINF_SUCCESS;
 }
 
+static int virtioGpuR3WriteGuest(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, PVIRTIOGPURESOURCE pRes,
+                                 uint64_t off, const void *pvSrc, size_t cb)
+{
+    const uint8_t *pbSrc = (const uint8_t *)pvSrc;
+    uint64_t cbTotal = 0;
+    for (unsigned i = 0; i < pRes->cBacking; ++i)
+        cbTotal += pRes->aBacking[i].cb;
+    if (off > cbTotal || cb > cbTotal - off)
+        return VERR_BUFFER_OVERFLOW;
+    for (unsigned i = 0; i < pRes->cBacking && cb; ++i)
+    {
+        const VIRTIOGPUMEMENTRY *pEntry = &pRes->aBacking[i];
+        if (off >= pEntry->cb)
+        {
+            off -= pEntry->cb;
+            continue;
+        }
+        size_t cbChunk = RT_MIN(cb, (size_t)pEntry->cb - (size_t)off);
+        if (pEntry->GCPhys > UINT64_MAX - off)
+            return VERR_OUT_OF_RANGE;
+        int rc = virtioCoreGCPhysWrite(pVirtio, pDevIns, pEntry->GCPhys + off, (void *)pbSrc, cbChunk);
+        if (RT_FAILURE(rc))
+            return rc;
+        pbSrc += cbChunk;
+        cb -= cbChunk;
+        off = 0;
+    }
+    return cb ? VERR_BUFFER_UNDERFLOW : VINF_SUCCESS;
+}
+
 static void virtioGpuR3Response(VIRTIOGPUDISPLAYRESP *pResp, const VIRTIOGPUCTRLHDR *pReq, uint32_t uType)
 {
     RT_ZERO(*pResp);
@@ -4445,6 +4475,59 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
 #endif
                         }
                         Resp.Hdr.uType = RT_SUCCESS(rcReq) ? VIRTIOGPU_RESP_OK_NODATA : VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                    }
+                }
+                break;
+            }
+            case VIRTIOGPU_CMD_TRANSFER_TO_HOST_3D:
+            case VIRTIOGPU_CMD_TRANSFER_FROM_HOST_3D:
+            {
+                VIRTIOGPUTRANSFERHOST3D Cmd;
+                RT_ZERO(Cmd);
+                if (pBuf->cbPhysSend < sizeof(Cmd) - sizeof(Cmd.Hdr)
+                    || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf,
+                                                  (uint8_t *)&Cmd + sizeof(Cmd.Hdr), sizeof(Cmd) - sizeof(Cmd.Hdr))))
+                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                else
+                {
+                    PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResource(pThis, Cmd.uResourceId);
+                    uint64_t const cbRow = pRes ? (uint64_t)pRes->uWidth * 4 : 0;
+                    uint64_t const stride = Cmd.uStride ? Cmd.uStride : cbRow;
+                    uint64_t const layerStride = Cmd.uLayerStride ? Cmd.uLayerStride : stride * Cmd.uHeight;
+                    bool fValid = pRes && pRes->cBacking && Cmd.uLevel == 0
+                               && Cmd.uX == 0 && Cmd.uY == 0 && Cmd.uZ == 0 && Cmd.uDepth == 1
+                               && Cmd.uWidth == pRes->uWidth && Cmd.uHeight == pRes->uHeight
+                               && stride >= cbRow && layerStride >= stride * Cmd.uHeight
+                               && Cmd.off <= UINT64_MAX - (layerStride - 1)
+                               && Cmd.off + layerStride <= UINT64_MAX;
+                    if (!fValid)
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                    else if (Req.uType == VIRTIOGPU_CMD_TRANSFER_TO_HOST_3D)
+                    {
+                        for (uint32_t y = 0; y < Cmd.uHeight && RT_SUCCESS(rcReq); ++y)
+                            rcReq = virtioGpuR3ReadGuest(pDevIns, pVirtio, pRes,
+                                                         Cmd.off + (uint64_t)y * stride,
+                                                         pRes->pbPixels + (size_t)y * (size_t)cbRow,
+                                                         (size_t)cbRow);
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                        if (RT_SUCCESS(rcReq))
+                            rcReq = virtioGpuR3VulkanResourceSync(pThis, pRes);
+#endif
+                        Resp.Hdr.uType = RT_SUCCESS(rcReq) ? VIRTIOGPU_RESP_OK_NODATA
+                                                           : VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                    }
+                    else
+                    {
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                        rcReq = virtioGpuR3VulkanResourceReadbackImage(pThis, pRes);
+#endif
+                        for (uint32_t y = 0; y < Cmd.uHeight && RT_SUCCESS(rcReq); ++y)
+                            rcReq = virtioGpuR3WriteGuest(pDevIns, pVirtio, pRes,
+                                                          Cmd.off + (uint64_t)y * stride,
+                                                          pRes->pbPixels + (size_t)y * (size_t)cbRow,
+                                                          (size_t)cbRow);
+                        Resp.Hdr.uType = RT_SUCCESS(rcReq) ? VIRTIOGPU_RESP_OK_NODATA
+                                                           : VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
                     }
                 }
                 break;

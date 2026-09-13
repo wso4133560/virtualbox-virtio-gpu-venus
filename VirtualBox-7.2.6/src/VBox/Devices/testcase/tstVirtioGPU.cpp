@@ -843,6 +843,31 @@ int main(int argc, char **argv)
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     RTTESTI_CHECK(pGpu->aResources[1].fVulkanImage && pGpu->aResources[1].hVkImage != VK_NULL_HANDLE);
 #endif
+    uint8_t abTransfer3D[16] = { 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38,
+                                 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48 };
+    memcpy(&g_abRam[0x7000], abTransfer3D, sizeof(abTransfer3D));
+    struct { uint32_t id, count; VIRTIOGPUMEMENTRY Entry; } Attach3D = { 13, 1, { 0x7000, 16, 0 } };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_ATTACH_BACKING,
+                   &Attach3D, sizeof(Attach3D), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && pGpu->aResources[1].cBacking == 1);
+    VIRTIOGPUTRANSFERHOST3D Transfer3D;
+    RT_ZERO(Transfer3D);
+    Transfer3D.uX = 0; Transfer3D.uY = 0; Transfer3D.uZ = 0;
+    Transfer3D.uWidth = 2; Transfer3D.uHeight = 2; Transfer3D.uDepth = 1;
+    Transfer3D.off = 0; Transfer3D.uResourceId = 13; Transfer3D.uLevel = 0;
+    Transfer3D.uStride = 8; Transfer3D.uLayerStride = 16;
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_TRANSFER_TO_HOST_3D,
+                   &Transfer3D.uX, sizeof(Transfer3D) - sizeof(Transfer3D.Hdr), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA
+                  && !memcmp(pGpu->aResources[1].pbPixels, abTransfer3D, sizeof(abTransfer3D)));
     struct { uint32_t id, padding; } Unref3D = { 13, 0 };
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_UNREF, &Unref3D, sizeof(Unref3D), 24);

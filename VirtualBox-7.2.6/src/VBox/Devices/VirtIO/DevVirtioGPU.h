@@ -214,6 +214,22 @@ typedef struct VIRTIOGPUTRANSFERTOHOST2D
     uint32_t uPadding2;
 } VIRTIOGPUTRANSFERTOHOST2D;
 
+typedef struct VIRTIOGPUTRANSFERHOST3D
+{
+    VIRTIOGPUCTRLHDR Hdr;
+    uint32_t uX;
+    uint32_t uY;
+    uint32_t uZ;
+    uint32_t uWidth;
+    uint32_t uHeight;
+    uint32_t uDepth;
+    uint64_t off;
+    uint32_t uResourceId;
+    uint32_t uLevel;
+    uint32_t uStride;
+    uint32_t uLayerStride;
+} VIRTIOGPUTRANSFERHOST3D;
+
 typedef struct VIRTIOGPURESOURCEFLUSH
 {
     VIRTIOGPUCTRLHDR Hdr;
@@ -289,6 +305,7 @@ AssertCompileSize(VIRTIOGPUGETCAPSET, 8);
 AssertCompileSize(VIRTIOGPUCAPSETVENUS, 160);
 AssertCompileSize(VIRTIOGPURESPCAPSETVENUS, 184);
 AssertCompileSize(VIRTIOGPUTRANSFERTOHOST2D, 56);
+AssertCompileSize(VIRTIOGPUTRANSFERHOST3D, 72);
 AssertCompileSize(VIRTIOGPURESOURCEFLUSH, 48);
 AssertCompileSize(VIRTIOGPUDISPLAYONE, 24);
 AssertCompileSize(VIRTIOGPUDISPLAYRESP, 408);
