@@ -2209,6 +2209,39 @@ static void virtioGpuR3FillVenusCapset(VIRTIOGPUCAPSETVENUS *pCapset)
     pCapset->fUseGuestVram = 1;
 }
 
+/** Fill a deterministic base EDID for the virtual 1024x768 display. */
+static void virtioGpuR3FillEdid(uint8_t *pbEdid)
+{
+    memset(pbEdid, 0, 128);
+    static const uint8_t s_abHeader[] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00,
+                                          0x58, 0x0f, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00,
+                                          0x01, 0x23, 0x01, 0x04 };
+    memcpy(pbEdid, s_abHeader, sizeof(s_abHeader));
+    pbEdid[20] = 0xa5;
+    pbEdid[21] = 0x5f;
+    pbEdid[22] = 0x44;
+    pbEdid[23] = 0x78;
+    /* Established timings: 1024x768@60 and 800x600@60. */
+    pbEdid[35] = 0x08;
+    /* Standard timing slots: 1024x768, 800x600, then unused. */
+    pbEdid[38] = 0x81;
+    pbEdid[39] = 0x80;
+    pbEdid[40] = 0x61;
+    pbEdid[41] = 0x40;
+    /* Detailed timing descriptor for 1024x768@60 (65 MHz). */
+    static const uint8_t s_abTiming[] = { 0x64, 0x19, 0x00, 0x40, 0x41, 0x50, 0x18, 0x88,
+                                          0x36, 0x00, 0x58, 0x2c, 0x11, 0x00, 0x00, 0x1e,
+                                          0x00, 0x00 };
+    memcpy(&pbEdid[54], s_abTiming, sizeof(s_abTiming));
+    pbEdid[72] = 0x00; pbEdid[73] = 0x00; pbEdid[74] = 0x00; pbEdid[75] = 0xfc; pbEdid[76] = 0x00;
+    static const uint8_t s_abName[] = { 'V','i','r','t','I','O',' ','G','P','U','\n',' ',' ',' ',' ',' ',' ',' ',' ' };
+    memcpy(&pbEdid[77], s_abName, sizeof(s_abName));
+    uint8_t uChecksum = 0;
+    for (unsigned i = 0; i < 127; ++i)
+        uChecksum = (uint8_t)(uChecksum + pbEdid[i]);
+    pbEdid[127] = (uint8_t)(0 - uChecksum);
+}
+
 /** Process one control/cursor command and enqueue one used entry. */
 static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t uQueue, PVIRTQBUF pBuf)
 {
@@ -2267,8 +2300,8 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                     {
                         pEdid->Hdr = Resp.Hdr;
                         pEdid->Hdr.uType = VIRTIOGPU_RESP_OK_EDID;
-                        /* No physical monitor is attached to the virtual scanout. */
-                        pEdid->cbEdid = 0;
+                        pEdid->cbEdid = 128;
+                        virtioGpuR3FillEdid(pEdid->abEdid);
                         pvResponse = pEdid;
                         cbResp = sizeof(*pEdid);
                         fPreserveResponse = true;
@@ -3512,7 +3545,8 @@ static DECLCALLBACK(int) virtioGpuR3Construct(PPDMDEVINS pDevIns, int iInstance,
 #endif
     char szName[16];
     RTStrPrintf(szName, sizeof(szName), "virtio-gpu%u", iInstance);
-    uint64_t const fGpuFeatures = VIRTIOGPU_F_RESOURCE_UUID | VIRTIOGPU_F_RESOURCE_BLOB | VIRTIOGPU_F_CONTEXT_INIT
+    uint64_t const fGpuFeatures = VIRTIOGPU_F_EDID | VIRTIOGPU_F_RESOURCE_UUID
+                                | VIRTIOGPU_F_RESOURCE_BLOB | VIRTIOGPU_F_CONTEXT_INIT
                                 | (pThis->enmActiveBackend == VIRTIOGPU_BACKEND_VENUS
                                    ? VIRTIOGPU_F_VIRGL : 0);
     rc = virtioCoreR3Init(pDevIns, &pThis->Virtio, &pThisCC->Virtio, &Pci, szName,

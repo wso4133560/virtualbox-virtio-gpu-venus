@@ -441,7 +441,7 @@ int main(int argc, char **argv)
     pGpu->Virtio.pDevInsR3 = pDev;
     pGpu->Virtio.cVirtqs = VIRTIOGPU_QUEUE_COUNT;
     pGpu->Virtio.fDeviceStatus = VIRTIO_STATUS_DRIVER_OK;
-    pGpu->Virtio.uDeviceFeatures = VIRTIO_F_VERSION_1 | VIRTIOGPU_F_RESOURCE_UUID
+    pGpu->Virtio.uDeviceFeatures = VIRTIO_F_VERSION_1 | VIRTIOGPU_F_EDID | VIRTIOGPU_F_RESOURCE_UUID
                                  | VIRTIOGPU_F_RESOURCE_BLOB | VIRTIOGPU_F_CONTEXT_INIT;
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     pGpu->Virtio.uDeviceFeatures |= VIRTIOGPU_F_VIRGL;
@@ -513,8 +513,12 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == sizeof(VIRTIOGPURESPEDID));
     VIRTIOGPURESPEDID EdidResp;
     memcpy(&EdidResp, &g_abRam[0x5000], sizeof(EdidResp));
-    RTTESTI_CHECK(EdidResp.Hdr.uType == VIRTIOGPU_RESP_OK_EDID && EdidResp.cbEdid == 0
-                  && EdidResp.uPadding == 0);
+    uint8_t uEdidChecksum = 0;
+    for (unsigned i = 0; i < 128; ++i)
+        uEdidChecksum = (uint8_t)(uEdidChecksum + EdidResp.abEdid[i]);
+    RTTESTI_CHECK(EdidResp.Hdr.uType == VIRTIOGPU_RESP_OK_EDID && EdidResp.cbEdid == 128
+                  && EdidResp.uPadding == 0 && uEdidChecksum == 0
+                  && EdidResp.abEdid[54] == 0x64 && EdidResp.abEdid[55] == 0x19);
     VIRTIOGPUGETEDID GetEdidInvalid = { VIRTIOGPU_MAX_SCANOUTS, 0 };
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_GET_EDID, &GetEdidInvalid, sizeof(GetEdidInvalid),
