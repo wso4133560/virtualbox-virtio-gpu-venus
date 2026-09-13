@@ -752,6 +752,24 @@ int main(int argc, char **argv)
                   && pGpu->aResources[0].hVkImageMemory != VK_NULL_HANDLE);
 #endif
 
+    RTTestSub(g_hTest, "R8G8B8A8 resource control path");
+    struct { uint32_t id, format, width, height; } CreateRgba =
+        { 12, VIRTIOGPU_FORMAT_R8G8B8A8_UNORM, 2, 2 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_CREATE_2D, &CreateRgba, sizeof(CreateRgba), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && pGpu->aResources[1].fUsed
+                  && pGpu->aResources[1].uFormat == VIRTIOGPU_FORMAT_R8G8B8A8_UNORM);
+    struct { uint32_t id, padding; } UnrefRgba = { 12, 0 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_UNREF, &UnrefRgba, sizeof(UnrefRgba), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && !pGpu->aResources[1].fUsed);
+
     uint8_t abPixels[16] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
     memcpy(&g_abRam[0x6000], abPixels, sizeof(abPixels));
     struct { uint32_t id, count; VIRTIOGPUMEMENTRY Entry; } Attach = { 7, 1, { 0x6000, 16, 0 } };
