@@ -1249,6 +1249,28 @@ int main(int argc, char **argv)
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
 
+    RTTestSub(g_hTest, "Venus PipelineBarrier legacy batch submission");
+    uint8_t abBarrierSubmitBatchCommand[256] = { 0 };
+    memcpy(abBarrierSubmitBatchCommand, abBarrierSubmitCommand, sizeof(abBarrierSubmitCommand));
+    memcpy(abBarrierSubmitBatchCommand + sizeof(abBarrierSubmitCommand), abBarrierSubmitCommand,
+           sizeof(abBarrierSubmitCommand));
+    uint32_t const uBarrierBatchOldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    uint32_t const uBarrierBatchNewLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    memcpy(abBarrierSubmitBatchCommand + 84, &uBarrierBatchOldLayout, sizeof(uBarrierBatchOldLayout));
+    memcpy(abBarrierSubmitBatchCommand + 88, &uBarrierBatchNewLayout, sizeof(uBarrierBatchNewLayout));
+    memcpy(abBarrierSubmitBatchCommand + 128 + 84, &uBarrierBatchOldLayout, sizeof(uBarrierBatchOldLayout));
+    memcpy(abBarrierSubmitBatchCommand + 128 + 88, &uBarrierBatchNewLayout, sizeof(uBarrierBatchNewLayout));
+    struct { VIRTIOGPUSUBMIT3D Hdr; uint32_t uResourceId; uint8_t abCommand[256]; }
+        SubmitBarrierBatch = { { 256, 1 }, 7, { 0 } };
+    memcpy(SubmitBarrierBatch.abCommand, abBarrierSubmitBatchCommand, sizeof(abBarrierSubmitBatchCommand));
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SUBMIT_3D, &SubmitBarrierBatch,
+                   sizeof(SubmitBarrierBatch), 24, 43);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
+
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_CTX_DETACH_RESOURCE, &uClearResource,
                    sizeof(uClearResource), 24, 43);
