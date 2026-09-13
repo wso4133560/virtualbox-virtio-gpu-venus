@@ -418,6 +418,10 @@ static int virtioGpuR3VulkanInit(PVIRTIOGPU pThis)
     pThis->uVkQueueFamily = uSelectedQueueFamily;
     pThis->fVulkanDevice = true;
     pThis->fVulkanMemory = true;
+    bool fExternalMemory = false;
+    bool fExternalMemoryWin32 = false;
+    bool fExternalSemaphore = false;
+    bool fExternalSemaphoreWin32 = false;
     PFN_vkEnumerateDeviceExtensionProperties pfnEnumerateDeviceExtensionProperties =
         (PFN_vkEnumerateDeviceExtensionProperties)pThis->pfnVkGetInstanceProcAddr(
             pThis->hVkInstance, "vkEnumerateDeviceExtensionProperties");
@@ -434,12 +438,26 @@ static int virtioGpuR3VulkanInit(PVIRTIOGPU pThis)
                                                          paExtensions) == VK_SUCCESS)
                 for (uint32_t iExtension = 0; iExtension < cExtensions; ++iExtension)
                 {
-                    if (RTStrCmp(paExtensions[iExtension].extensionName, "VK_KHR_external_memory") == 0
-                        || RTStrCmp(paExtensions[iExtension].extensionName, "VK_KHR_external_memory_win32") == 0)
+                    if (RTStrCmp(paExtensions[iExtension].extensionName, "VK_KHR_external_memory") == 0)
+                    {
+                        fExternalMemory = true;
                         pThis->fVulkanExternalMemory = true;
-                    if (RTStrCmp(paExtensions[iExtension].extensionName, "VK_KHR_external_semaphore") == 0
-                        || RTStrCmp(paExtensions[iExtension].extensionName, "VK_KHR_external_semaphore_win32") == 0)
+                    }
+                    else if (RTStrCmp(paExtensions[iExtension].extensionName, "VK_KHR_external_memory_win32") == 0)
+                    {
+                        fExternalMemoryWin32 = true;
+                        pThis->fVulkanExternalMemory = true;
+                    }
+                    else if (RTStrCmp(paExtensions[iExtension].extensionName, "VK_KHR_external_semaphore") == 0)
+                    {
+                        fExternalSemaphore = true;
                         pThis->fVulkanExternalSemaphore = true;
+                    }
+                    else if (RTStrCmp(paExtensions[iExtension].extensionName, "VK_KHR_external_semaphore_win32") == 0)
+                    {
+                        fExternalSemaphoreWin32 = true;
+                        pThis->fVulkanExternalSemaphore = true;
+                    }
                 }
             RTMemFree(paExtensions);
         }
@@ -451,8 +469,18 @@ static int virtioGpuR3VulkanInit(PVIRTIOGPU pThis)
     float const fQueuePriority = 1.0f;
     VkDeviceQueueCreateInfo QueueInfo = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, NULL, 0,
                                           pThis->uVkQueueFamily, 1, &fQueuePriority };
+    const char *apszExtensions[4];
+    uint32_t cExtensions = 0;
+    if (fExternalMemory)
+        apszExtensions[cExtensions++] = "VK_KHR_external_memory";
+    if (fExternalMemoryWin32)
+        apszExtensions[cExtensions++] = "VK_KHR_external_memory_win32";
+    if (fExternalSemaphore)
+        apszExtensions[cExtensions++] = "VK_KHR_external_semaphore";
+    if (fExternalSemaphoreWin32)
+        apszExtensions[cExtensions++] = "VK_KHR_external_semaphore_win32";
     VkDeviceCreateInfo DeviceInfo = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, NULL, 0, 1, &QueueInfo,
-                                      0, NULL, 0, NULL, NULL };
+                                      0, NULL, cExtensions, apszExtensions, NULL };
     vkrc = pfnCreateDevice(pThis->hVkPhysicalDevice, &DeviceInfo, NULL, &pThis->hVkDevice);
     if (vkrc != VK_SUCCESS)
         return VERR_NOT_SUPPORTED;
