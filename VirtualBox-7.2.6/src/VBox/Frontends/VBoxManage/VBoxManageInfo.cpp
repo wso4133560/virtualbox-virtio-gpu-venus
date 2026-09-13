@@ -1532,6 +1532,12 @@ HRESULT showVMInfo(ComPtr<IVirtualBox> pVirtualBox,
                 else
                     pszCtrl = "QemuRamFB";
                 break;
+            case GraphicsControllerType_VirtioGPU:
+                if (details == VMINFO_MACHINEREADABLE)
+                    pszCtrl = "virtio-gpu";
+                else
+                    pszCtrl = "VirtioGPU";
+                break;
 
             default:
                 if (details == VMINFO_MACHINEREADABLE)

@@ -317,6 +317,7 @@ template<> SHARED_LIBRARY_STUFF QString UIConverter::toString(const KGraphicsCon
         case KGraphicsControllerType_VMSVGA:    return QApplication::translate("UICommon", "VMSVGA",    "GraphicsControllerType");
         case KGraphicsControllerType_VBoxSVGA:  return QApplication::translate("UICommon", "VBoxSVGA",  "GraphicsControllerType");
         case KGraphicsControllerType_QemuRamFB: return QApplication::translate("UICommon", "QemuRamFB", "GraphicsControllerType");
+        case KGraphicsControllerType_VirtioGPU: return QApplication::translate("UICommon", "VirtioGPU", "GraphicsControllerType");
         default: AssertMsgFailed(("No text for %d", type)); break;
     }
     return QString();
@@ -331,6 +332,7 @@ template<> SHARED_LIBRARY_STUFF KGraphicsControllerType UIConverter::fromString<
     list.insert(QApplication::translate("UICommon", "VMSVGA",    "GraphicsControllerType"), KGraphicsControllerType_VMSVGA);
     list.insert(QApplication::translate("UICommon", "VBoxSVGA",  "GraphicsControllerType"), KGraphicsControllerType_VBoxSVGA);
     list.insert(QApplication::translate("UICommon", "QemuRamFB", "GraphicsControllerType"), KGraphicsControllerType_QemuRamFB);
+    list.insert(QApplication::translate("UICommon", "VirtioGPU", "GraphicsControllerType"), KGraphicsControllerType_VirtioGPU);
     if (!list.contains(strType))
     {
         AssertMsgFailed(("No value for '%s'", strType.toUtf8().constData()));
