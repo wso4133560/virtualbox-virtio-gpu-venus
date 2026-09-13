@@ -1,11 +1,14 @@
 [CmdletBinding()]
 param(
-    [string]$OutputDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) '.build\windows\package'),
+    [string]$OutputDirectory,
     [string]$ZipPath
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
+if (-not $OutputDirectory) {
+    $OutputDirectory = Join-Path $repoRoot '.build\windows\package'
+}
 $binRoot = Join-Path $repoRoot 'VirtualBox-7.2.6\out\win.amd64\release\bin'
 if (-not [IO.Path]::IsPathRooted($OutputDirectory)) {
     $OutputDirectory = Join-Path $repoRoot $OutputDirectory
