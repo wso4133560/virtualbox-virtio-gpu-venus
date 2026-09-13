@@ -4033,7 +4033,7 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                         }
                         else
                         {
-                            VIRTIOGPUFILLCMD Fill;
+                        VIRTIOGPUFILLCMD Fill;
                             PVIRTIOGPURESOURCE pRes = NULL;
                             if (virtioGpuR3DecodeFillBuffer(pbCommand, Cmd.cbCommand, &Fill))
                             {
@@ -4057,6 +4057,75 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                             {
                                 VIRTIOGPUCOPYCMD Copy;
                                 VIRTIOGPUCOPYCMD Copy2;
+                                VIRTIOGPUCOPYCMD aCopyBatch[64];
+                                RT_ZERO(aCopyBatch);
+                                if ((Cmd.cbCommand >= 136 && Cmd.cbCommand % 68 == 0
+                                     && Cmd.cbCommand / 68 <= RT_ELEMENTS(aCopyBatch))
+                                    || (Cmd.cbCommand >= 200 && Cmd.cbCommand % 100 == 0
+                                        && Cmd.cbCommand / 100 <= RT_ELEMENTS(aCopyBatch)))
+                                {
+                                    bool const fModernCopy = Cmd.cbCommand % 100 == 0;
+                                    uint32_t const cbOne = fModernCopy ? 100 : 68;
+                                    uint32_t const cCopy = Cmd.cbCommand / cbOne;
+                                    bool fBatchValid = cCopy >= 2;
+                                    PVIRTIOGPURESOURCE pBatchSrc = NULL;
+                                    PVIRTIOGPURESOURCE pBatchDst = NULL;
+                                    for (uint32_t i = 0; fBatchValid && i < cCopy; ++i)
+                                    {
+                                        VIRTIOGPUCOPYCMD CopyOne;
+                                        RT_ZERO(CopyOne);
+                                        bool const fDecodedOne = fModernCopy
+                                            ? virtioGpuR3DecodeCopyBuffer2(pbCommand + i * cbOne, cbOne, &CopyOne)
+                                            : virtioGpuR3DecodeCopyBuffer(pbCommand + i * cbOne, cbOne, &CopyOne);
+                                        if (!fDecodedOne || CopyOne.cRegions != 1)
+                                            fBatchValid = false;
+                                        else
+                                        {
+                                            uint64_t offSrc = 0, offDst = 0, cbCopy = 0;
+                                            uint32_t const offFields = fModernCopy ? 12 : 0;
+                                            memcpy(&offSrc, CopyOne.pbRegions + offFields + 0, sizeof(offSrc));
+                                            memcpy(&offDst, CopyOne.pbRegions + offFields + 8, sizeof(offDst));
+                                            memcpy(&cbCopy, CopyOne.pbRegions + offFields + 16, sizeof(cbCopy));
+                                            if (!cbCopy || offSrc > UINT64_MAX - cbCopy || offDst > UINT64_MAX - cbCopy
+                                                || cbCopy > UINT32_MAX)
+                                                fBatchValid = false;
+                                            else
+                                            {
+                                                aCopyBatch[i] = CopyOne;
+                                                aCopyBatch[i].offSrc = offSrc;
+                                                aCopyBatch[i].offDst = offDst;
+                                                aCopyBatch[i].cbCopy = cbCopy;
+                                                if (i == 0)
+                                                {
+                                                    if (CopyOne.uSrcBuffer > UINT32_MAX || CopyOne.uDstBuffer > UINT32_MAX
+                                                        || !(pBatchSrc = virtioGpuR3FindResource(pThis, (uint32_t)CopyOne.uSrcBuffer))
+                                                        || !(pBatchDst = virtioGpuR3FindResource(pThis, (uint32_t)CopyOne.uDstBuffer))
+                                                        || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)CopyOne.uSrcBuffer)
+                                                        || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)CopyOne.uDstBuffer))
+                                                        fBatchValid = false;
+                                                }
+                                                else if (CopyOne.uSrcBuffer != aCopyBatch[0].uSrcBuffer
+                                                         || CopyOne.uDstBuffer != aCopyBatch[0].uDstBuffer)
+                                                    fBatchValid = false;
+                                            }
+                                        }
+                                    }
+                                    if (fBatchValid)
+                                    {
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                                        Resp.Hdr.uType = RT_SUCCESS(virtioGpuR3VulkanCopyBufferBatch(pThis, pBatchSrc,
+                                                                                                       pBatchDst,
+                                                                                                       aCopyBatch, cCopy))
+                                                       ? VIRTIOGPU_RESP_OK_NODATA : VIRTIOGPU_RESP_ERR_UNSPEC;
+#else
+                                        Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
+#endif
+                                    }
+                                    else
+                                        Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
+                                }
+                                else
+                                {
                                 PVIRTIOGPURESOURCE pSrc = NULL;
                                 PVIRTIOGPURESOURCE pDst = NULL;
                                 bool const fCopy2 = virtioGpuR3DecodeCopyBuffer2(pbCommand, Cmd.cbCommand, &Copy2);
@@ -4079,6 +4148,7 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
 #else
                                     Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
 #endif
+                                }
                                 }
                             }
                         }
