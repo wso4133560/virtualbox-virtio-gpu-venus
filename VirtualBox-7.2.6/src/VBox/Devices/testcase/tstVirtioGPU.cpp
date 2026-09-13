@@ -392,6 +392,29 @@ int main(int argc, char **argv)
     for (unsigned i = 0; i < RT_ELEMENTS(abPixels) / sizeof(uint32_t); ++i)
         RTTESTI_CHECK(((uint32_t *)pGpu->aResources[0].pbPixels)[i] == UINT32_C(0x11223344));
 
+    struct { uint32_t id, format, width, height; } CopyImageCreate =
+        { 11, VIRTIOGPU_FORMAT_B8G8R8X8_UNORM, 2, 2 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_CREATE_2D, &CopyImageCreate,
+                   sizeof(CopyImageCreate), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    struct { uint32_t id, count; VIRTIOGPUMEMENTRY Entry; } CopyImageAttach =
+        { 11, 1, { 0x7000, 16, 0 } };
+    memset(&g_abRam[0x7000], 0, sizeof(abPixels));
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_ATTACH_BACKING, &CopyImageAttach,
+                   sizeof(CopyImageAttach), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    struct { uint32_t x, y, w, h; uint64_t off; uint32_t id, padding; } CopyImageTransfer =
+        { 0, 0, 2, 2, 0, 11, 0 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_TRANSFER_TO_HOST_2D, &CopyImageTransfer,
+                   sizeof(CopyImageTransfer), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+
     uint8_t abClearSubmitCommand[84] = { 0 };
     uint32_t uClearSubmitType = 119;
     uint64_t uClearSubmitCommandBuffer = 43;
@@ -423,6 +446,12 @@ int main(int argc, char **argv)
                    sizeof(uClearResource), 24, 43);
     virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    uint32_t uCopyImageResource = 11;
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_CTX_ATTACH_RESOURCE, &uCopyImageResource,
+                   sizeof(uCopyImageResource), 24, 43);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     struct { VIRTIOGPUSUBMIT3D Hdr; uint32_t uResourceId; uint8_t abCommand[84]; }
         SubmitClear = { { 84, 1 }, 7, { 0 } };
     memcpy(SubmitClear.abCommand, abClearSubmitCommand, sizeof(abClearSubmitCommand));
@@ -443,6 +472,47 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(g_cDisplayUpdates == 3);
     for (unsigned i = 0; i < RT_ELEMENTS(abPixels) / sizeof(uint32_t); ++i)
         RTTESTI_CHECK(((uint32_t *)pGpu->aResources[0].pbPixels)[i] == UINT32_C(0xff000000));
+
+    uint8_t abImageCopySubmitCommand[120] = { 0 };
+    uint32_t uImageCopySubmitType = 113;
+    uint64_t uImageCopySubmitCommandBuffer = 43;
+    uint64_t uImageCopySubmitSrc = 7;
+    uint32_t uImageCopySubmitSrcLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    uint64_t uImageCopySubmitDst = 11;
+    uint32_t uImageCopySubmitDstLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    uint32_t cImageCopySubmitRegions = 1;
+    uint64_t cbImageCopySubmitRegions = 68;
+    uint32_t auImageCopySubmitSrcSubresource[4] = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    uint32_t auImageCopySubmitDstSubresource[4] = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    int32_t aiImageCopySubmitOffset[3] = { 0, 0, 0 };
+    uint32_t auImageCopySubmitExtent[3] = { 2, 2, 1 };
+    memcpy(abImageCopySubmitCommand + 0, &uImageCopySubmitType, sizeof(uImageCopySubmitType));
+    memcpy(abImageCopySubmitCommand + 8, &uImageCopySubmitCommandBuffer, sizeof(uImageCopySubmitCommandBuffer));
+    memcpy(abImageCopySubmitCommand + 16, &uImageCopySubmitSrc, sizeof(uImageCopySubmitSrc));
+    memcpy(abImageCopySubmitCommand + 24, &uImageCopySubmitSrcLayout, sizeof(uImageCopySubmitSrcLayout));
+    memcpy(abImageCopySubmitCommand + 28, &uImageCopySubmitDst, sizeof(uImageCopySubmitDst));
+    memcpy(abImageCopySubmitCommand + 36, &uImageCopySubmitDstLayout, sizeof(uImageCopySubmitDstLayout));
+    memcpy(abImageCopySubmitCommand + 40, &cImageCopySubmitRegions, sizeof(cImageCopySubmitRegions));
+    memcpy(abImageCopySubmitCommand + 44, &cbImageCopySubmitRegions, sizeof(cbImageCopySubmitRegions));
+    memcpy(abImageCopySubmitCommand + 52, auImageCopySubmitSrcSubresource,
+           sizeof(auImageCopySubmitSrcSubresource));
+    memcpy(abImageCopySubmitCommand + 68, aiImageCopySubmitOffset, sizeof(aiImageCopySubmitOffset));
+    memcpy(abImageCopySubmitCommand + 80, auImageCopySubmitDstSubresource,
+           sizeof(auImageCopySubmitDstSubresource));
+    memcpy(abImageCopySubmitCommand + 96, aiImageCopySubmitOffset, sizeof(aiImageCopySubmitOffset));
+    memcpy(abImageCopySubmitCommand + 108, auImageCopySubmitExtent, sizeof(auImageCopySubmitExtent));
+    struct { VIRTIOGPUSUBMIT3D Hdr; uint32_t auResourceIds[2]; uint8_t abCommand[120]; }
+        SubmitImageCopy = { { 120, 2 }, { 7, 11 }, { 0 } };
+    memcpy(SubmitImageCopy.abCommand, abImageCopySubmitCommand, sizeof(abImageCopySubmitCommand));
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SUBMIT_3D, &SubmitImageCopy,
+                   sizeof(SubmitImageCopy), 24, 43);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
+    RTTESTI_CHECK_RC(virtioGpuR3VulkanResourceReadbackImage(pGpu, &pGpu->aResources[1]), VINF_SUCCESS);
+    RTTESTI_CHECK(!memcmp(pGpu->aResources[1].pbPixels, pGpu->aResources[0].pbPixels, sizeof(abPixels)));
     uint8_t abCopySubmitCommand[104] = { 0 };
     uint32_t uCopySubmitType = 115;
     uint64_t uCopySubmitCommandBuffer = 43;
@@ -570,7 +640,27 @@ int main(int argc, char **argv)
     virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_CTX_DETACH_RESOURCE, &uCopyImageResource,
+                   sizeof(uCopyImageResource), 24, 43);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_CTX_DESTROY, NULL, 0, 24, 43);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+#endif
+
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    struct { uint32_t id, padding; } DetachCopyImage = { 11, 0 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_DETACH_BACKING, &DetachCopyImage,
+                   sizeof(DetachCopyImage), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    struct { uint32_t id, padding; } UnrefCopyImage = { 11, 0 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_UNREF, &UnrefCopyImage,
+                   sizeof(UnrefCopyImage), 24);
     virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
 #endif
@@ -767,6 +857,33 @@ int main(int argc, char **argv)
     VIRTIOGPUPIPELINEBARRIERCMD Barrier;
     RTTESTI_CHECK(virtioGpuR3DecodePipelineBarrier(abBarrierCommand, sizeof(abBarrierCommand), &Barrier)
                   && Barrier.uCommandBuffer == uBarrierCommandBuffer && Barrier.cImageBarriers == 1);
+    uint8_t abCopyImagesCommand[120] = { 0 };
+    uint32_t uCopyImagesType = 113;
+    uint64_t uCopyImagesCommandBuffer = 42;
+    uint64_t uCopyImagesSrc = 7;
+    uint32_t uCopyImagesSrcLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    uint64_t uCopyImagesDst = 11;
+    uint32_t uCopyImagesDstLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    uint32_t cCopyImagesRegions = 1;
+    uint64_t cbCopyImagesRegions = 68;
+    uint32_t auCopyImagesSrcSubresource[4] = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    uint32_t auCopyImagesDstSubresource[4] = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    uint32_t auCopyImagesExtent[3] = { 2, 2, 1 };
+    memcpy(abCopyImagesCommand + 0, &uCopyImagesType, sizeof(uCopyImagesType));
+    memcpy(abCopyImagesCommand + 8, &uCopyImagesCommandBuffer, sizeof(uCopyImagesCommandBuffer));
+    memcpy(abCopyImagesCommand + 16, &uCopyImagesSrc, sizeof(uCopyImagesSrc));
+    memcpy(abCopyImagesCommand + 24, &uCopyImagesSrcLayout, sizeof(uCopyImagesSrcLayout));
+    memcpy(abCopyImagesCommand + 28, &uCopyImagesDst, sizeof(uCopyImagesDst));
+    memcpy(abCopyImagesCommand + 36, &uCopyImagesDstLayout, sizeof(uCopyImagesDstLayout));
+    memcpy(abCopyImagesCommand + 40, &cCopyImagesRegions, sizeof(cCopyImagesRegions));
+    memcpy(abCopyImagesCommand + 44, &cbCopyImagesRegions, sizeof(cbCopyImagesRegions));
+    memcpy(abCopyImagesCommand + 52, auCopyImagesSrcSubresource, sizeof(auCopyImagesSrcSubresource));
+    memcpy(abCopyImagesCommand + 80, auCopyImagesDstSubresource, sizeof(auCopyImagesDstSubresource));
+    memcpy(abCopyImagesCommand + 108, auCopyImagesExtent, sizeof(auCopyImagesExtent));
+    VIRTIOGPUCOPYIMAGECMD CopyImages;
+    RTTESTI_CHECK(virtioGpuR3DecodeCopyImage(abCopyImagesCommand, sizeof(abCopyImagesCommand), &CopyImages)
+                  && CopyImages.uCommandBuffer == uCopyImagesCommandBuffer
+                  && CopyImages.uSrcImage == uCopyImagesSrc && CopyImages.uDstImage == uCopyImagesDst);
 #endif
     Unref.id = 9;
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
