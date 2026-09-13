@@ -518,6 +518,16 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(pGpu->aResources[1].fVulkanImage);
     RTTESTI_CHECK_RC(virtioGpuR3VulkanResourceReadbackImage(pGpu, &pGpu->aResources[1]), VINF_SUCCESS);
     RTTESTI_CHECK(!memcmp(pGpu->aResources[1].pbPixels, pGpu->aResources[0].pbPixels, sizeof(abPixels)));
+    static TSTSSM ImageSsm;
+    RT_ZERO(ImageSsm);
+    PSSMHANDLE pImageSsm = (PSSMHANDLE)&ImageSsm;
+    RTTESTI_CHECK_RC(virtioGpuR3SaveExec(pDev, pImageSsm), VINF_SUCCESS);
+    virtioGpuR3Reset(pDev);
+    ImageSsm.off = 0;
+    RTTESTI_CHECK_RC(virtioGpuR3LoadExec(pDev, pImageSsm, VIRTIOGPU_SAVED_STATE_VERSION, SSM_PASS_FINAL),
+                     VINF_SUCCESS);
+    RTTESTI_CHECK_RC(virtioGpuR3VulkanResourceReadbackImage(pGpu, &pGpu->aResources[1]), VINF_SUCCESS);
+    RTTESTI_CHECK(!memcmp(pGpu->aResources[1].pbPixels, pGpu->aResources[0].pbPixels, sizeof(abPixels)));
     uint8_t abCopySubmitCommand[104] = { 0 };
     uint32_t uCopySubmitType = 115;
     uint64_t uCopySubmitCommandBuffer = 43;
