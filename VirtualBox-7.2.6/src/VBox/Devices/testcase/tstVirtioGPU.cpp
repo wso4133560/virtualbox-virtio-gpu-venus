@@ -513,6 +513,57 @@ int main(int argc, char **argv)
     for (unsigned i = 0; i < RT_ELEMENTS(abPixels) / sizeof(uint32_t); ++i)
         RTTESTI_CHECK(((uint32_t *)pGpu->aResources[0].pbPixels)[i] == UINT32_C(0xff000000));
 
+    uint8_t abBarrierSubmitCommand[128] = { 0 };
+    uint32_t uBarrierSubmitType = 126;
+    uint64_t uBarrierSubmitCommandBuffer = 43;
+    uint32_t uBarrierSubmitSrcStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    uint32_t uBarrierSubmitDstStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    uint32_t uBarrierSubmitDependency = 0;
+    uint32_t cBarrierSubmitMemory = 0;
+    uint64_t cbBarrierSubmitMemory = 0;
+    uint32_t cBarrierSubmitBuffer = 0;
+    uint64_t cbBarrierSubmitBuffer = 0;
+    uint32_t cBarrierSubmitImage = 1;
+    uint64_t cbBarrierSubmitImage = 64;
+    uint32_t uBarrierSubmitSType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    uint64_t cbBarrierSubmitNext = 0;
+    uint32_t uBarrierSubmitSrcAccess = VK_ACCESS_TRANSFER_READ_BIT;
+    uint32_t uBarrierSubmitDstAccess = VK_ACCESS_TRANSFER_WRITE_BIT;
+    uint32_t uBarrierSubmitOldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    uint32_t uBarrierSubmitNewLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    uint32_t uBarrierSubmitQueue = VK_QUEUE_FAMILY_IGNORED;
+    memcpy(abBarrierSubmitCommand + 0, &uBarrierSubmitType, sizeof(uBarrierSubmitType));
+    memcpy(abBarrierSubmitCommand + 8, &uBarrierSubmitCommandBuffer, sizeof(uBarrierSubmitCommandBuffer));
+    memcpy(abBarrierSubmitCommand + 16, &uBarrierSubmitSrcStage, sizeof(uBarrierSubmitSrcStage));
+    memcpy(abBarrierSubmitCommand + 20, &uBarrierSubmitDstStage, sizeof(uBarrierSubmitDstStage));
+    memcpy(abBarrierSubmitCommand + 24, &uBarrierSubmitDependency, sizeof(uBarrierSubmitDependency));
+    memcpy(abBarrierSubmitCommand + 28, &cBarrierSubmitMemory, sizeof(cBarrierSubmitMemory));
+    memcpy(abBarrierSubmitCommand + 32, &cbBarrierSubmitMemory, sizeof(cbBarrierSubmitMemory));
+    memcpy(abBarrierSubmitCommand + 40, &cBarrierSubmitBuffer, sizeof(cBarrierSubmitBuffer));
+    memcpy(abBarrierSubmitCommand + 44, &cbBarrierSubmitBuffer, sizeof(cbBarrierSubmitBuffer));
+    memcpy(abBarrierSubmitCommand + 52, &cBarrierSubmitImage, sizeof(cBarrierSubmitImage));
+    memcpy(abBarrierSubmitCommand + 56, &cbBarrierSubmitImage, sizeof(cbBarrierSubmitImage));
+    memcpy(abBarrierSubmitCommand + 64, &uBarrierSubmitSType, sizeof(uBarrierSubmitSType));
+    memcpy(abBarrierSubmitCommand + 68, &cbBarrierSubmitNext, sizeof(cbBarrierSubmitNext));
+    memcpy(abBarrierSubmitCommand + 76, &uBarrierSubmitSrcAccess, sizeof(uBarrierSubmitSrcAccess));
+    memcpy(abBarrierSubmitCommand + 80, &uBarrierSubmitDstAccess, sizeof(uBarrierSubmitDstAccess));
+    memcpy(abBarrierSubmitCommand + 84, &uBarrierSubmitOldLayout, sizeof(uBarrierSubmitOldLayout));
+    memcpy(abBarrierSubmitCommand + 88, &uBarrierSubmitNewLayout, sizeof(uBarrierSubmitNewLayout));
+    memcpy(abBarrierSubmitCommand + 92, &uBarrierSubmitQueue, sizeof(uBarrierSubmitQueue));
+    memcpy(abBarrierSubmitCommand + 96, &uBarrierSubmitQueue, sizeof(uBarrierSubmitQueue));
+    memcpy(abBarrierSubmitCommand + 100, &uClearSubmitImage, sizeof(uClearSubmitImage));
+    memcpy(abBarrierSubmitCommand + 108, auClearSubmitRange, sizeof(auClearSubmitRange));
+    struct { VIRTIOGPUSUBMIT3D Hdr; uint32_t uResourceId; uint8_t abCommand[128]; }
+        SubmitBarrier = { { 128, 1 }, 7, { 0 } };
+    memcpy(SubmitBarrier.abCommand, abBarrierSubmitCommand, sizeof(abBarrierSubmitCommand));
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SUBMIT_3D, &SubmitBarrier,
+                   sizeof(SubmitBarrier), 24, 43);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
+
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_CTX_DETACH_RESOURCE, &uClearResource,
                    sizeof(uClearResource), 24, 43);
@@ -673,6 +724,49 @@ int main(int argc, char **argv)
                   && CopyImageToBuffer.uCommandBuffer == uImageToBufferCommandBuffer
                   && CopyImageToBuffer.uSrcImage == uImageToBufferSrc
                   && CopyImageToBuffer.uDstBuffer == uImageToBufferDst);
+    uint8_t abBarrierCommand[128] = { 0 };
+    uint32_t uBarrierType = 126;
+    uint64_t uBarrierCommandBuffer = 42;
+    uint32_t uBarrierSrcStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    uint32_t uBarrierDstStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    uint32_t uBarrierDependency = 0;
+    uint32_t cBarrierMemory = 0;
+    uint64_t cbBarrierMemory = 0;
+    uint32_t cBarrierBuffer = 0;
+    uint64_t cbBarrierBuffer = 0;
+    uint32_t cBarrierImage = 1;
+    uint64_t cbBarrierImage = 64;
+    uint32_t uBarrierSType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    uint64_t cbBarrierNext = 0;
+    uint32_t uBarrierSrcAccess = VK_ACCESS_TRANSFER_READ_BIT;
+    uint32_t uBarrierDstAccess = VK_ACCESS_TRANSFER_WRITE_BIT;
+    uint32_t uBarrierOldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    uint32_t uBarrierNewLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    uint32_t uBarrierQueue = VK_QUEUE_FAMILY_IGNORED;
+    memcpy(abBarrierCommand + 0, &uBarrierType, sizeof(uBarrierType));
+    memcpy(abBarrierCommand + 8, &uBarrierCommandBuffer, sizeof(uBarrierCommandBuffer));
+    memcpy(abBarrierCommand + 16, &uBarrierSrcStage, sizeof(uBarrierSrcStage));
+    memcpy(abBarrierCommand + 20, &uBarrierDstStage, sizeof(uBarrierDstStage));
+    memcpy(abBarrierCommand + 24, &uBarrierDependency, sizeof(uBarrierDependency));
+    memcpy(abBarrierCommand + 28, &cBarrierMemory, sizeof(cBarrierMemory));
+    memcpy(abBarrierCommand + 32, &cbBarrierMemory, sizeof(cbBarrierMemory));
+    memcpy(abBarrierCommand + 40, &cBarrierBuffer, sizeof(cBarrierBuffer));
+    memcpy(abBarrierCommand + 44, &cbBarrierBuffer, sizeof(cbBarrierBuffer));
+    memcpy(abBarrierCommand + 52, &cBarrierImage, sizeof(cBarrierImage));
+    memcpy(abBarrierCommand + 56, &cbBarrierImage, sizeof(cbBarrierImage));
+    memcpy(abBarrierCommand + 64, &uBarrierSType, sizeof(uBarrierSType));
+    memcpy(abBarrierCommand + 68, &cbBarrierNext, sizeof(cbBarrierNext));
+    memcpy(abBarrierCommand + 76, &uBarrierSrcAccess, sizeof(uBarrierSrcAccess));
+    memcpy(abBarrierCommand + 80, &uBarrierDstAccess, sizeof(uBarrierDstAccess));
+    memcpy(abBarrierCommand + 84, &uBarrierOldLayout, sizeof(uBarrierOldLayout));
+    memcpy(abBarrierCommand + 88, &uBarrierNewLayout, sizeof(uBarrierNewLayout));
+    memcpy(abBarrierCommand + 92, &uBarrierQueue, sizeof(uBarrierQueue));
+    memcpy(abBarrierCommand + 96, &uBarrierQueue, sizeof(uBarrierQueue));
+    memcpy(abBarrierCommand + 100, &uClearImage, sizeof(uClearImage));
+    memcpy(abBarrierCommand + 108, auClearRange, sizeof(auClearRange));
+    VIRTIOGPUPIPELINEBARRIERCMD Barrier;
+    RTTESTI_CHECK(virtioGpuR3DecodePipelineBarrier(abBarrierCommand, sizeof(abBarrierCommand), &Barrier)
+                  && Barrier.uCommandBuffer == uBarrierCommandBuffer && Barrier.cImageBarriers == 1);
 #endif
     Unref.id = 9;
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
