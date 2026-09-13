@@ -2931,6 +2931,7 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                         && Cmd.uWidth && Cmd.uHeight
                         && Cmd.uWidth <= 16384 && Cmd.uHeight <= 16384
                         && uResourceWidth && uResourceHeight
+                        && uResourceWidth <= 16384 && uResourceHeight <= 16384
                         && (uint64_t)uResourceWidth * uResourceHeight * 4 <= pRes->cbPixels
                         && Cmd.auStrides[0] >= Cmd.uWidth * 4 && cbEnd <= pRes->cbPixels
                         && Cmd.uX <= UINT32_MAX - Cmd.uWidth && Cmd.uY <= UINT32_MAX - Cmd.uHeight;

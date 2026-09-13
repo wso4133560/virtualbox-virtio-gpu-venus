@@ -789,6 +789,26 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && pGpu->aScanouts[0].uResourceId == 9
                   && pGpu->aScanouts[0].uStride == 8 && pGpu->aScanouts[0].uOffset == 0
                   && pGpu->aResources[0].uWidth == 2 && pGpu->aResources[0].uHeight == 2);
+    VIRTIOGPUSETSCANOUTBLOB BlobScanoutBad = BlobScanout;
+    BlobScanoutBad.auStrides[0] = 4;
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SET_SCANOUT_BLOB, &BlobScanoutBad,
+                   sizeof(BlobScanoutBad), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_ERR_INVALID_PARAMETER
+                  && pGpu->aScanouts[0].uStride == 8);
+    BlobScanoutBad = BlobScanout;
+    BlobScanoutBad.auOffsets[0] = 64;
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SET_SCANOUT_BLOB, &BlobScanoutBad,
+                   sizeof(BlobScanoutBad), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_ERR_INVALID_PARAMETER
+                  && pGpu->aScanouts[0].uOffset == 0);
     struct { uint32_t x, y, w, h, id, padding; } BlobFlush = { 0, 0, 2, 2, 9, 0 };
     unsigned const cDisplayUpdatesBeforeBlob = g_cDisplayUpdates;
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
