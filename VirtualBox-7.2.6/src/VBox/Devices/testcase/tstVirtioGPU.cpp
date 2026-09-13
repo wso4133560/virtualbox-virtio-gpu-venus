@@ -190,28 +190,35 @@ static void tstPost(PVIRTIOCORE pCore, unsigned uQueue, uint32_t cbSend, uint32_
     *(uint16_t *)&g_abRam[pQ->GCPhysVirtqAvail + 2] = pQ->uAvailIdxShadow + 1;
 }
 
-static void tstPostCommand(PVIRTIOCORE pCore, unsigned uQueue, uint32_t uType,
-                           const void *pvBody, size_t cbBody, uint32_t cbReturn, uint32_t uCtxId = 0)
+static void tstPostCommandAt(PVIRTIOCORE pCore, unsigned uQueue, uint32_t uType,
+                             const void *pvBody, size_t cbBody, uint32_t cbReturn,
+                             uint32_t offSend, uint32_t offReturn, uint32_t uCtxId = 0)
 {
     PVIRTQUEUE pQ = &pCore->aVirtqueues[uQueue];
     VIRTQ_DESC_T *pDesc = (VIRTQ_DESC_T *)&g_abRam[pQ->GCPhysVirtqDesc];
-    pDesc[0].GCPhysBuf = 0x4000;
+    pDesc[0].GCPhysBuf = offSend;
     pDesc[0].cb = (uint32_t)(sizeof(VIRTIOGPUCTRLHDR) + cbBody);
     pDesc[0].fFlags = VIRTQ_DESC_F_NEXT;
     pDesc[0].uDescIdxNext = 1;
-    pDesc[1].GCPhysBuf = 0x5000;
+    pDesc[1].GCPhysBuf = offReturn;
     pDesc[1].cb = cbReturn;
     pDesc[1].fFlags = VIRTQ_DESC_F_WRITE;
     VIRTIOGPUCTRLHDR Req;
     RT_ZERO(Req);
     Req.uType = uType;
     Req.uCtxId = uCtxId;
-    memcpy(&g_abRam[0x4000], &Req, sizeof(Req));
+    memcpy(&g_abRam[offSend], &Req, sizeof(Req));
     if (cbBody)
-        memcpy(&g_abRam[0x4000 + sizeof(Req)], pvBody, cbBody);
-    memset(&g_abRam[0x5000], 0xa5, 1024);
+        memcpy(&g_abRam[offSend + sizeof(Req)], pvBody, cbBody);
+    memset(&g_abRam[offReturn], 0xa5, 1024);
     *(uint16_t *)&g_abRam[pQ->GCPhysVirtqAvail + 4 + (pQ->uAvailIdxShadow % 8) * 2] = 0;
     *(uint16_t *)&g_abRam[pQ->GCPhysVirtqAvail + 2] = pQ->uAvailIdxShadow + 1;
+}
+
+static void tstPostCommand(PVIRTIOCORE pCore, unsigned uQueue, uint32_t uType,
+                           const void *pvBody, size_t cbBody, uint32_t cbReturn, uint32_t uCtxId = 0)
+{
+    tstPostCommandAt(pCore, uQueue, uType, pvBody, cbBody, cbReturn, 0x4000, 0x5000, uCtxId);
 }
 
 static uint32_t tstCompletion(PVIRTIOCORE pCore, unsigned uQueue, uint16_t uBefore)
@@ -1043,6 +1050,26 @@ int main(int argc, char **argv)
     virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA
+                  && !memcmp(pGpu->aResources[1].pbPixels, pGpu->aResources[0].pbPixels, sizeof(abPixels)));
+
+    RTTestSub(g_hTest, "Venus CopyBuffer2 maximum batch");
+    uint8_t abCopyBuffer2MaxSubmit[8 + 8 + 100 * 64] = { 0 };
+    VIRTIOGPUSUBMIT3D *pCopyBuffer2MaxHdr = (VIRTIOGPUSUBMIT3D *)abCopyBuffer2MaxSubmit;
+    pCopyBuffer2MaxHdr->cbCommand = 100 * 64;
+    pCopyBuffer2MaxHdr->cResources = 2;
+    uint32_t *paCopyBuffer2MaxResources = (uint32_t *)(abCopyBuffer2MaxSubmit + 8);
+    paCopyBuffer2MaxResources[0] = 7;
+    paCopyBuffer2MaxResources[1] = 11;
+    for (unsigned i = 0; i < 64; ++i)
+        memcpy(abCopyBuffer2MaxSubmit + 16 + i * 100, abCopyBuffer2Command, sizeof(abCopyBuffer2Command));
+    memset(pGpu->aResources[1].pbPixels, 0, sizeof(abPixels));
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommandAt(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SUBMIT_3D, abCopyBuffer2MaxSubmit,
+                     sizeof(abCopyBuffer2MaxSubmit), 24, 0x4000, 0x7000, 43);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x7000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA
                   && !memcmp(pGpu->aResources[1].pbPixels, pGpu->aResources[0].pbPixels, sizeof(abPixels)));
 

@@ -3719,6 +3719,7 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                         VIRTIOGPUBLITIMAGECMD BlitImage;
                         VIRTIOGPUBLITIMAGECMD BlitImage2;
                         VIRTIOGPUBLITIMAGECMD aBlitBatch[64];
+                        VIRTIOGPUCOPYCMD CopyBuffer2Probe;
                         RT_ZERO(CopyImage);
                         RT_ZERO(CopyImage2);
                         RT_ZERO(aCopyImageBatch);
@@ -3965,7 +3966,11 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                             }
                         }
                         else if ((Cmd.cbCommand >= 256 && Cmd.cbCommand % 128 == 0
-                                  && Cmd.cbCommand / 128 <= RT_ELEMENTS(aPipelineBarrierBatch))
+                                  && Cmd.cbCommand / 128 <= RT_ELEMENTS(aPipelineBarrierBatch)
+                                  /* A 100-byte CopyBuffer2 packet repeated to a 128-byte multiple
+                                   * must reach the copy decoder below instead of this size-based
+                                   * legacy barrier probe. */
+                                  && !virtioGpuR3DecodeCopyBuffer2(pbCommand, 100, &CopyBuffer2Probe))
                                  || (Cmd.cbCommand >= 328 && Cmd.cbCommand % 164 == 0
                                      && Cmd.cbCommand / 164 <= RT_ELEMENTS(aPipelineBarrierBatch)))
                         {
