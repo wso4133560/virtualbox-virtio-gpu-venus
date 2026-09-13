@@ -1143,11 +1143,9 @@ RTEXITCODE handleModifyVM(HandlerArg *a)
                 else if (   !RTStrICmp(ValueUnion.psz, "qemuramfb")
                          || !RTStrICmp(ValueUnion.psz, "qemu-ramfb"))
                     CHECK_ERROR(pGraphicsAdapter, COMSETTER(GraphicsControllerType)(GraphicsControllerType_QemuRamFB));
-#ifdef VBOX_WITH_VIRTIO_GPU
                 else if (   !RTStrICmp(ValueUnion.psz, "virtio-gpu")
                          || !RTStrICmp(ValueUnion.psz, "virtiogpu"))
                     CHECK_ERROR(pGraphicsAdapter, COMSETTER(GraphicsControllerType)(GraphicsControllerType_VirtioGPU));
-#endif
                 else
                 {
                     errorArgument(ModifyVM::tr("Invalid --graphicscontroller argument '%s'"), ValueUnion.psz);

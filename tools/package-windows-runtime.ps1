@@ -25,7 +25,7 @@ function Require-File([string]$Path, [string]$Description) {
 }
 
 $required = @(
-    'VBoxRT.dll', 'VBoxVMM.dll', 'VBoxSVC.exe', 'VBoxHeadless.exe',
+    'VBoxRT.dll', 'VBoxVMM.dll', 'VBoxSVC.exe', 'VBoxSDS.exe', 'VBoxHeadless.exe',
     'VBoxManage.exe', 'VBoxC.dll', 'VBoxProxyStub.dll', 'VBoxDD.dll',
     'VBoxDD2.dll', 'VBoxDDU.dll', 'VMMR0.r0', 'VBoxSup.sys',
     'VBoxEFI-amd64.fd', 'comregister.cmd'
