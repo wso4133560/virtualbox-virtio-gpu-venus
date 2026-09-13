@@ -886,6 +886,22 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
     RTTESTI_CHECK_RC(virtioGpuR3VulkanResourceReadbackImage(pGpu, &pGpu->aResources[1]), VINF_SUCCESS);
     RTTESTI_CHECK(!memcmp(pGpu->aResources[1].pbPixels, pGpu->aResources[0].pbPixels, sizeof(abPixels)));
+    RTTestSub(g_hTest, "Venus CopyImage legacy batch submission");
+    uint8_t abCopyImageLegacyBatchCommand[240] = { 0 };
+    memcpy(abCopyImageLegacyBatchCommand, abImageCopySubmitCommand, sizeof(abImageCopySubmitCommand));
+    memcpy(abCopyImageLegacyBatchCommand + sizeof(abImageCopySubmitCommand), abImageCopySubmitCommand,
+           sizeof(abImageCopySubmitCommand));
+    struct { VIRTIOGPUSUBMIT3D Hdr; uint32_t auResourceIds[2]; uint8_t abCommand[240]; }
+        SubmitCopyImageLegacyBatch = { { 240, 2 }, { 7, 11 }, { 0 } };
+    memcpy(SubmitCopyImageLegacyBatch.abCommand, abCopyImageLegacyBatchCommand,
+           sizeof(abCopyImageLegacyBatchCommand));
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SUBMIT_3D, &SubmitCopyImageLegacyBatch,
+                   sizeof(SubmitCopyImageLegacyBatch), 24, 43);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
     RTTestSub(g_hTest, "Venus CopyImage2 batch submission");
     uint8_t abCopyImage2BatchCommand[304] = { 0 };
     uint32_t uCopyImage2BatchType = 208;

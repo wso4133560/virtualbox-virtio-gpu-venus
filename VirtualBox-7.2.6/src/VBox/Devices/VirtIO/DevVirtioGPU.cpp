@@ -3515,16 +3515,23 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
 #endif
                             }
                         }
-                        else if (Cmd.cbCommand >= 304 && Cmd.cbCommand % 152 == 0
-                                 && Cmd.cbCommand / 152 <= RT_ELEMENTS(aCopyImageBatch))
+                        else if ((Cmd.cbCommand >= 240 && Cmd.cbCommand % 120 == 0
+                                  && Cmd.cbCommand / 120 <= RT_ELEMENTS(aCopyImageBatch))
+                                 || (Cmd.cbCommand >= 304 && Cmd.cbCommand % 152 == 0
+                                     && Cmd.cbCommand / 152 <= RT_ELEMENTS(aCopyImageBatch)))
                         {
-                            uint32_t const cCopyImage = Cmd.cbCommand / 152;
+                            bool const fModernCopyImage = Cmd.cbCommand % 152 == 0;
+                            uint32_t const cbOneCopyImage = fModernCopyImage ? 152 : 120;
+                            uint32_t const cCopyImage = Cmd.cbCommand / cbOneCopyImage;
                             bool fCopyImageBatchValid = cCopyImage >= 2;
                             PVIRTIOGPURESOURCE pSrcRes = NULL;
                             PVIRTIOGPURESOURCE pDstRes = NULL;
                             for (uint32_t i = 0; fCopyImageBatchValid && i < cCopyImage; ++i)
-                                fCopyImageBatchValid = virtioGpuR3DecodeCopyImage2(pbCommand + i * 152, 152,
-                                                                                   &aCopyImageBatch[i]);
+                                fCopyImageBatchValid = fModernCopyImage
+                                                     ? virtioGpuR3DecodeCopyImage2(pbCommand + i * cbOneCopyImage,
+                                                                                    cbOneCopyImage, &aCopyImageBatch[i])
+                                                     : virtioGpuR3DecodeCopyImage(pbCommand + i * cbOneCopyImage,
+                                                                                  cbOneCopyImage, &aCopyImageBatch[i]);
                             if (fCopyImageBatchValid)
                             {
                                 if (aCopyImageBatch[0].uSrcImage > UINT32_MAX || aCopyImageBatch[0].uDstImage > UINT32_MAX
