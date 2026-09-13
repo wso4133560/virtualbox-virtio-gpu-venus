@@ -3365,7 +3365,8 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
             }
             if (RT_FAILURE(rc))
             {
-                RTMemFree(pRes->pbPixels);
+                if (!pRes->fSharedMemory)
+                    RTMemFree(pRes->pbPixels);
                 RT_ZERO(*pRes);
             }
         }
