@@ -312,6 +312,7 @@ AssertCompileSize(VIRTIOGPUDISPLAYRESP, 408);
 #define VIRTIOGPU_QUEUE_COUNT               2
 #define VIRTIOGPU_MAX_SCANOUTS              16
 #define VIRTIOGPU_SCANOUT_COUNT             1
+#define VIRTIOGPU_EVENT_DISPLAY             UINT32_C(1)
 #define VIRTIOGPU_FORMAT_B8G8R8X8_UNORM     UINT32_C(2)
 
 #endif /* !VBOX_INCLUDED_SRC_Devices_VirtIO_DevVirtioGPU_h */

@@ -3067,7 +3067,12 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                 VIRTIOGPUSETSCANOUT Cmd; RT_ZERO(Cmd);
                 if(pBuf->cbPhysSend<sizeof(Cmd)-sizeof(Cmd.Hdr) || RT_FAILURE(virtioGpuR3Read(pDevIns,pVirtio,pBuf,(uint8_t *)&Cmd+sizeof(Cmd.Hdr),sizeof(Cmd)-sizeof(Cmd.Hdr)))) Resp.Hdr.uType=VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
                 else if(Cmd.uScanoutId>=VIRTIOGPU_MAX_SCANOUTS) Resp.Hdr.uType=VIRTIOGPU_RESP_ERR_INVALID_SCANOUT_ID;
-                else if(!Cmd.uResourceId) { RT_ZERO(pThis->aScanouts[Cmd.uScanoutId]); Resp.Hdr.uType=VIRTIOGPU_RESP_OK_NODATA; }
+                else if(!Cmd.uResourceId) {
+                    RT_ZERO(pThis->aScanouts[Cmd.uScanoutId]);
+                    pThis->Config.fEventsRead |= VIRTIOGPU_EVENT_DISPLAY;
+                    virtioCoreNotifyConfigChanged(pVirtio);
+                    Resp.Hdr.uType=VIRTIOGPU_RESP_OK_NODATA;
+                }
                 else
                 {
                     PVIRTIOGPURESOURCE pRes=virtioGpuR3FindResource(pThis,Cmd.uResourceId);
@@ -3091,6 +3096,8 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                             pThis->aScanouts[Cmd.uScanoutId].uHeight=Cmd.uHeight;
                             pThis->aScanouts[Cmd.uScanoutId].uStride=pRes->uWidth * 4;
                             pThis->aScanouts[Cmd.uScanoutId].uOffset=0;
+                            pThis->Config.fEventsRead |= VIRTIOGPU_EVENT_DISPLAY;
+                            virtioCoreNotifyConfigChanged(pVirtio);
                             Resp.Hdr.uType=VIRTIOGPU_RESP_OK_NODATA;
                         }
                     }
@@ -3110,6 +3117,8 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                 else if (!Cmd.uResourceId)
                 {
                     RT_ZERO(pThis->aScanouts[Cmd.uScanoutId]);
+                    pThis->Config.fEventsRead |= VIRTIOGPU_EVENT_DISPLAY;
+                    virtioCoreNotifyConfigChanged(pVirtio);
                     Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
                 }
                 else
@@ -3152,6 +3161,8 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                             pThis->aScanouts[Cmd.uScanoutId].uHeight = Cmd.uHeight;
                             pThis->aScanouts[Cmd.uScanoutId].uStride = Cmd.auStrides[0];
                             pThis->aScanouts[Cmd.uScanoutId].uOffset = Cmd.auOffsets[0];
+                            pThis->Config.fEventsRead |= VIRTIOGPU_EVENT_DISPLAY;
+                            virtioCoreNotifyConfigChanged(pVirtio);
                             Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
                         }
                     }
