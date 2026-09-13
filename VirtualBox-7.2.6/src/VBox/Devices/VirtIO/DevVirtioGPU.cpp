@@ -2933,8 +2933,11 @@ static DECLCALLBACK(int) virtioGpuR3Construct(PPDMDEVINS pDevIns, int iInstance,
         if (RT_FAILURE(rcVulkan))
         {
             if (pThis->enmBackend == VIRTIOGPU_BACKEND_VENUS)
+            {
+                virtioGpuR3VulkanTerm(pThis);
                 return PDMDEV_SET_ERROR(pDevIns, rcVulkan,
                                          N_("virtio-gpu: Venus backend requested but host Vulkan is unavailable"));
+            }
             LogRel(("virtio-gpu: Vulkan host probe failed (%Rrc), using software path\n", rcVulkan));
             virtioGpuR3VulkanTerm(pThis);
         }
