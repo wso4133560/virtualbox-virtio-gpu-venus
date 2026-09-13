@@ -1456,6 +1456,8 @@ int main(int argc, char **argv)
     uint32_t uCopyImageToBuffer2InfoType = VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2;
     uint64_t uCopyImageToBuffer2Src = 7;
     uint64_t uCopyImageToBuffer2Dst = 9;
+    uint32_t uCopyImageToBuffer2Count = 1;
+    uint64_t uCopyImageToBuffer2ArrayCount = 1;
     memcpy(abCopyImageToBuffer2Command + 0, &uCopyImageToBuffer2Type, sizeof(uCopyImageToBuffer2Type));
     memcpy(abCopyImageToBuffer2Command + 8, &uCopyImagesCommandBuffer, sizeof(uCopyImagesCommandBuffer));
     memcpy(abCopyImageToBuffer2Command + 16, &uCopyImages2InfoPtr, sizeof(uCopyImages2InfoPtr));
