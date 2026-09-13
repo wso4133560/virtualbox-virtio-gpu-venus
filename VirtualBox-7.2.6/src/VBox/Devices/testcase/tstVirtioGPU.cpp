@@ -266,6 +266,19 @@ static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL tstVkCopyInstanceProc(VkInstance
 
 static void tstVulkanCopyReadback(PVIRTIOGPU pGpu)
 {
+    RTTestSub(g_hTest, "Vulkan RGBA8 resource format");
+    uint8_t abRgba[16] = { 0 };
+    VIRTIOGPURESOURCE Rgba;
+    RT_ZERO(Rgba);
+    Rgba.uFormat = VIRTIOGPU_FORMAT_R8G8B8A8_UNORM;
+    Rgba.uWidth = Rgba.uHeight = 2;
+    Rgba.cbPixels = sizeof(abRgba);
+    Rgba.pbPixels = abRgba;
+    int const rcRgba = virtioGpuR3VulkanResourceCreate(pGpu, &Rgba);
+    RTTESTI_CHECK_RC(rcRgba, VINF_SUCCESS);
+    RTTESTI_CHECK(RT_FAILURE(rcRgba) || (Rgba.fVulkanBuffer && Rgba.fVulkanImage));
+    virtioGpuR3VulkanResourceDestroy(pGpu, &Rgba);
+
     RTTestSub(g_hTest, "Vulkan copy readback without CPU replacement");
     uint8_t abSrc[64], abDst[64], abExpected[64];
     for (unsigned i = 0; i < sizeof(abSrc); ++i)

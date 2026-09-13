@@ -719,8 +719,10 @@ static int virtioGpuR3VulkanImageCreate(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRe
     if (!pfnCreateImage || !pfnDestroyImage || !pfnGetRequirements || !pfnAllocateMemory || !pfnFreeMemory
         || !pfnBindImageMemory)
         return VERR_NOT_FOUND;
+    VkFormat const enmVkFormat = pRes->uFormat == VIRTIOGPU_FORMAT_R8G8B8A8_UNORM
+                               ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_B8G8R8A8_UNORM;
     VkImageCreateInfo ImageInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, 0, VK_IMAGE_TYPE_2D,
-                                    VK_FORMAT_B8G8R8A8_UNORM, { pRes->uWidth, pRes->uHeight, 1 }, 1, 1,
+                                    enmVkFormat, { pRes->uWidth, pRes->uHeight, 1 }, 1, 1,
                                     VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL,
                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
                                     | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
@@ -3240,7 +3242,8 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                     Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
                 else if (Cmd.id == 0 || virtioGpuR3FindResource(pThis, Cmd.id)
                          || (Cmd.format != VIRTIOGPU_FORMAT_B8G8R8A8_UNORM
-                             && Cmd.format != VIRTIOGPU_FORMAT_B8G8R8X8_UNORM)
+                             && Cmd.format != VIRTIOGPU_FORMAT_B8G8R8X8_UNORM
+                             && Cmd.format != VIRTIOGPU_FORMAT_R8G8B8A8_UNORM)
                          || Cmd.width == 0 || Cmd.height == 0 || Cmd.width > 16384 || Cmd.height > 16384
                          || (uint64_t)Cmd.width * Cmd.height * 4 > VIRTIOGPU_MAX_RESOURCE_BYTES
                          || pThis->cbAllocated + (uint64_t)Cmd.width * Cmd.height * 4 > VIRTIOGPU_MAX_RESOURCE_BYTES)
@@ -4427,7 +4430,8 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                     PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResource(pThis, Cmd.uResourceId);
                     bool const fValid = pRes && pRes->pbPixels
                         && (pRes->uFormat == VIRTIOGPU_FORMAT_B8G8R8A8_UNORM
-                            || pRes->uFormat == VIRTIOGPU_FORMAT_B8G8R8X8_UNORM)
+                            || pRes->uFormat == VIRTIOGPU_FORMAT_B8G8R8X8_UNORM
+                            || pRes->uFormat == VIRTIOGPU_FORMAT_R8G8B8A8_UNORM)
                         && pRes->uWidth && pRes->uHeight
                         && pRes->uWidth <= 64 && pRes->uHeight <= 64
                         && Cmd.uHotX < pRes->uWidth && Cmd.uHotY < pRes->uHeight
@@ -4653,7 +4657,8 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &pRes->cBacking);
             if (RT_SUCCESS(rc) && (pRes->cBacking > VIRTIOGPU_MAX_BACKING_ENTRIES || !pRes->uResourceId
                                    || (!pRes->fBlob && pRes->uFormat != VIRTIOGPU_FORMAT_B8G8R8A8_UNORM
-                                       && pRes->uFormat != VIRTIOGPU_FORMAT_B8G8R8X8_UNORM)
+                                       && pRes->uFormat != VIRTIOGPU_FORMAT_B8G8R8X8_UNORM
+                                       && pRes->uFormat != VIRTIOGPU_FORMAT_R8G8B8A8_UNORM)
                                    || (pRes->fBlob && (pRes->uFormat != 0 || pRes->uHeight != 1))
                                    || !pRes->uWidth
                                    || (uint64_t)pRes->uWidth * pRes->uHeight * 4 > VIRTIOGPU_MAX_RESOURCE_BYTES))
