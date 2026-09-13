@@ -895,6 +895,11 @@ int main(int argc, char **argv)
     memcpy(&MapResp, &g_abRam[0x5000], sizeof(MapResp));
     RTTESTI_CHECK(MapResp.Hdr.uType == VIRTIOGPU_RESP_OK_MAP_INFO && MapResp.uMapInfo == 0
                   && pGpu->aResources[1].fMapped);
+    *(uint32_t *)pGpu->pbSharedMemory = UINT32_C(0xcafebabe);
+    RTTESTI_CHECK_RC(virtioGpuR3VulkanCopyBuffer(pGpu, &pGpu->aResources[1], &pGpu->aResources[0], 0, 0, 4),
+                         VINF_SUCCESS);
+    RTTESTI_CHECK(*(uint32_t *)pGpu->aResources[0].pvVkMapped == UINT32_C(0xcafebabe)
+                  && *(uint32_t *)pGpu->aResources[0].pbPixels == UINT32_C(0xcafebabe));
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_UNMAP_BLOB, &MapBlob,
                    sizeof(MapBlob), 24);
