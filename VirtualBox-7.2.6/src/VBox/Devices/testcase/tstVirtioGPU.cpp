@@ -792,7 +792,6 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
-
     RTTestSub(g_hTest, "Venus vkCmdCopyBuffer2 serialization");
     uint8_t abCopyBuffer2Command[100] = { 0 };
     uint32_t const uCopyBuffer2Type = 207;
@@ -921,6 +920,7 @@ int main(int argc, char **argv)
     struct { VIRTIOGPUSUBMIT3D Hdr; uint32_t auResourceIds[2]; uint8_t abCommand[184]; }
         SubmitBlitImage2 = { { 184, 2 }, { 7, 11 }, { 0 } };
     memcpy(SubmitBlitImage2.abCommand, abBlitImage2SubmitCommand, sizeof(abBlitImage2SubmitCommand));
+    uint64_t const tsBlitSingleStart = RTTimeNanoTS();
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SUBMIT_3D, &SubmitBlitImage2,
                    sizeof(SubmitBlitImage2), 24, 43);
@@ -928,8 +928,28 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
+    uint64_t const cBlitSingleNs = RTTimeNanoTS() - tsBlitSingleStart;
     RTTESTI_CHECK_RC(virtioGpuR3VulkanResourceReadbackImage(pGpu, &pGpu->aResources[1]), VINF_SUCCESS);
     RTTESTI_CHECK(!memcmp(pGpu->aResources[1].pbPixels, pGpu->aResources[0].pbPixels, sizeof(abPixels)));
+    RTTestSub(g_hTest, "Venus BlitImage2 batch submission");
+    uint8_t abBlitImage2BatchCommand[368] = { 0 };
+    memcpy(abBlitImage2BatchCommand, abBlitImage2SubmitCommand, sizeof(abBlitImage2SubmitCommand));
+    memcpy(abBlitImage2BatchCommand + sizeof(abBlitImage2SubmitCommand), abBlitImage2SubmitCommand,
+           sizeof(abBlitImage2SubmitCommand));
+    struct { VIRTIOGPUSUBMIT3D Hdr; uint32_t auResourceIds[2]; uint8_t abCommand[368]; }
+        SubmitBlitImage2Batch = { { 368, 2 }, { 7, 11 }, { 0 } };
+    memcpy(SubmitBlitImage2Batch.abCommand, abBlitImage2BatchCommand, sizeof(abBlitImage2BatchCommand));
+    uint64_t const tsBlitBatchStart = RTTimeNanoTS();
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SUBMIT_3D, &SubmitBlitImage2Batch,
+                   sizeof(SubmitBlitImage2Batch), 24, 43);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
+    uint64_t const cBlitBatchNs = RTTimeNanoTS() - tsBlitBatchStart;
+    RTTestIPrintf(RTTESTLVL_ALWAYS, "Venus BlitImage2 submit: single=%llu ns, batch2=%llu ns (%llu ns/blit)\n",
+                  cBlitSingleNs, cBlitBatchNs, cBlitBatchNs / 2);
     virtioGpuR3VulkanResourceDestroy(pGpu, &pGpu->aResources[1]);
     RTTESTI_CHECK_RC(virtioGpuR3VulkanResourceCreate(pGpu, &pGpu->aResources[1]), VINF_SUCCESS);
     RTTESTI_CHECK(pGpu->aResources[1].fVulkanImage);

@@ -2269,6 +2269,99 @@ static int virtioGpuR3VulkanBlitImage(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pSrc,
     return VINF_SUCCESS;
 # undef VK_BLIT_IMAGE_PROC
 }
+
+static int virtioGpuR3VulkanBlitImageBatch(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pSrc,
+                                           PVIRTIOGPURESOURCE pDst, const VIRTIOGPUBLITIMAGECMD *paBlit,
+                                           uint32_t cBlit)
+{
+    if (!pSrc || !pDst || !paBlit || !cBlit || cBlit > 64 || !pSrc->fVulkanImage || !pDst->fVulkanImage
+        || !pThis->fVulkanQueue || !pThis->fVulkanSubmit)
+        return VERR_INVALID_PARAMETER;
+    VkImageBlit aRegions[64];
+    RT_ZERO(aRegions);
+    for (uint32_t i = 0; i < cBlit; ++i)
+    {
+        const VIRTIOGPUBLITIMAGECMD *pBlit = &paBlit[i];
+        if (pBlit->uSrcImage != paBlit[0].uSrcImage || pBlit->uDstImage != paBlit[0].uDstImage
+            || pBlit->enmSrcImageLayout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+            || pBlit->enmDstImageLayout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL || pBlit->cRegions != 1
+            || !pBlit->pbRegions || (pBlit->enmFilter != VK_FILTER_NEAREST && pBlit->enmFilter != VK_FILTER_LINEAR))
+            return VERR_INVALID_PARAMETER;
+        uint32_t auSrcSubresource[4], auDstSubresource[4];
+        uint64_t cSrcOffsets = 0, cDstOffsets = 0;
+        uint32_t const offFields = pBlit->cbRegionStride == 108 ? 12 : 0;
+        uint32_t const cbStride = pBlit->cbRegionStride ? pBlit->cbRegionStride : 96;
+        if (cbStride < 96 || pBlit->cbRegions != cbStride)
+            return VERR_INVALID_PARAMETER;
+        memcpy(auSrcSubresource, pBlit->pbRegions + offFields + 0, sizeof(auSrcSubresource));
+        memcpy(&cSrcOffsets, pBlit->pbRegions + offFields + 16, sizeof(cSrcOffsets));
+        memcpy(aRegions[i].srcOffsets, pBlit->pbRegions + offFields + 24, sizeof(aRegions[i].srcOffsets));
+        memcpy(auDstSubresource, pBlit->pbRegions + offFields + 48, sizeof(auDstSubresource));
+        memcpy(&cDstOffsets, pBlit->pbRegions + offFields + 64, sizeof(cDstOffsets));
+        memcpy(aRegions[i].dstOffsets, pBlit->pbRegions + offFields + 72, sizeof(aRegions[i].dstOffsets));
+        if (auSrcSubresource[0] != VK_IMAGE_ASPECT_COLOR_BIT || auSrcSubresource[1]
+            || auSrcSubresource[2] || auSrcSubresource[3] != 1 || cSrcOffsets != 2
+            || auDstSubresource[0] != VK_IMAGE_ASPECT_COLOR_BIT || auDstSubresource[1]
+            || auDstSubresource[2] || auDstSubresource[3] != 1 || cDstOffsets != 2)
+            return VERR_INVALID_PARAMETER;
+        aRegions[i].srcSubresource = { auSrcSubresource[0], auSrcSubresource[1], auSrcSubresource[2], auSrcSubresource[3] };
+        aRegions[i].dstSubresource = { auDstSubresource[0], auDstSubresource[1], auDstSubresource[2], auDstSubresource[3] };
+        for (unsigned j = 0; j < 2; ++j)
+        {
+            int32_t const *paSrc = &aRegions[i].srcOffsets[j].x;
+            int32_t const *paDst = &aRegions[i].dstOffsets[j].x;
+            for (unsigned k = 0; k < 3; ++k)
+                if (paSrc[k] < 0 || paDst[k] < 0
+                    || (uint32_t)paSrc[k] > (k == 0 ? pSrc->uWidth : k == 1 ? pSrc->uHeight : 1)
+                    || (uint32_t)paDst[k] > (k == 0 ? pDst->uWidth : k == 1 ? pDst->uHeight : 1))
+                    return VERR_INVALID_PARAMETER;
+        }
+    }
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr =
+        (PFN_vkGetDeviceProcAddr)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetDeviceProcAddr");
+    if (!pfnGetDeviceProcAddr)
+        return VERR_NOT_FOUND;
+# define VK_BLIT_BATCH_PROC(type, name) (type)pfnGetDeviceProcAddr(pThis->hVkDevice, name)
+    PFN_vkResetCommandBuffer pfnResetCommandBuffer = VK_BLIT_BATCH_PROC(PFN_vkResetCommandBuffer, "vkResetCommandBuffer");
+    PFN_vkBeginCommandBuffer pfnBeginCommandBuffer = VK_BLIT_BATCH_PROC(PFN_vkBeginCommandBuffer, "vkBeginCommandBuffer");
+    PFN_vkEndCommandBuffer pfnEndCommandBuffer = VK_BLIT_BATCH_PROC(PFN_vkEndCommandBuffer, "vkEndCommandBuffer");
+    PFN_vkCmdPipelineBarrier pfnCmdPipelineBarrier = VK_BLIT_BATCH_PROC(PFN_vkCmdPipelineBarrier, "vkCmdPipelineBarrier");
+    PFN_vkCmdBlitImage pfnCmdBlitImage = VK_BLIT_BATCH_PROC(PFN_vkCmdBlitImage, "vkCmdBlitImage");
+    PFN_vkResetFences pfnResetFences = VK_BLIT_BATCH_PROC(PFN_vkResetFences, "vkResetFences");
+    PFN_vkQueueSubmit pfnQueueSubmit = VK_BLIT_BATCH_PROC(PFN_vkQueueSubmit, "vkQueueSubmit");
+    PFN_vkWaitForFences pfnWaitForFences = VK_BLIT_BATCH_PROC(PFN_vkWaitForFences, "vkWaitForFences");
+    if (!pfnResetCommandBuffer || !pfnBeginCommandBuffer || !pfnEndCommandBuffer || !pfnCmdPipelineBarrier
+        || !pfnCmdBlitImage || !pfnResetFences || !pfnQueueSubmit || !pfnWaitForFences)
+        return VERR_NOT_FOUND;
+    VkCommandBuffer hCmd = pThis->hVkSubmitCommandBuffer;
+    VkFence hFence = pThis->hVkSubmitFence;
+    VkCommandBufferBeginInfo BeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
+                                           VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, NULL };
+    VkSubmitInfo SubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, 0, NULL, NULL, 1, &hCmd, 0, NULL };
+    VkImageMemoryBarrier aBarriers[2] = {
+        { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+          pSrc->enmVkImageLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_QUEUE_FAMILY_IGNORED,
+          VK_QUEUE_FAMILY_IGNORED, pSrc->hVkImage, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } },
+        { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+          pDst->enmVkImageLayout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED,
+          VK_QUEUE_FAMILY_IGNORED, pDst->hVkImage, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } }
+    };
+    if (pfnResetFences(pThis->hVkDevice, 1, &hFence) != VK_SUCCESS
+        || pfnResetCommandBuffer(hCmd, 0) != VK_SUCCESS || pfnBeginCommandBuffer(hCmd, &BeginInfo) != VK_SUCCESS)
+        return VERR_NOT_SUPPORTED;
+    pfnCmdPipelineBarrier(hCmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                          0, NULL, 0, NULL, 2, aBarriers);
+    pfnCmdBlitImage(hCmd, pSrc->hVkImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    pDst->hVkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, cBlit, aRegions,
+                    (VkFilter)paBlit[0].enmFilter);
+    if (pfnEndCommandBuffer(hCmd) != VK_SUCCESS || pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, hFence) != VK_SUCCESS
+        || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
+        return VERR_NOT_SUPPORTED;
+    pDst->enmVkImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    pDst->fVulkanImageDirty = true;
+    return VINF_SUCCESS;
+# undef VK_BLIT_BATCH_PROC
+}
 #endif
 
 static int virtioGpuR3VulkanUpdateBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes,
@@ -3171,10 +3264,12 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                         VIRTIOGPUCOPYIMAGECMD CopyImage2;
                         VIRTIOGPUBLITIMAGECMD BlitImage;
                         VIRTIOGPUBLITIMAGECMD BlitImage2;
+                        VIRTIOGPUBLITIMAGECMD aBlitBatch[64];
                         RT_ZERO(CopyImage);
                         RT_ZERO(CopyImage2);
                         RT_ZERO(BlitImage);
                         RT_ZERO(BlitImage2);
+                        RT_ZERO(aBlitBatch);
                         RT_ZERO(CopyBufferToImage);
                         RT_ZERO(CopyBufferToImage2);
                         RT_ZERO(CopyImageToBuffer);
@@ -3355,6 +3450,36 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                                 Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
 #endif
                             }
+                        }
+                        else if (Cmd.cbCommand >= 368 && Cmd.cbCommand % 184 == 0
+                                 && Cmd.cbCommand / 184 <= RT_ELEMENTS(aBlitBatch))
+                        {
+                            uint32_t const cBlit = Cmd.cbCommand / 184;
+                            bool fBlitBatchValid = cBlit >= 2;
+                            PVIRTIOGPURESOURCE pSrcRes = NULL;
+                            PVIRTIOGPURESOURCE pDstRes = NULL;
+                            for (uint32_t i = 0; fBlitBatchValid && i < cBlit; ++i)
+                                fBlitBatchValid = virtioGpuR3DecodeBlitImage2(pbCommand + i * 184, 184,
+                                                                              &aBlitBatch[i]);
+                            if (fBlitBatchValid)
+                            {
+                                if (aBlitBatch[0].uSrcImage > UINT32_MAX || aBlitBatch[0].uDstImage > UINT32_MAX
+                                    || !(pSrcRes = virtioGpuR3FindResource(pThis, (uint32_t)aBlitBatch[0].uSrcImage))
+                                    || !(pDstRes = virtioGpuR3FindResource(pThis, (uint32_t)aBlitBatch[0].uDstImage))
+                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)aBlitBatch[0].uSrcImage)
+                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)aBlitBatch[0].uDstImage))
+                                    fBlitBatchValid = false;
+                                for (uint32_t i = 1; fBlitBatchValid && i < cBlit; ++i)
+                                    if (aBlitBatch[i].uSrcImage != aBlitBatch[0].uSrcImage
+                                        || aBlitBatch[i].uDstImage != aBlitBatch[0].uDstImage)
+                                        fBlitBatchValid = false;
+                            }
+                            if (fBlitBatchValid)
+                                Resp.Hdr.uType = RT_SUCCESS(virtioGpuR3VulkanBlitImageBatch(pThis, pSrcRes, pDstRes,
+                                                                                             aBlitBatch, cBlit))
+                                               ? VIRTIOGPU_RESP_OK_NODATA : VIRTIOGPU_RESP_ERR_UNSPEC;
+                            else
+                                Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
                         }
                         else if (virtioGpuR3DecodeBlitImage2(pbCommand, Cmd.cbCommand, &BlitImage2)
                                  || virtioGpuR3DecodeBlitImage(pbCommand, Cmd.cbCommand, &BlitImage))
