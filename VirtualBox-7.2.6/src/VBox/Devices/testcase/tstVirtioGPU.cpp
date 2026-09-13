@@ -190,6 +190,105 @@ static uint32_t tstCompletion(PVIRTIOCORE pCore, unsigned uQueue, uint16_t uBefo
     return Used.cbElem;
 }
 
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+static PFN_vkGetInstanceProcAddr g_pfnCopyTestInstanceProc;
+static PFN_vkGetDeviceProcAddr g_pfnCopyTestDeviceProc;
+static unsigned g_cDroppedCopies;
+
+/* Suppress only the copy recording. Submission, fences and mapped memory still
+ * use the real GPU driver, so a CPU replacement copy cannot pass this test. */
+static VKAPI_ATTR void VKAPI_CALL tstVkDropCopyBuffer(VkCommandBuffer hCmd, VkBuffer hSrc, VkBuffer hDst,
+                                                     uint32_t cRegions, const VkBufferCopy *paRegions)
+{
+    RT_NOREF(hCmd, hSrc, hDst, cRegions, paRegions);
+    ++g_cDroppedCopies;
+}
+
+static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL tstVkCopyDeviceProc(VkDevice hDevice, const char *pszName)
+{
+    if (!strcmp(pszName, "vkCmdCopyBuffer"))
+        return (PFN_vkVoidFunction)tstVkDropCopyBuffer;
+    return g_pfnCopyTestDeviceProc(hDevice, pszName);
+}
+
+static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL tstVkCopyInstanceProc(VkInstance hInstance, const char *pszName)
+{
+    if (!strcmp(pszName, "vkGetDeviceProcAddr"))
+        return (PFN_vkVoidFunction)tstVkCopyDeviceProc;
+    return g_pfnCopyTestInstanceProc(hInstance, pszName);
+}
+
+static void tstVulkanCopyReadback(PVIRTIOGPU pGpu)
+{
+    RTTestSub(g_hTest, "Vulkan copy readback without CPU replacement");
+    uint8_t abSrc[64], abDst[64], abExpected[64];
+    for (unsigned i = 0; i < sizeof(abSrc); ++i)
+        abSrc[i] = (uint8_t)(i * 3 + 7);
+    memset(abDst, 0xc3, sizeof(abDst));
+    VIRTIOGPURESOURCE Src, Dst;
+    RT_ZERO(Src);
+    RT_ZERO(Dst);
+    Src.fBlob = Dst.fBlob = true;
+    Src.cbPixels = sizeof(abSrc);
+    Dst.cbPixels = sizeof(abDst);
+    Src.pbPixels = abSrc;
+    Dst.pbPixels = abDst;
+    int rcSrc = virtioGpuR3VulkanResourceCreate(pGpu, &Src);
+    int rcDst = virtioGpuR3VulkanResourceCreate(pGpu, &Dst);
+    RTTESTI_CHECK_RC(rcSrc, VINF_SUCCESS);
+    RTTESTI_CHECK_RC(rcDst, VINF_SUCCESS);
+    if (RT_SUCCESS(rcSrc) && RT_SUCCESS(rcDst) && Src.fVulkanBuffer && Dst.fVulkanBuffer)
+    {
+        g_pfnCopyTestInstanceProc = pGpu->pfnVkGetInstanceProcAddr;
+        g_pfnCopyTestDeviceProc = (PFN_vkGetDeviceProcAddr)
+            g_pfnCopyTestInstanceProc(pGpu->hVkInstance, "vkGetDeviceProcAddr");
+        RTTESTI_CHECK(g_pfnCopyTestDeviceProc != NULL);
+        if (g_pfnCopyTestDeviceProc)
+        {
+            uint64_t const aRegions[2][3] = { { 4, 8, 16 }, { 32, 40, 8 } };
+            VIRTIOGPUCOPYCMD aCopy[2];
+            RT_ZERO(aCopy);
+            for (unsigned i = 0; i < RT_ELEMENTS(aCopy); ++i)
+            {
+                aCopy[i].offSrc = aRegions[i][0];
+                aCopy[i].offDst = aRegions[i][1];
+                aCopy[i].cbCopy = aRegions[i][2];
+            }
+            VIRTIOGPUCOPYCMD Multi;
+            RT_ZERO(Multi);
+            Multi.cRegions = 2;
+            Multi.pbRegions = (const uint8_t *)aRegions;
+            for (unsigned iMode = 0; iMode < 3; ++iMode)
+                for (unsigned fDrop = 0; fDrop < 2; ++fDrop)
+                {
+                    memset(abDst, 0xc3, sizeof(abDst));
+                    memset(abExpected, 0xc3, sizeof(abExpected));
+                    RTTESTI_CHECK_RC(virtioGpuR3VulkanResourceSync(pGpu, &Dst), VINF_SUCCESS);
+                    if (!fDrop)
+                        for (unsigned i = 0; i < (iMode ? 2U : 1U); ++i)
+                            memcpy(abExpected + aRegions[i][1], abSrc + aRegions[i][0], (size_t)aRegions[i][2]);
+                    g_cDroppedCopies = 0;
+                    if (fDrop)
+                        pGpu->pfnVkGetInstanceProcAddr = tstVkCopyInstanceProc;
+                    int const rc = iMode == 0 ? virtioGpuR3VulkanCopyBuffer(pGpu, &Src, &Dst, 4, 8, 16)
+                                 : iMode == 1 ? virtioGpuR3VulkanCopyBufferBatch(pGpu, &Src, &Dst, aCopy, 2)
+                                 : virtioGpuR3VulkanCopyBufferRegions(pGpu, &Src, &Dst, &Multi);
+                    pGpu->pfnVkGetInstanceProcAddr = g_pfnCopyTestInstanceProc;
+                    RTTESTI_CHECK_RC(rc, VINF_SUCCESS);
+                    RTTESTI_CHECK(g_cDroppedCopies == (fDrop ? (iMode == 1 ? 2U : 1U) : 0U));
+                    RTTESTI_CHECK(memcmp(Dst.pvVkMapped, abExpected, sizeof(abExpected)) == 0);
+                    RTTESTI_CHECK(memcmp(abDst, abExpected, sizeof(abExpected)) == 0);
+                    RTTESTI_CHECK(memcmp(Src.pvVkMapped, abSrc, sizeof(abSrc)) == 0);
+                }
+        }
+    }
+    else
+        RTTestFailed(g_hTest, "GPU buffer backing required for copy readback test");
+    virtioGpuR3VulkanResourceDestroy(pGpu, &Dst);
+    virtioGpuR3VulkanResourceDestroy(pGpu, &Src);
+}
+#endif
+
 int main(int argc, char **argv)
 {
 
@@ -246,6 +345,7 @@ int main(int argc, char **argv)
     RTTestSub(g_hTest, "host Vulkan queue execution probe");
     rc = virtioGpuR3VulkanProbeQueue(pGpu);
     RTTESTI_CHECK_RC(rc, VINF_SUCCESS);
+    tstVulkanCopyReadback(pGpu);
 #endif
     pDev->u32Version = PDM_DEVINS_VERSION;
     pDev->pReg = &g_DeviceVirtioGPU;

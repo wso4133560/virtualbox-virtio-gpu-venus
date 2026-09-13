@@ -1102,10 +1102,11 @@ static int virtioGpuR3VulkanCopyBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pSrc
     PFN_vkBeginCommandBuffer pfnBeginCommandBuffer = VK_COPY_PROC(PFN_vkBeginCommandBuffer, "vkBeginCommandBuffer");
     PFN_vkEndCommandBuffer pfnEndCommandBuffer = VK_COPY_PROC(PFN_vkEndCommandBuffer, "vkEndCommandBuffer");
     PFN_vkCmdCopyBuffer pfnCmdCopyBuffer = VK_COPY_PROC(PFN_vkCmdCopyBuffer, "vkCmdCopyBuffer");
+    PFN_vkCmdPipelineBarrier pfnCmdPipelineBarrier = VK_COPY_PROC(PFN_vkCmdPipelineBarrier, "vkCmdPipelineBarrier");
     PFN_vkResetFences pfnResetFences = VK_COPY_PROC(PFN_vkResetFences, "vkResetFences");
     PFN_vkQueueSubmit pfnQueueSubmit = VK_COPY_PROC(PFN_vkQueueSubmit, "vkQueueSubmit");
     PFN_vkWaitForFences pfnWaitForFences = VK_COPY_PROC(PFN_vkWaitForFences, "vkWaitForFences");
-    if (!pfnResetCommandBuffer || !pfnBeginCommandBuffer || !pfnEndCommandBuffer || !pfnCmdCopyBuffer
+    if (!pfnResetCommandBuffer || !pfnBeginCommandBuffer || !pfnEndCommandBuffer || !pfnCmdCopyBuffer || !pfnCmdPipelineBarrier
         || !pfnResetFences || !pfnQueueSubmit || !pfnWaitForFences)
         return VERR_NOT_FOUND;
     VkCommandBuffer hCmd = pThis->hVkSubmitCommandBuffer;
@@ -1119,17 +1120,19 @@ static int virtioGpuR3VulkanCopyBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pSrc
         || pfnBeginCommandBuffer(hCmd, &BeginInfo) != VK_SUCCESS)
         return VERR_NOT_SUPPORTED;
     pfnCmdCopyBuffer(hCmd, pSrc->hVkBuffer, pDst->hVkBuffer, 1, &Region);
+    /* Make the transfer result visible to host reads before the fence wait and
+       cache invalidation. Never replace the GPU result with a CPU source copy. */
+    VkMemoryBarrier HostReadBarrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL,
+                                        VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT };
+    pfnCmdPipelineBarrier(hCmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0,
+                          1, &HostReadBarrier, 0, NULL, 0, NULL);
     if (pfnEndCommandBuffer(hCmd) != VK_SUCCESS
         || pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, hFence) != VK_SUCCESS
         || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
         return VERR_NOT_SUPPORTED;
-    int rcInvalidate = virtioGpuR3VulkanResourceMemoryOp(pThis, pSrc, true);
+    int const rcInvalidate = virtioGpuR3VulkanResourceMemoryOp(pThis, pDst, true);
     if (RT_FAILURE(rcInvalidate))
         return rcInvalidate;
-    rcInvalidate = virtioGpuR3VulkanResourceMemoryOp(pThis, pDst, true);
-    if (RT_FAILURE(rcInvalidate))
-        return rcInvalidate;
-    memcpy((uint8_t *)pDst->pvVkMapped + offDst, (uint8_t *)pSrc->pvVkMapped + offSrc, (size_t)cbCopy);
     memcpy(pDst->pbPixels + offDst, (uint8_t *)pDst->pvVkMapped + offDst, (size_t)cbCopy);
     return virtioGpuR3VulkanResourceSyncImage(pThis, pDst);
 # undef VK_COPY_PROC
@@ -1948,10 +1951,11 @@ static int virtioGpuR3VulkanCopyBufferBatch(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE
     PFN_vkBeginCommandBuffer pfnBeginCommandBuffer = VK_BATCH_COPY_PROC(PFN_vkBeginCommandBuffer, "vkBeginCommandBuffer");
     PFN_vkEndCommandBuffer pfnEndCommandBuffer = VK_BATCH_COPY_PROC(PFN_vkEndCommandBuffer, "vkEndCommandBuffer");
     PFN_vkCmdCopyBuffer pfnCmdCopyBuffer = VK_BATCH_COPY_PROC(PFN_vkCmdCopyBuffer, "vkCmdCopyBuffer");
+    PFN_vkCmdPipelineBarrier pfnCmdPipelineBarrier = VK_BATCH_COPY_PROC(PFN_vkCmdPipelineBarrier, "vkCmdPipelineBarrier");
     PFN_vkResetFences pfnResetFences = VK_BATCH_COPY_PROC(PFN_vkResetFences, "vkResetFences");
     PFN_vkQueueSubmit pfnQueueSubmit = VK_BATCH_COPY_PROC(PFN_vkQueueSubmit, "vkQueueSubmit");
     PFN_vkWaitForFences pfnWaitForFences = VK_BATCH_COPY_PROC(PFN_vkWaitForFences, "vkWaitForFences");
-    if (!pfnResetCommandBuffer || !pfnBeginCommandBuffer || !pfnEndCommandBuffer || !pfnCmdCopyBuffer
+    if (!pfnResetCommandBuffer || !pfnBeginCommandBuffer || !pfnEndCommandBuffer || !pfnCmdCopyBuffer || !pfnCmdPipelineBarrier
         || !pfnResetFences || !pfnQueueSubmit || !pfnWaitForFences)
         return VERR_NOT_FOUND;
     VkCommandBuffer hCmd = pThis->hVkSubmitCommandBuffer;
@@ -1968,20 +1972,19 @@ static int virtioGpuR3VulkanCopyBufferBatch(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE
         VkBufferCopy Region = { paCopy[i].offSrc, paCopy[i].offDst, paCopy[i].cbCopy };
         pfnCmdCopyBuffer(hCmd, pSrc->hVkBuffer, pDst->hVkBuffer, 1, &Region);
     }
+    VkMemoryBarrier HostReadBarrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL,
+                                        VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT };
+    pfnCmdPipelineBarrier(hCmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0,
+                          1, &HostReadBarrier, 0, NULL, 0, NULL);
     if (pfnEndCommandBuffer(hCmd) != VK_SUCCESS
         || pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, hFence) != VK_SUCCESS
         || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
         return VERR_NOT_SUPPORTED;
-    int rcInvalidate = virtioGpuR3VulkanResourceMemoryOp(pThis, pSrc, true);
-    if (RT_FAILURE(rcInvalidate))
-        return rcInvalidate;
-    rcInvalidate = virtioGpuR3VulkanResourceMemoryOp(pThis, pDst, true);
+    int const rcInvalidate = virtioGpuR3VulkanResourceMemoryOp(pThis, pDst, true);
     if (RT_FAILURE(rcInvalidate))
         return rcInvalidate;
     for (uint32_t i = 0; i < cCopy; ++i)
     {
-        memcpy((uint8_t *)pDst->pvVkMapped + paCopy[i].offDst,
-               (uint8_t *)pSrc->pvVkMapped + paCopy[i].offSrc, (size_t)paCopy[i].cbCopy);
         memcpy(pDst->pbPixels + paCopy[i].offDst,
                (uint8_t *)pDst->pvVkMapped + paCopy[i].offDst, (size_t)paCopy[i].cbCopy);
     }
@@ -2021,10 +2024,11 @@ static int virtioGpuR3VulkanCopyBufferRegions(PVIRTIOGPU pThis, PVIRTIOGPURESOUR
     PFN_vkBeginCommandBuffer pfnBeginCommandBuffer = VK_COPY_REGIONS_PROC(PFN_vkBeginCommandBuffer, "vkBeginCommandBuffer");
     PFN_vkEndCommandBuffer pfnEndCommandBuffer = VK_COPY_REGIONS_PROC(PFN_vkEndCommandBuffer, "vkEndCommandBuffer");
     PFN_vkCmdCopyBuffer pfnCmdCopyBuffer = VK_COPY_REGIONS_PROC(PFN_vkCmdCopyBuffer, "vkCmdCopyBuffer");
+    PFN_vkCmdPipelineBarrier pfnCmdPipelineBarrier = VK_COPY_REGIONS_PROC(PFN_vkCmdPipelineBarrier, "vkCmdPipelineBarrier");
     PFN_vkResetFences pfnResetFences = VK_COPY_REGIONS_PROC(PFN_vkResetFences, "vkResetFences");
     PFN_vkQueueSubmit pfnQueueSubmit = VK_COPY_REGIONS_PROC(PFN_vkQueueSubmit, "vkQueueSubmit");
     PFN_vkWaitForFences pfnWaitForFences = VK_COPY_REGIONS_PROC(PFN_vkWaitForFences, "vkWaitForFences");
-    if (!pfnResetCommandBuffer || !pfnBeginCommandBuffer || !pfnEndCommandBuffer || !pfnCmdCopyBuffer
+    if (!pfnResetCommandBuffer || !pfnBeginCommandBuffer || !pfnEndCommandBuffer || !pfnCmdCopyBuffer || !pfnCmdPipelineBarrier
         || !pfnResetFences || !pfnQueueSubmit || !pfnWaitForFences)
         return VERR_NOT_FOUND;
     VkCommandBuffer hCmd = pThis->hVkSubmitCommandBuffer;
@@ -2037,20 +2041,19 @@ static int virtioGpuR3VulkanCopyBufferRegions(PVIRTIOGPU pThis, PVIRTIOGPURESOUR
         || pfnBeginCommandBuffer(hCmd, &BeginInfo) != VK_SUCCESS)
         return VERR_NOT_SUPPORTED;
     pfnCmdCopyBuffer(hCmd, pSrc->hVkBuffer, pDst->hVkBuffer, pCopy->cRegions, aRegions);
+    VkMemoryBarrier HostReadBarrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL,
+                                        VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT };
+    pfnCmdPipelineBarrier(hCmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0,
+                          1, &HostReadBarrier, 0, NULL, 0, NULL);
     if (pfnEndCommandBuffer(hCmd) != VK_SUCCESS
         || pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, hFence) != VK_SUCCESS
         || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
         return VERR_NOT_SUPPORTED;
-    int rcInvalidate = virtioGpuR3VulkanResourceMemoryOp(pThis, pSrc, true);
-    if (RT_FAILURE(rcInvalidate))
-        return rcInvalidate;
-    rcInvalidate = virtioGpuR3VulkanResourceMemoryOp(pThis, pDst, true);
+    int const rcInvalidate = virtioGpuR3VulkanResourceMemoryOp(pThis, pDst, true);
     if (RT_FAILURE(rcInvalidate))
         return rcInvalidate;
     for (uint32_t i = 0; i < pCopy->cRegions; ++i)
     {
-        memcpy((uint8_t *)pDst->pvVkMapped + aRegions[i].dstOffset,
-               (uint8_t *)pSrc->pvVkMapped + aRegions[i].srcOffset, (size_t)aRegions[i].size);
         memcpy(pDst->pbPixels + aRegions[i].dstOffset,
                (uint8_t *)pDst->pvVkMapped + aRegions[i].dstOffset, (size_t)aRegions[i].size);
     }
