@@ -327,8 +327,27 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(g_abRam[0x5000 + 408] == 0xa5);
     RTTESTI_CHECK(g_cIrqs > 0);
 
-    RTTestSub(g_hTest, "capset query without advertised capabilities");
+    VIRTIOGPUGETEDID GetEdid = { 0, 0 };
     uint16_t uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_GET_EDID, &GetEdid, sizeof(GetEdid),
+                   sizeof(VIRTIOGPURESPEDID));
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == sizeof(VIRTIOGPURESPEDID));
+    VIRTIOGPURESPEDID EdidResp;
+    memcpy(&EdidResp, &g_abRam[0x5000], sizeof(EdidResp));
+    RTTESTI_CHECK(EdidResp.Hdr.uType == VIRTIOGPU_RESP_OK_EDID && EdidResp.cbEdid == 0
+                  && EdidResp.uPadding == 0);
+    VIRTIOGPUGETEDID GetEdidInvalid = { VIRTIOGPU_MAX_SCANOUTS, 0 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_GET_EDID, &GetEdidInvalid, sizeof(GetEdidInvalid),
+                   sizeof(VIRTIOGPURESPEDID));
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == sizeof(VIRTIOGPUCTRLHDR));
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_ERR_INVALID_PARAMETER);
+
+    RTTestSub(g_hTest, "capset query without advertised capabilities");
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     VIRTIOGPUCAPSETINFO CapsetInfo = { 0 };
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_GET_CAPSET_INFO, &CapsetInfo, sizeof(CapsetInfo), 36);

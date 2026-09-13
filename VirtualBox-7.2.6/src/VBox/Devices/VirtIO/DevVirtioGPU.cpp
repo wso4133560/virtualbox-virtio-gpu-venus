@@ -2144,6 +2144,7 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
     RT_ZERO(Resp);
     size_t cbResp = 0;
     bool fPreserveResponse = false;
+    void *pvResponse = &Resp;
     int rcReq = virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Req, sizeof(Req));
     uint32_t uResponse = RT_FAILURE(rcReq) || (RT_SUCCESS(rcReq) && (Req.uFlags & ~VIRTIOGPU_FLAG_FENCE))
                         ? VIRTIOGPU_RESP_ERR_INVALID_PARAMETER : VIRTIOGPU_RESP_ERR_UNSPEC;
@@ -2173,6 +2174,33 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                 else
                     Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
                 break;
+            case VIRTIOGPU_CMD_GET_EDID:
+            {
+                VIRTIOGPUGETEDID Cmd;
+                RT_ZERO(Cmd);
+                if (pBuf->cbPhysSend < sizeof(Cmd)
+                    || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Cmd, sizeof(Cmd)))
+                    || Cmd.uPadding != 0 || Cmd.uScanoutId >= VIRTIOGPU_MAX_SCANOUTS
+                    || pBuf->cbPhysReturn < sizeof(VIRTIOGPURESPEDID))
+                    Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                else
+                {
+                    VIRTIOGPURESPEDID *pEdid = (VIRTIOGPURESPEDID *)RTMemAllocZ(sizeof(*pEdid));
+                    if (!pEdid)
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_OUT_OF_MEMORY;
+                    else
+                    {
+                        pEdid->Hdr = Resp.Hdr;
+                        pEdid->Hdr.uType = VIRTIOGPU_RESP_OK_EDID;
+                        /* No physical monitor is attached to the virtual scanout. */
+                        pEdid->cbEdid = 0;
+                        pvResponse = pEdid;
+                        cbResp = sizeof(*pEdid);
+                        fPreserveResponse = true;
+                    }
+                }
+                break;
+            }
             case VIRTIOGPU_CMD_GET_CAPSET_INFO:
             {
                 VIRTIOGPUCAPSETINFO Cmd;
@@ -2923,8 +2951,11 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
         uint32_t uFinal=Resp.Hdr.uType;
         virtioGpuR3Response(&Resp,&Req,uFinal);
     }
-    RTSGSEG Seg={&Resp,cbResp}; RTSGBUF Sg; RTSgBufInit(&Sg,&Seg,1);
-    return virtioCoreR3VirtqUsedBufPut(pDevIns,pVirtio,uQueue,cbResp?&Sg:NULL,pBuf);
+    RTSGSEG Seg={pvResponse,cbResp}; RTSGBUF Sg; RTSgBufInit(&Sg,&Seg,1);
+    int const rcComplete = virtioCoreR3VirtqUsedBufPut(pDevIns,pVirtio,uQueue,cbResp?&Sg:NULL,pBuf);
+    if (pvResponse != &Resp)
+        RTMemFree(pvResponse);
+    return rcComplete;
 }
 static DECLCALLBACK(void) virtioGpuR3VirtqNotified(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t uQueue)
 {
