@@ -447,6 +447,7 @@ static const DeviceAliasRule g_aDeviceAliases[] =
     {"e1000",       "nic"},
     {"pcnet",       "nic"},
     {"virtio-net",  "nic"},
+    {"virtio-gpu",  "vga"},
     {"ahci",        "storage"},
     {"lsilogic",    "storage"},
     {"buslogic",    "storage"},

@@ -109,6 +109,7 @@ ifdef VBOX_WITH_TESTCASES # The whole file
   	tstIprtMiniList \
   	tstIprtMiniString \
   	tstLdr \
+	tstLdrLoadConfig \
   	tstLdrLoad \
   	tstRTLocalIpc \
   	tstRTLdrVerifyPeImage \
@@ -524,6 +525,9 @@ ifdef VBOX_WITH_TESTCASES # The whole file
 
  tstLdr_TEMPLATE = VBoxR3TstExe
  tstLdr_SOURCES = tstLdr.cpp
+
+ tstLdrLoadConfig_TEMPLATE = VBoxR3TstExe
+ tstLdrLoadConfig_SOURCES = tstLdrLoadConfig.cpp
 
  tstLdr-2_TEMPLATE = VBoxR3TstExe
  tstLdr-2_SOURCES = tstLdr-2.cpp

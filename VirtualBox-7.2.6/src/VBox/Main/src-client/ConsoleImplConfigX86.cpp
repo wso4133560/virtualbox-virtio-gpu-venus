@@ -1461,13 +1461,16 @@ int Console::i_configConstructorX86(PUVM pUVM, PVM pVM, PCVMMR3VTABLE pVMM, Auto
             {
                 PCFGMNODE pVirtioGpuDev = NULL;
                 PCFGMNODE pVirtioGpuInst = NULL;
+                PCFGMNODE pVirtioGpuCfg = NULL;
                 InsertConfigNode(pDevices, "virtio-gpu", &pVirtioGpuDev);
                 InsertConfigNode(pVirtioGpuDev, "0", &pVirtioGpuInst);
+                InsertConfigInteger(pVirtioGpuInst, "Trusted", 1);
+                InsertConfigNode(pVirtioGpuInst, "Config", &pVirtioGpuCfg);
                 Utf8Str strVirtioGpuBackend;
                 GetExtraDataBoth(virtualBox, pMachine, "VBoxInternal/Devices/virtio-gpu/0/Config/Backend",
                                  &strVirtioGpuBackend);
                 if (strVirtioGpuBackend.isNotEmpty())
-                    InsertConfigString(pVirtioGpuInst, "Backend", strVirtioGpuBackend.c_str());
+                    InsertConfigString(pVirtioGpuCfg, "Backend", strVirtioGpuBackend.c_str());
                 vrc = pBusMgr->assignPCIDevice("virtio-gpu", pVirtioGpuInst);
                 if (FAILED(vrc))
                     return vrc;

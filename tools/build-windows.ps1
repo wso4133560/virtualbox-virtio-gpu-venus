@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [ValidateRange(1, 64)][int]$Jobs = 8,
-    [string[]]$Targets = @('VBoxRT', 'VBoxManage', 'VBoxHeadless', 'VBoxSVC', 'VBoxSDS', 'VBoxVMM', 'VBoxDD', 'VBoxDD2', 'VBoxDDU', 'VMMR0', 'VBoxSup', 'tstRTXml', 'tstRTSemEvent'),
+    [string[]]$Targets = @('VBoxRT', 'VBoxManage', 'VBoxHeadless', 'VBoxSVC', 'VBoxSDS', 'VBoxVMM', 'VBoxDD', 'VBoxDD2', 'VBoxDDU', 'VMMR0', 'VBoxSup', 'VBoxSup-inf', 'tstLdr', 'tstLdrLoadConfig', 'tstRTXml', 'tstRTSemEvent'),
     [string]$VisualStudioRoot,
     [string]$SdkRoot = (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'),
     [string]$SdkVersion = '10.0.26100.0',

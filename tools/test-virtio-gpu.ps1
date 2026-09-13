@@ -92,7 +92,7 @@ foreach ($source in $configSources.GetEnumerator()) {
     $sourceText = Get-Content -LiteralPath $source.Value -Raw
     $configChecks[$source.Key] = switch ($source.Key) {
         modifyVm { $sourceText -match 'MODIFYVM_GPU_BACKEND' -and $sourceText -match 'VBoxInternal/Devices/virtio-gpu/0/Config/Backend' }
-        consoleConfig { $sourceText -match 'InsertConfigNode\(pDevices, "virtio-gpu"' -and $sourceText -match 'InsertConfigString\(pVirtioGpuInst, "Backend"' }
+        consoleConfig { $sourceText -match 'InsertConfigNode\(pDevices, "virtio-gpu"' -and $sourceText -match 'InsertConfigNode\(pVirtioGpuInst, "Config", &pVirtioGpuCfg\)' -and $sourceText -match 'InsertConfigString\(pVirtioGpuCfg, "Backend"' }
         deviceConstruct { $sourceText -match 'pfnCFGMQueryStringDef\(pCfg, "Backend"' -and $sourceText -match 'virtioGpuR3ParseBackend' }
         deviceRegistration { $sourceText -match 'g_DeviceVirtioGPU' -and $sourceText -match 'pfnRegister' }
     }

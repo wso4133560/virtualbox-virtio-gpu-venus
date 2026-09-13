@@ -1,4 +1,4 @@
-# Creates a disposable Linux VM and verifies the real VirtualBox launch path
+# Creates a disposable VM and verifies the real VirtualBox launch path
 # with the VirtIO-GPU Venus controller. Guest Vulkan validation remains a
 # separate step because it depends on the selected guest image and drivers.
 [CmdletBinding()]
@@ -31,9 +31,18 @@ if (-not (Test-Path -LiteralPath $iso -PathType Leaf)) { throw "Missing ISO: $is
 
 function Invoke-VBoxManage {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
-    $output = & $vboxManage @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "VBoxManage $($Arguments -join ' ') failed (exit $LASTEXITCODE): $($output -join ' ')"
+    # Windows PowerShell 5.1 turns native stderr into ErrorRecords. Capture all
+    # output before testing the exit code so the complete diagnostic survives.
+    $savedPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = & $vboxManage @Arguments 2>&1
+        $commandExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $savedPreference
+    }
+    if ($commandExit -ne 0) {
+        throw "VBoxManage $($Arguments -join ' ') failed (exit ${commandExit}): $($output -join ' ')"
     }
     return @($output)
 }
@@ -44,17 +53,25 @@ $created = $false
 $started = $false
 $state = 'not-created'
 $failure = $null
+$phase = 'create'
+$vmBase = Join-Path (Split-Path $PSScriptRoot -Parent) '.build\windows\vms'
+$savedLog = [IO.Path]::ChangeExtension([IO.Path]::GetFullPath($ReportPath), '.VBox.log')
+$logCaptured = $false
 try {
-    Invoke-VBoxManage @('createvm', '--name', $VmName, '--register') | Out-Null
+    Invoke-VBoxManage @('createvm', '--name', $VmName, '--basefolder', $vmBase, '--register') | Out-Null
     $created = $true
+    $state = 'created'
+    $phase = 'configure'
     Invoke-VBoxManage @('modifyvm', $VmName, '--memory', $MemoryMB, '--vram', 64,
                         '--graphicscontroller', 'virtio-gpu', '--gpu-backend', $GpuBackend,
                         '--firmware', 'efi', '--audio-enabled', 'off') | Out-Null
     Invoke-VBoxManage @('storagectl', $VmName, '--name', 'SATA', '--add', 'sata', '--controller', 'IntelAhci') | Out-Null
     Invoke-VBoxManage @('storageattach', $VmName, '--storagectl', 'SATA', '--port', 0,
                         '--device', 0, '--type', 'dvddrive', '--medium', $iso) | Out-Null
+    $phase = 'start'
     Invoke-VBoxManage @('startvm', $VmName, '--type', 'headless') | Out-Null
     $started = $true
+    $phase = 'observe'
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     do {
         $info = Invoke-VBoxManage @('showvminfo', $VmName, '--machinereadable')
@@ -64,11 +81,12 @@ try {
         if ([DateTime]::UtcNow -ge $deadline) { throw "VM did not reach running state within $TimeoutSeconds seconds (state=$state)." }
         Start-Sleep -Milliseconds 500
     } while ($true)
+    $phase = 'complete'
     Write-Host "VirtIO-GPU VM launch: PASS (state=$state, name=$VmName)"
 }
 catch {
     $failure = $_.Exception.Message
-    Write-Error $failure
+    Write-Error $failure -ErrorAction Continue
 }
 finally {
     if ($started) {
@@ -87,6 +105,11 @@ finally {
         } catch { }
     }
     if ($created -and -not $KeepVm) {
+        $logPath = Join-Path (Join-Path $vmBase $VmName) 'Logs\VBox.log'
+        if (Test-Path -LiteralPath $logPath -PathType Leaf) {
+            Copy-Item -LiteralPath $logPath -Destination $savedLog -Force
+            $logCaptured = $true
+        }
         try { Invoke-VBoxManage @('unregistervm', $VmName, '--delete') | Out-Null } catch { }
     }
     [ordered]@{
@@ -100,6 +123,8 @@ finally {
         created = $created
         started = $started
         state = $state
+        phase = $phase
+        logPath = if ($logCaptured) { $savedLog } else { $null }
         keptVm = [bool]$KeepVm
         passed = [bool]($started -and $state -eq 'running' -and -not $failure)
         failure = $failure

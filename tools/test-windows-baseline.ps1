@@ -6,7 +6,7 @@ $repoRoot = Split-Path $PSScriptRoot -Parent
 $binRoot = Join-Path $repoRoot 'VirtualBox-7.2.6\out\win.amd64\release\bin'
 $reportRoot = Join-Path $repoRoot '.build\windows'
 $results = @()
-$requiredFiles = @('VBoxRT.dll', 'VBoxVMM.dll', 'VBoxDD.dll', 'VBoxDD2.dll', 'VBoxDDU.dll', 'VBoxSVC.exe', 'VBoxC.dll', 'VBoxProxyStub.dll', 'VBoxManage.exe', 'VBoxHeadless.exe', 'VMMR0.r0', 'VBoxSup.sys')
+$requiredFiles = @('VBoxRT.dll', 'VBoxVMM.dll', 'VBoxDD.dll', 'VBoxDD2.dll', 'VBoxDDU.dll', 'VBoxSVC.exe', 'VBoxSDS.exe', 'VBoxC.dll', 'VBoxProxyStub.dll', 'VBoxManage.exe', 'VBoxHeadless.exe', 'VMMR0.r0', 'VBoxSup.sys')
 foreach ($name in $requiredFiles) {
     $path = Join-Path $binRoot $name
     if (-not (Test-Path $path)) { throw "Missing build artifact: $path" }
@@ -40,6 +40,7 @@ $report = [ordered]@{
     checks = @($checks.name)
     artifacts = $results
     driverSignature = (Get-AuthenticodeSignature (Join-Path $binRoot 'VBoxSup.sys')).Status.ToString()
+    vmmR0Signature = (Get-AuthenticodeSignature (Join-Path $binRoot 'VMMR0.r0')).Status.ToString()
     guestBootVerified = $false
     venusVerified = $false
 }

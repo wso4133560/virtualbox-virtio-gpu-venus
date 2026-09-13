@@ -33,6 +33,10 @@ $required = @(
 foreach ($name in $required) {
     Require-File (Join-Path $binRoot $name) "Windows runtime artifact $name"
 }
+$testNames = @('tstVirtioGPU.exe', 'tstLdr.exe', 'tstLdrLoadConfig.exe')
+foreach ($name in $testNames) {
+    Require-File (Join-Path $binRoot (Join-Path 'testcase' $name)) "runtime validation program $name"
+}
 
 if (Test-Path -LiteralPath $OutputDirectory) {
     Remove-Item -LiteralPath $OutputDirectory -Recurse -Force
@@ -59,11 +63,14 @@ foreach ($name in $required) {
     }
     Copy-Item -LiteralPath $sourcePath -Destination (Join-Path $runtimeBin $name)
 }
-$testExe = Join-Path $binRoot 'testcase\tstVirtioGPU.exe'
-if (Test-Path -LiteralPath $testExe -PathType Leaf) {
-    New-Item -ItemType Directory -Force (Join-Path $runtimeBin 'testcase') | Out-Null
+New-Item -ItemType Directory -Force (Join-Path $runtimeBin 'testcase') | Out-Null
+foreach ($name in $testNames) {
+    $testExe = Join-Path $binRoot (Join-Path 'testcase' $name)
     Copy-Item -LiteralPath $testExe -Destination (Join-Path $runtimeBin 'testcase')
 }
+# kBuild places a VBoxRT hard link beside dynamically linked test programs.
+# A ZIP needs a regular copy so the loader probes also run after extraction.
+Copy-Item -LiteralPath (Join-Path $runtimeBin 'VBoxRT.dll') -Destination (Join-Path $runtimeBin 'testcase')
 $docRoot = Join-Path $repoRoot 'doc'
 $docFiles = @(Get-ChildItem -LiteralPath $docRoot -Filter '*.md' -File)
 if (-not $docFiles.Count) { throw "Missing runtime documentation under $docRoot" }
@@ -73,7 +80,8 @@ foreach ($docFile in $docFiles) {
 
 $validationFiles = @(
     'virtio-gpu-validation.json', 'baseline-validation.json',
-    'virtio-gpu-tests.log', 'build.log'
+    'virtio-gpu-tests.log', 'build.log', 'ldr-load-config-tests.log',
+    'vmmr0-load-tests.log', 'virtio-gpu-vm-validation.json', 'virtio-gpu-vm-validation.VBox.log'
 )
 foreach ($name in $validationFiles) {
     $source = Join-Path $repoRoot (Join-Path '.build\windows' $name)
