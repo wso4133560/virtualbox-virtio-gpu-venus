@@ -23,15 +23,50 @@ $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     if ($AutoElevate) {
+        $reportFullPath = $null
+        if ($ReportPath) {
+            $reportFullPath = [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $ReportPath))
+        }
         $forward = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $PSCommandPath.Replace('"', '\"') + '"'))
         $forward += @('-RuntimeDirectory', ('"' + $runtime.Replace('"', '\"') + '"'))
         if ($NoProxy) { $forward += '-NoProxy' }
-        if ($ReportPath) {
-            $reportFullPath = [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $ReportPath))
+        if ($reportFullPath) {
             $forward += @('-ReportPath', ('"' + $reportFullPath.Replace('"', '\"') + '"'))
         }
-        $elevated = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WorkingDirectory (Get-Location).Path `
-                    -ArgumentList ($forward -join ' ') -Wait -PassThru
+        try {
+            $elevated = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WorkingDirectory (Get-Location).Path `
+                        -ArgumentList ($forward -join ' ') -Wait -PassThru
+        } catch {
+            if ($reportFullPath) {
+                $reportParent = Split-Path -Parent $reportFullPath
+                if ($reportParent) { New-Item -ItemType Directory -Force $reportParent | Out-Null }
+                [ordered]@{
+                    runtimeDirectory = $runtime
+                    administrator = $false
+                    autoElevateRequested = $true
+                    elevationStarted = $false
+                    commandExitCode = $null
+                    progIdRegistered = $false
+                    elevationError = $_.Exception.Message
+                    checkedAt = (Get-Date).ToString('o')
+                } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $reportFullPath -Encoding utf8
+            }
+            throw
+        }
+        if ($reportFullPath -and -not (Test-Path -LiteralPath $reportFullPath)) {
+            $reportParent = Split-Path -Parent $reportFullPath
+            if ($reportParent) { New-Item -ItemType Directory -Force $reportParent | Out-Null }
+            [ordered]@{
+                runtimeDirectory = $runtime
+                administrator = $false
+                autoElevateRequested = $true
+                elevationStarted = $true
+                commandExitCode = $elevated.ExitCode
+                progIdRegistered = $false
+                elevationError = 'Elevated process returned without writing a verification report.'
+                checkedAt = (Get-Date).ToString('o')
+            } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $reportFullPath -Encoding utf8
+        }
         exit $elevated.ExitCode
     }
     throw 'Administrator token required. Open an elevated PowerShell and rerun this script.'
