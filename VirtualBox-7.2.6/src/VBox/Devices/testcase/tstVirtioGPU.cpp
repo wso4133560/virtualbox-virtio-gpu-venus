@@ -1527,6 +1527,32 @@ int main(int argc, char **argv)
                          VINF_SUCCESS);
     RTTESTI_CHECK(*(uint32_t *)pGpu->aResources[0].pvVkMapped == UINT32_C(0xcafebabe)
                   && *(uint32_t *)pGpu->aResources[0].pbPixels == UINT32_C(0xcafebabe));
+    VIRTIOGPUSETSCANOUTBLOB BlobMappableScanout = { 0, 0, 1, 1, 0, 14,
+                                                    VIRTIOGPU_FORMAT_B8G8R8X8_UNORM,
+                                                    1, 1, { 4, 0, 0, 0 }, { 0, 0, 0, 0 } };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SET_SCANOUT_BLOB, &BlobMappableScanout,
+                   sizeof(BlobMappableScanout), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && pGpu->aScanouts[0].uResourceId == 14);
+    *(uint32_t *)pGpu->pbSharedMemory = UINT32_C(0xfeedface);
+    struct { uint32_t x, y, w, h, id, padding; } BlobMappableFlush = { 0, 0, 1, 1, 14, 0 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_FLUSH, &BlobMappableFlush,
+                   sizeof(BlobMappableFlush), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA
+                  && *(uint32_t *)pGpu->aResources[1].pvVkMapped == UINT32_C(0xfeedface));
+    VIRTIOGPUSETSCANOUTBLOB BlobMappableScanoutDisable = { 0 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SET_SCANOUT_BLOB,
+                   &BlobMappableScanoutDisable, sizeof(BlobMappableScanoutDisable), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_UNMAP_BLOB, &MapBlob,
                    sizeof(MapBlob), 24);
