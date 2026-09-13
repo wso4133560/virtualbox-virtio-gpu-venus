@@ -2272,6 +2272,7 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                         Resp.Hdr.uType = VIRTIOGPU_RESP_OK_NODATA;
                     else
                     {
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
                         VIRTIOGPUUPDATECMD Update;
                         VIRTIOGPUCLEARCOLORCMD Clear;
                         VIRTIOGPUCOPYBUFFERTOIMAGECMD CopyBufferToImage;
@@ -2483,6 +2484,9 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                                 }
                             }
                         }
+#else
+                        Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
+#endif
                     }
                     RTMemFree(pbCommand);
                 }
@@ -2624,8 +2628,11 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                         for (unsigned i = 0; i < VIRTIOGPU_MAX_SCANOUTS; ++i)
                             if (pThis->aScanouts[i].uResourceId == Cmd.uResourceId)
                                 fScanout = true;
-                        int rcReadback = fScanout ? virtioGpuR3VulkanResourceReadbackImage(pThis, pRes)
-                                                  : VINF_SUCCESS;
+                        int rcReadback = VINF_SUCCESS;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                        if (fScanout)
+                            rcReadback = virtioGpuR3VulkanResourceReadbackImage(pThis, pRes);
+#endif
                         if (RT_FAILURE(rcReadback))
                             Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
                         else
