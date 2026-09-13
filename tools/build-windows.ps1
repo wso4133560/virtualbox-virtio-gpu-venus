@@ -12,6 +12,7 @@ param(
     [string]$XsltprocPath,
     [switch]$CheckOnly,
     [switch]$ConfigureOnly,
+    [switch]$ReuseConfig,
     [switch]$WithoutHardening,
     [switch]$EnableVirtioGpu,
     [switch]$EnableVirtioGpuVenus
@@ -72,38 +73,44 @@ if ($CheckOnly) { return }
 
 # configure.vbs normally overwrites tracked Linux configuration. Preserve bytes,
 # then move the Windows output to .build and pass AUTOCFG/LOCALCFG to kBuild.
-$snapshots = @{}
-foreach ($name in @('AutoConfig.kmk', 'configure.log', 'env.bat')) {
-    $path = Join-Path $sourceRoot $name
-    $snapshots[$path] = if (Test-Path $path) { [IO.File]::ReadAllBytes($path) } else { $null }
-}
 $q = [char]34
 $autoConfig = Join-Path $buildRoot 'AutoConfig.kmk'
 $localConfig = Join-Path $buildRoot 'LocalConfig.kmk'
 $envFile = Join-Path $buildRoot 'env.bat'
-try {
-    $vcRoot = Join-Path $VisualStudioRoot 'VC'
-    $configure = "cscript //nologo configure.vbs --target-arch=amd64 --disable-sdl --disable-additions --disable-pylint --with-vc=$q$vcRoot$q --with-sdk10=$q$SdkRoot$q --with-midl=$q$midl$q --with-yasm=$q$YasmPath$q --with-nasm=$q$NasmPath$q"
-    & cmd.exe /d /s /c "call $q$vcvars$q && cd /d $q$sourceRoot$q && $configure" > (Join-Path $buildRoot 'configure-output.log') 2>&1
-    $configureExit = $LASTEXITCODE
-    $configureOutput = Get-Content (Join-Path $buildRoot 'configure-output.log') -Raw
-    if ($configureExit -ne 0 -or $configureOutput -notmatch 'Execute env.bat once before you start to build VBox:') {
-        Get-Content (Join-Path $buildRoot 'configure-output.log') -Tail 35
-        throw "Configure failed (exit $configureExit). See .build/windows/configure-output.log."
+if ($ReuseConfig) {
+    Require-File $autoConfig 'reusable Windows AutoConfig.kmk'
+    Require-File $envFile 'reusable Windows env.bat'
+    Write-Host "Reusing Windows configuration: $buildRoot"
+} else {
+    $snapshots = @{}
+    foreach ($name in @('AutoConfig.kmk', 'configure.log', 'env.bat')) {
+        $path = Join-Path $sourceRoot $name
+        $snapshots[$path] = if (Test-Path $path) { [IO.File]::ReadAllBytes($path) } else { $null }
     }
-    $generatedConfig = Get-Content (Join-Path $sourceRoot 'AutoConfig.kmk') -Raw
-    foreach ($required in @('VBOX_VCC_TOOL_STEM\s*:= VCC143', 'PATH_TOOL_VCC143\s*:= .+', 'VBOX_MAIN_IDL\s*:= .+', 'PATH_TOOL_YASM\s*:= .+')) {
-        if ($generatedConfig -notmatch $required) { throw "Incomplete Windows configuration: missing $required" }
-    }
-    if ($generatedConfig -notmatch "SDK_WINSDK10_VERSION\s*:= $([regex]::Escape($SdkVersion))\s") {
-        throw "Configure selected an SDK other than the requested $SdkVersion."
-    }
-    Copy-Item (Join-Path $sourceRoot 'AutoConfig.kmk') $autoConfig -Force
-    Copy-Item (Join-Path $sourceRoot 'env.bat') $envFile -Force
-} finally {
-    foreach ($path in $snapshots.Keys) {
-        if ($null -ne $snapshots[$path]) { [IO.File]::WriteAllBytes($path, $snapshots[$path]) }
-        elseif (Test-Path $path) { Remove-Item -LiteralPath $path -Force }
+    try {
+        $vcRoot = Join-Path $VisualStudioRoot 'VC'
+        $configure = "cscript //nologo configure.vbs --target-arch=amd64 --disable-sdl --disable-additions --disable-pylint --with-vc=$q$vcRoot$q --with-sdk10=$q$SdkRoot$q --with-midl=$q$midl$q --with-yasm=$q$YasmPath$q --with-nasm=$q$NasmPath$q"
+        & cmd.exe /d /s /c "call $q$vcvars$q && cd /d $q$sourceRoot$q && $configure" > (Join-Path $buildRoot 'configure-output.log') 2>&1
+        $configureExit = $LASTEXITCODE
+        $configureOutput = Get-Content (Join-Path $buildRoot 'configure-output.log') -Raw
+        if ($configureExit -ne 0 -or $configureOutput -notmatch 'Execute env.bat once before you start to build VBox:') {
+            Get-Content (Join-Path $buildRoot 'configure-output.log') -Tail 35
+            throw "Configure failed (exit $configureExit). See .build/windows/configure-output.log."
+        }
+        $generatedConfig = Get-Content (Join-Path $sourceRoot 'AutoConfig.kmk') -Raw
+        foreach ($required in @('VBOX_VCC_TOOL_STEM\s*:= VCC143', 'PATH_TOOL_VCC143\s*:= .+', 'VBOX_MAIN_IDL\s*:= .+', 'PATH_TOOL_YASM\s*:= .+')) {
+            if ($generatedConfig -notmatch $required) { throw "Incomplete Windows configuration: missing $required" }
+        }
+        if ($generatedConfig -notmatch "SDK_WINSDK10_VERSION\s*:= $([regex]::Escape($SdkVersion))\s") {
+            throw "Configure selected an SDK other than the requested $SdkVersion."
+        }
+        Copy-Item (Join-Path $sourceRoot 'AutoConfig.kmk') $autoConfig -Force
+        Copy-Item (Join-Path $sourceRoot 'env.bat') $envFile -Force
+    } finally {
+        foreach ($path in $snapshots.Keys) {
+            if ($null -ne $snapshots[$path]) { [IO.File]::WriteAllBytes($path, $snapshots[$path]) }
+            elseif (Test-Path $path) { Remove-Item -LiteralPath $path -Force }
+        }
     }
 }
 $local = @(
