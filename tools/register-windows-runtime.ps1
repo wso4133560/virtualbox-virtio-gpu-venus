@@ -2,7 +2,8 @@
 param(
     [string]$RuntimeDirectory,
     [switch]$NoProxy,
-    [string]$ReportPath
+    [string]$ReportPath,
+    [switch]$AutoElevate
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,6 +22,14 @@ $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
+    if ($AutoElevate) {
+        $forward = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $PSCommandPath.Replace('"', '\"') + '"'))
+        $forward += @('-RuntimeDirectory', ('"' + $runtime.Replace('"', '\"') + '"'))
+        if ($NoProxy) { $forward += '-NoProxy' }
+        if ($ReportPath) { $forward += @('-ReportPath', ('"' + $ReportPath.Replace('"', '\"') + '"')) }
+        $elevated = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList ($forward -join ' ') -Wait -PassThru
+        exit $elevated.ExitCode
+    }
     throw 'Administrator token required. Open an elevated PowerShell and rerun this script.'
 }
 
