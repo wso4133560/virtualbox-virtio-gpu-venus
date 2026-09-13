@@ -1822,6 +1822,63 @@ static int virtioGpuR3VulkanUpdateBuffer(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pR
 # undef VK_UPDATE_PROC
 }
 
+static int virtioGpuR3VulkanUpdateBufferBatch(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes,
+                                               const VIRTIOGPUUPDATECMD *paUpdate, uint32_t cUpdate)
+{
+    if (!cUpdate || !paUpdate || !pRes->fVulkanBuffer || !pThis->fVulkanQueue || !pThis->fVulkanSubmit)
+        return VERR_INVALID_PARAMETER;
+    int rcEnsure = virtioGpuR3VulkanResourceEnsureBuffer(pThis, pRes);
+    if (RT_FAILURE(rcEnsure))
+        return rcEnsure;
+    for (uint32_t i = 0; i < cUpdate; ++i)
+        if (!paUpdate[i].pbData || !paUpdate[i].cbData || paUpdate[i].cbData > UINT32_C(65536)
+            || (paUpdate[i].cbData & 3) || paUpdate[i].offBuffer > pRes->cbPixels
+            || paUpdate[i].cbData > pRes->cbPixels - paUpdate[i].offBuffer)
+            return VERR_INVALID_PARAMETER;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr =
+        (PFN_vkGetDeviceProcAddr)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance, "vkGetDeviceProcAddr");
+    if (!pfnGetDeviceProcAddr)
+        return VERR_NOT_FOUND;
+# define VK_UPDATE_BATCH_PROC(type, name) (type)pfnGetDeviceProcAddr(pThis->hVkDevice, name)
+    PFN_vkResetCommandBuffer pfnResetCommandBuffer = VK_UPDATE_BATCH_PROC(PFN_vkResetCommandBuffer, "vkResetCommandBuffer");
+    PFN_vkBeginCommandBuffer pfnBeginCommandBuffer = VK_UPDATE_BATCH_PROC(PFN_vkBeginCommandBuffer, "vkBeginCommandBuffer");
+    PFN_vkEndCommandBuffer pfnEndCommandBuffer = VK_UPDATE_BATCH_PROC(PFN_vkEndCommandBuffer, "vkEndCommandBuffer");
+    PFN_vkCmdUpdateBuffer pfnCmdUpdateBuffer = VK_UPDATE_BATCH_PROC(PFN_vkCmdUpdateBuffer, "vkCmdUpdateBuffer");
+    PFN_vkResetFences pfnResetFences = VK_UPDATE_BATCH_PROC(PFN_vkResetFences, "vkResetFences");
+    PFN_vkQueueSubmit pfnQueueSubmit = VK_UPDATE_BATCH_PROC(PFN_vkQueueSubmit, "vkQueueSubmit");
+    PFN_vkWaitForFences pfnWaitForFences = VK_UPDATE_BATCH_PROC(PFN_vkWaitForFences, "vkWaitForFences");
+    if (!pfnResetCommandBuffer || !pfnBeginCommandBuffer || !pfnEndCommandBuffer || !pfnCmdUpdateBuffer
+        || !pfnResetFences || !pfnQueueSubmit || !pfnWaitForFences)
+        return VERR_NOT_FOUND;
+    VkCommandBuffer hCmd = pThis->hVkSubmitCommandBuffer;
+    VkFence hFence = pThis->hVkSubmitFence;
+    VkCommandBufferBeginInfo BeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
+                                           VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, NULL };
+    VkSubmitInfo SubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, 0, NULL, NULL, 1, &hCmd, 0, NULL };
+    if (pfnResetFences(pThis->hVkDevice, 1, &hFence) != VK_SUCCESS
+        || pfnResetCommandBuffer(hCmd, 0) != VK_SUCCESS
+        || pfnBeginCommandBuffer(hCmd, &BeginInfo) != VK_SUCCESS)
+        return VERR_NOT_SUPPORTED;
+    for (uint32_t i = 0; i < cUpdate; ++i)
+        pfnCmdUpdateBuffer(hCmd, pRes->hVkBuffer, paUpdate[i].offBuffer, paUpdate[i].cbData, paUpdate[i].pbData);
+    if (pfnEndCommandBuffer(hCmd) != VK_SUCCESS
+        || pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, hFence) != VK_SUCCESS
+        || pfnWaitForFences(pThis->hVkDevice, 1, &hFence, VK_TRUE, UINT64_C(1000000000)) != VK_SUCCESS)
+        return VERR_NOT_SUPPORTED;
+    int rcInvalidate = virtioGpuR3VulkanResourceMemoryOp(pThis, pRes, true);
+    if (RT_FAILURE(rcInvalidate))
+        return rcInvalidate;
+    for (uint32_t i = 0; i < cUpdate; ++i)
+    {
+        if (memcmp((uint8_t *)pRes->pvVkMapped + paUpdate[i].offBuffer, paUpdate[i].pbData,
+                   (size_t)paUpdate[i].cbData) != 0)
+            return VERR_MISMATCH;
+        memcpy(pRes->pbPixels + paUpdate[i].offBuffer, paUpdate[i].pbData, (size_t)paUpdate[i].cbData);
+    }
+    return virtioGpuR3VulkanResourceSyncImage(pThis, pRes);
+# undef VK_UPDATE_BATCH_PROC
+}
+
 static int virtioGpuR3VulkanCopyBufferBatch(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pSrc,
                                              PVIRTIOGPURESOURCE pDst, const VIRTIOGPUCOPYCMD *paCopy,
                                              uint32_t cCopy)
@@ -2410,6 +2467,43 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                         VIRTIOGPUPIPELINEBARRIERCMD PipelineBarrier;
                         VIRTIOGPUCOPYIMAGECMD CopyImage;
                         PVIRTIOGPURESOURCE pUpdateRes = NULL;
+                        VIRTIOGPUUPDATECMD aUpdate[256];
+                        PVIRTIOGPURESOURCE pUpdateBatchRes = NULL;
+                        uint32_t cUpdateBatch = 0;
+                        size_t offUpdateBatch = 0;
+                        bool fUpdateBatchValid = Cmd.cbCommand >= 96;
+                        while (fUpdateBatchValid && offUpdateBatch < Cmd.cbCommand && cUpdateBatch < RT_ELEMENTS(aUpdate))
+                        {
+                            size_t const cbRemaining = Cmd.cbCommand - offUpdateBatch;
+                            if (cbRemaining < 48)
+                                break;
+                            uint64_t cbData = 0;
+                            memcpy(&cbData, pbCommand + offUpdateBatch + 32, sizeof(cbData));
+                            size_t const cbOne = cbData <= UINT32_MAX
+                                               ? 48 + (size_t)((cbData + 3) & ~UINT64_C(3)) : 0;
+                            if (!cbOne || cbOne > cbRemaining
+                                || !virtioGpuR3DecodeUpdateBuffer(pbCommand + offUpdateBatch, cbOne,
+                                                                   &aUpdate[cUpdateBatch])
+                                || aUpdate[cUpdateBatch].uBuffer > UINT32_MAX
+                                || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)aUpdate[cUpdateBatch].uBuffer))
+                                break;
+                            PVIRTIOGPURESOURCE const pCurRes =
+                                virtioGpuR3FindResource(pThis, (uint32_t)aUpdate[cUpdateBatch].uBuffer);
+                            if (!pCurRes || (pUpdateBatchRes && pUpdateBatchRes != pCurRes))
+                                break;
+                            pUpdateBatchRes = pCurRes;
+                            offUpdateBatch += cbOne;
+                            ++cUpdateBatch;
+                        }
+                        if (offUpdateBatch != Cmd.cbCommand || cUpdateBatch < 2)
+                            fUpdateBatchValid = false;
+                        if (fUpdateBatchValid)
+                        {
+                            Resp.Hdr.uType = RT_SUCCESS(virtioGpuR3VulkanUpdateBufferBatch(pThis, pUpdateBatchRes,
+                                                                                              aUpdate, cUpdateBatch))
+                                           ? VIRTIOGPU_RESP_OK_NODATA : VIRTIOGPU_RESP_ERR_UNSPEC;
+                        }
+                        else
                         if (virtioGpuR3DecodeUpdateBuffer(pbCommand, Cmd.cbCommand, &Update))
                         {
                             if (Update.uBuffer > UINT32_MAX
