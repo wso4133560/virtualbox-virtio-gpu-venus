@@ -887,6 +887,49 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
     RTTESTI_CHECK_RC(virtioGpuR3VulkanResourceReadbackImage(pGpu, &pGpu->aResources[1]), VINF_SUCCESS);
     RTTESTI_CHECK(!memcmp(pGpu->aResources[1].pbPixels, pGpu->aResources[0].pbPixels, sizeof(abPixels)));
+    RTTestSub(g_hTest, "Venus vkCmdBlitImage2 execution");
+    uint8_t abBlitImage2SubmitCommand[184] = { 0 };
+    uint32_t uBlitImage2SubmitType = 211;
+    uint64_t uBlitImage2SubmitInfoPtr = 1;
+    uint32_t uBlitImage2SubmitInfoType = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2;
+    uint64_t uBlitImage2SubmitSrc = 7;
+    uint64_t uBlitImage2SubmitDst = 11;
+    uint32_t uBlitImage2SubmitCount = 1;
+    uint64_t uBlitImage2SubmitArrayCount = 1;
+    uint32_t uBlitImage2SubmitRegionType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2;
+    uint64_t uBlitImage2SubmitOffsetCount = 2;
+    uint32_t uBlitImage2SubmitFilter = VK_FILTER_NEAREST;
+    int32_t aiBlitImage2SubmitOffsets[2][3] = { { 0, 0, 0 }, { 2, 2, 1 } };
+    memcpy(abBlitImage2SubmitCommand + 0, &uBlitImage2SubmitType, sizeof(uBlitImage2SubmitType));
+    memcpy(abBlitImage2SubmitCommand + 8, &uImageCopySubmitCommandBuffer, sizeof(uImageCopySubmitCommandBuffer));
+    memcpy(abBlitImage2SubmitCommand + 16, &uBlitImage2SubmitInfoPtr, sizeof(uBlitImage2SubmitInfoPtr));
+    memcpy(abBlitImage2SubmitCommand + 24, &uBlitImage2SubmitInfoType, sizeof(uBlitImage2SubmitInfoType));
+    memcpy(abBlitImage2SubmitCommand + 36, &uBlitImage2SubmitSrc, sizeof(uBlitImage2SubmitSrc));
+    memcpy(abBlitImage2SubmitCommand + 44, &uImageCopySubmitSrcLayout, sizeof(uImageCopySubmitSrcLayout));
+    memcpy(abBlitImage2SubmitCommand + 48, &uBlitImage2SubmitDst, sizeof(uBlitImage2SubmitDst));
+    memcpy(abBlitImage2SubmitCommand + 56, &uImageCopySubmitDstLayout, sizeof(uImageCopySubmitDstLayout));
+    memcpy(abBlitImage2SubmitCommand + 60, &uBlitImage2SubmitCount, sizeof(uBlitImage2SubmitCount));
+    memcpy(abBlitImage2SubmitCommand + 64, &uBlitImage2SubmitArrayCount, sizeof(uBlitImage2SubmitArrayCount));
+    memcpy(abBlitImage2SubmitCommand + 72, &uBlitImage2SubmitRegionType, sizeof(uBlitImage2SubmitRegionType));
+    memcpy(abBlitImage2SubmitCommand + 84, auImageCopySubmitSrcSubresource, sizeof(auImageCopySubmitSrcSubresource));
+    memcpy(abBlitImage2SubmitCommand + 100, &uBlitImage2SubmitOffsetCount, sizeof(uBlitImage2SubmitOffsetCount));
+    memcpy(abBlitImage2SubmitCommand + 108, aiBlitImage2SubmitOffsets, sizeof(aiBlitImage2SubmitOffsets));
+    memcpy(abBlitImage2SubmitCommand + 132, auImageCopySubmitDstSubresource, sizeof(auImageCopySubmitDstSubresource));
+    memcpy(abBlitImage2SubmitCommand + 148, &uBlitImage2SubmitOffsetCount, sizeof(uBlitImage2SubmitOffsetCount));
+    memcpy(abBlitImage2SubmitCommand + 156, aiBlitImage2SubmitOffsets, sizeof(aiBlitImage2SubmitOffsets));
+    memcpy(abBlitImage2SubmitCommand + 180, &uBlitImage2SubmitFilter, sizeof(uBlitImage2SubmitFilter));
+    struct { VIRTIOGPUSUBMIT3D Hdr; uint32_t auResourceIds[2]; uint8_t abCommand[184]; }
+        SubmitBlitImage2 = { { 184, 2 }, { 7, 11 }, { 0 } };
+    memcpy(SubmitBlitImage2.abCommand, abBlitImage2SubmitCommand, sizeof(abBlitImage2SubmitCommand));
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SUBMIT_3D, &SubmitBlitImage2,
+                   sizeof(SubmitBlitImage2), 24, 43);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
+    RTTESTI_CHECK_RC(virtioGpuR3VulkanResourceReadbackImage(pGpu, &pGpu->aResources[1]), VINF_SUCCESS);
+    RTTESTI_CHECK(!memcmp(pGpu->aResources[1].pbPixels, pGpu->aResources[0].pbPixels, sizeof(abPixels)));
     virtioGpuR3VulkanResourceDestroy(pGpu, &pGpu->aResources[1]);
     RTTESTI_CHECK_RC(virtioGpuR3VulkanResourceCreate(pGpu, &pGpu->aResources[1]), VINF_SUCCESS);
     RTTESTI_CHECK(pGpu->aResources[1].fVulkanImage);
@@ -1461,6 +1504,69 @@ int main(int argc, char **argv)
                   && CopyImages2.uCommandBuffer == uCopyImagesCommandBuffer
                   && CopyImages2.uSrcImage == uCopyImages2Src && CopyImages2.uDstImage == uCopyImages2Dst
                   && CopyImages2.cbRegionStride == 80);
+    uint8_t abBlitImage2Command[184] = { 0 };
+    uint32_t uBlitImage2Type = 211;
+    uint64_t uBlitImage2InfoPtr = 1;
+    uint32_t uBlitImage2InfoType = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2;
+    uint64_t uBlitImage2Src = 7;
+    uint64_t uBlitImage2Dst = 11;
+    uint32_t uBlitImage2Count = 1;
+    uint64_t uBlitImage2ArrayCount = 1;
+    uint32_t uBlitImage2RegionType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2;
+    uint64_t uBlitImage2OffsetCount = 2;
+    uint32_t uBlitImage2Filter = VK_FILTER_NEAREST;
+    int32_t aiBlitImage2Offsets[2][3] = { { 0, 0, 0 }, { 2, 2, 1 } };
+    memcpy(abBlitImage2Command + 0, &uBlitImage2Type, sizeof(uBlitImage2Type));
+    memcpy(abBlitImage2Command + 8, &uCopyImagesCommandBuffer, sizeof(uCopyImagesCommandBuffer));
+    memcpy(abBlitImage2Command + 16, &uBlitImage2InfoPtr, sizeof(uBlitImage2InfoPtr));
+    memcpy(abBlitImage2Command + 24, &uBlitImage2InfoType, sizeof(uBlitImage2InfoType));
+    memcpy(abBlitImage2Command + 36, &uBlitImage2Src, sizeof(uBlitImage2Src));
+    memcpy(abBlitImage2Command + 44, &uCopyImagesSrcLayout, sizeof(uCopyImagesSrcLayout));
+    memcpy(abBlitImage2Command + 48, &uBlitImage2Dst, sizeof(uBlitImage2Dst));
+    memcpy(abBlitImage2Command + 56, &uCopyImagesDstLayout, sizeof(uCopyImagesDstLayout));
+    memcpy(abBlitImage2Command + 60, &uBlitImage2Count, sizeof(uBlitImage2Count));
+    memcpy(abBlitImage2Command + 64, &uBlitImage2ArrayCount, sizeof(uBlitImage2ArrayCount));
+    memcpy(abBlitImage2Command + 72, &uBlitImage2RegionType, sizeof(uBlitImage2RegionType));
+    memcpy(abBlitImage2Command + 84, auCopyImagesSrcSubresource, sizeof(auCopyImagesSrcSubresource));
+    memcpy(abBlitImage2Command + 100, &uBlitImage2OffsetCount, sizeof(uBlitImage2OffsetCount));
+    memcpy(abBlitImage2Command + 108, aiBlitImage2Offsets, sizeof(aiBlitImage2Offsets));
+    memcpy(abBlitImage2Command + 132, auCopyImagesDstSubresource, sizeof(auCopyImagesDstSubresource));
+    memcpy(abBlitImage2Command + 148, &uBlitImage2OffsetCount, sizeof(uBlitImage2OffsetCount));
+    memcpy(abBlitImage2Command + 156, aiBlitImage2Offsets, sizeof(aiBlitImage2Offsets));
+    memcpy(abBlitImage2Command + 180, &uBlitImage2Filter, sizeof(uBlitImage2Filter));
+    VIRTIOGPUBLITIMAGECMD BlitImage2;
+    RTTESTI_CHECK(virtioGpuR3DecodeBlitImage2(abBlitImage2Command, sizeof(abBlitImage2Command), &BlitImage2)
+                  && BlitImage2.uCommandBuffer == uCopyImagesCommandBuffer
+                  && BlitImage2.uSrcImage == uBlitImage2Src && BlitImage2.uDstImage == uBlitImage2Dst
+                  && BlitImage2.cbRegionStride == 108 && BlitImage2.enmFilter == VK_FILTER_NEAREST);
+    uint8_t abBlitImageCommand[152] = { 0 };
+    uint32_t uBlitImageType = 114;
+    uint64_t uBlitImageSrc = 7;
+    uint64_t uBlitImageDst = 11;
+    uint32_t uBlitImageCount = 1;
+    uint64_t uBlitImageRegions = 96;
+    uint64_t uBlitImageOffsetCount = 2;
+    uint32_t uBlitImageFilter = VK_FILTER_LINEAR;
+    memcpy(abBlitImageCommand + 0, &uBlitImageType, sizeof(uBlitImageType));
+    memcpy(abBlitImageCommand + 8, &uCopyImagesCommandBuffer, sizeof(uCopyImagesCommandBuffer));
+    memcpy(abBlitImageCommand + 16, &uBlitImageSrc, sizeof(uBlitImageSrc));
+    memcpy(abBlitImageCommand + 24, &uCopyImagesSrcLayout, sizeof(uCopyImagesSrcLayout));
+    memcpy(abBlitImageCommand + 28, &uBlitImageDst, sizeof(uBlitImageDst));
+    memcpy(abBlitImageCommand + 36, &uCopyImagesDstLayout, sizeof(uCopyImagesDstLayout));
+    memcpy(abBlitImageCommand + 40, &uBlitImageCount, sizeof(uBlitImageCount));
+    memcpy(abBlitImageCommand + 44, &uBlitImageRegions, sizeof(uBlitImageRegions));
+    memcpy(abBlitImageCommand + 52, auCopyImagesSrcSubresource, sizeof(auCopyImagesSrcSubresource));
+    memcpy(abBlitImageCommand + 68, &uBlitImageOffsetCount, sizeof(uBlitImageOffsetCount));
+    memcpy(abBlitImageCommand + 76, aiBlitImage2Offsets, sizeof(aiBlitImage2Offsets));
+    memcpy(abBlitImageCommand + 100, auCopyImagesDstSubresource, sizeof(auCopyImagesDstSubresource));
+    memcpy(abBlitImageCommand + 116, &uBlitImageOffsetCount, sizeof(uBlitImageOffsetCount));
+    memcpy(abBlitImageCommand + 124, aiBlitImage2Offsets, sizeof(aiBlitImage2Offsets));
+    memcpy(abBlitImageCommand + 148, &uBlitImageFilter, sizeof(uBlitImageFilter));
+    VIRTIOGPUBLITIMAGECMD BlitImage;
+    RTTESTI_CHECK(virtioGpuR3DecodeBlitImage(abBlitImageCommand, sizeof(abBlitImageCommand), &BlitImage)
+                  && BlitImage.uCommandBuffer == uCopyImagesCommandBuffer
+                  && BlitImage.uSrcImage == uBlitImageSrc && BlitImage.uDstImage == uBlitImageDst
+                  && BlitImage.cbRegionStride == 96 && BlitImage.enmFilter == VK_FILTER_LINEAR);
     uint8_t abCopyBufferToImage2Command[136] = { 0 };
     uint32_t uCopyBufferToImage2Type = 209;
     uint32_t uCopyBufferToImage2InfoType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2;
