@@ -332,6 +332,7 @@ typedef enum VIRTIOVMSTATECHANGED
 #define VIRTIO_PCI_CAP_DEVICE_CFG                       4        /**< Device-specific PCI cfg capability ID     */
 #define VIRTIO_PCI_CAP_PCI_CFG                          5        /**< PCI CFG capability ID                     */
 #define VIRTIO_PCI_CAP_SHARED_MEMORY_CFG                8        /**< Shared memory capability ID              */
+#define VIRTIO_PCI_SHM_ID_HOST_VISIBLE                  0        /**< Host-visible shared memory region       */
 
 #define VIRTIO_PCI_CAP_ID_VENDOR                     0x09        /**< Vendor-specific PCI CFG Device Cap. ID    */
 
@@ -418,6 +419,8 @@ typedef struct virtio_pci_shm_cap
     struct virtio_pci_cap pciCap;
     uint32_t uOffsetHi;
     uint32_t uLengthHi;
+    uint8_t  uId;
+    uint8_t  abPadding[3];
 } VIRTIO_PCI_SHM_CAP_T, *PVIRTIO_PCI_SHM_CAP_T;
 
 /**

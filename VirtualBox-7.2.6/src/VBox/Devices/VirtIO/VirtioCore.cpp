@@ -3186,6 +3186,8 @@ static int virtioR3PciTransportInit(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, PVI
         pShm->pciCap.uLength  = pPciParams->cbSharedMemory;
         pShm->uOffsetHi       = 0;
         pShm->uLengthHi       = 0;
+        pShm->uId             = VIRTIO_PCI_SHM_ID_HOST_VISIBLE;
+        RT_ZERO(pShm->abPadding);
         rc = PDMDevHlpPCIIORegionCreateMmio2(pDevIns, VIRTIO_REGION_PCI_SHARED,
                                              pPciParams->cbSharedMemory, PCI_ADDRESS_SPACE_MEM_PREFETCH,
                                              pcszInstance, pPciParams->ppvSharedMemory, pPciParams->phSharedMemory);
