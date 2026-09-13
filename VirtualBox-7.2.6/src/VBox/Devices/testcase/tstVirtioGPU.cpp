@@ -232,6 +232,17 @@ int main(int argc, char **argv)
                   && pGpu->fVulkanMemory && pGpu->VkMemoryProperties.memoryTypeCount != 0
                   && pGpu->hVkPhysicalDevice != VK_NULL_HANDLE && pGpu->hVkDevice != VK_NULL_HANDLE
                   && pGpu->hVkQueue != VK_NULL_HANDLE);
+    VkDeviceSize cbDeviceLocal = 0;
+    for (uint32_t i = 0; i < pGpu->VkMemoryProperties.memoryHeapCount; ++i)
+        if (pGpu->VkMemoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+            cbDeviceLocal += pGpu->VkMemoryProperties.memoryHeaps[i].size;
+    RTTestIPrintf(RTTESTLVL_ALWAYS, "host Vulkan device: %s\n", pGpu->VkProperties.deviceName);
+    RTTestIPrintf(RTTESTLVL_ALWAYS, "host Vulkan api: %u.%u.%u memoryTypes=%u deviceLocalMiB=%llu\n",
+                  VK_VERSION_MAJOR(pGpu->VkProperties.apiVersion), VK_VERSION_MINOR(pGpu->VkProperties.apiVersion),
+                  VK_VERSION_PATCH(pGpu->VkProperties.apiVersion), pGpu->VkMemoryProperties.memoryTypeCount,
+                  (unsigned long long)(cbDeviceLocal / _1M));
+    RTTestIPrintf(RTTESTLVL_ALWAYS, "host Vulkan external handles: memory=%RTbool semaphore=%RTbool\n",
+                  pGpu->fVulkanExternalMemory, pGpu->fVulkanExternalSemaphore);
     RTTestSub(g_hTest, "host Vulkan queue execution probe");
     rc = virtioGpuR3VulkanProbeQueue(pGpu);
     RTTESTI_CHECK_RC(rc, VINF_SUCCESS);

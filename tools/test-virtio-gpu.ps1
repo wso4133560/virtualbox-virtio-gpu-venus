@@ -40,6 +40,20 @@ try {
 Write-Host $text
 $passed = -not $timedOut -and $testExit -eq 0 -and $text -match '(?m)^tstVirtioGPU: SUCCESS\s*$'
 $groups = @([regex]::Matches($text, '(?m)^tstVirtioGPU: (.+?)\s+: PASSED\s*$') | ForEach-Object { $_.Groups[1].Value.Trim() })
+$hostVulkan = $null
+$hostVulkanDeviceMatch = [regex]::Match($text, '(?m)^(?:tstVirtioGPU: )?host Vulkan device: (?<name>.+?)\s*$')
+$hostVulkanApiMatch = [regex]::Match($text, '(?m)^(?:tstVirtioGPU: )?host Vulkan api: (?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+) memoryTypes=(?<memoryTypes>\d+) deviceLocalMiB=(?<deviceLocalMiB>\d+)\s*$')
+$hostVulkanHandlesMatch = [regex]::Match($text, '(?m)^(?:tstVirtioGPU: )?host Vulkan external handles: memory=(?<externalMemory>\w+) semaphore=(?<externalSemaphore>\w+)\s*$')
+if ($hostVulkanDeviceMatch.Success -and $hostVulkanApiMatch.Success -and $hostVulkanHandlesMatch.Success) {
+    $hostVulkan = [ordered]@{
+        deviceName = $hostVulkanDeviceMatch.Groups['name'].Value
+        apiVersion = "$($hostVulkanApiMatch.Groups['major'].Value).$($hostVulkanApiMatch.Groups['minor'].Value).$($hostVulkanApiMatch.Groups['patch'].Value)"
+        memoryTypes = [int]$hostVulkanApiMatch.Groups['memoryTypes'].Value
+        deviceLocalMiB = [uint64]$hostVulkanApiMatch.Groups['deviceLocalMiB'].Value
+        externalMemory = $hostVulkanHandlesMatch.Groups['externalMemory'].Value -in @('true', 'TRUE', '1')
+        externalSemaphore = $hostVulkanHandlesMatch.Groups['externalSemaphore'].Value -in @('true', 'TRUE', '1')
+    }
+}
 $artifacts = @($exe, $module) | ForEach-Object {
     [ordered]@{ path = [IO.Path]::GetRelativePath($repoRoot, $_); sha256 = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash }
 }
@@ -50,6 +64,7 @@ $report = [ordered]@{
     exitCode = $testExit
     timedOut = $timedOut
     passedGroups = $groups
+    hostVulkan = $hostVulkan
     artifacts = @($artifacts)
     guestBootVerified = $false
     displayVerified = $false
