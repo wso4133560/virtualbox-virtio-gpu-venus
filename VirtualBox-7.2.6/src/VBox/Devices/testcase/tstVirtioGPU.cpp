@@ -1765,7 +1765,7 @@ int main(int argc, char **argv)
     virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     RTTESTI_CHECK(pGpu->aResources[1].fSharedMemory && pGpu->aResources[1].pbPixels == pGpu->pbSharedMemory);
-    VIRTIOGPURESOURCEMAPBLOB MapBlob = { { VIRTIOGPU_CMD_RESOURCE_MAP_BLOB, 0, 0, 0, 0 }, 14, 0 };
+    struct { uint32_t uResourceId, uPadding; } MapBlob = { 14, 0 };
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_MAP_BLOB, &MapBlob,
                    sizeof(MapBlob), sizeof(VIRTIOGPURESPMAPINFO));
@@ -1813,6 +1813,122 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && !pGpu->aResources[1].fMapped);
+    RTTestSub(g_hTest, "Venus ring metadata, reply stream and progress");
+    VIRTIOGPURESOURCECREATEBLOB RingBlob = { 15, VIRTIOGPU_BLOB_MEM_HOST3D,
+                                             VIRTIOGPU_BLOB_FLAG_USE_MAPPABLE, 0,
+                                             UINT64_C(0x9abd), 4096 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_CREATE_BLOB, &RingBlob,
+                   sizeof(RingBlob), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    PVIRTIOGPURESOURCE pRingRes = virtioGpuR3FindResource(pGpu, 15);
+    RTTESTI_CHECK(pRingRes && pRingRes->fSharedMemory && pRingRes->pbPixels);
+    uint8_t abCreateRing[124] = { 0 };
+    uint32_t uCreateRingType = VIRTIOGPU_VK_CMD_CREATE_RING;
+    uint64_t uTestRing = UINT64_C(0xfeed1234);
+    uint64_t fCreateInfo = 1;
+    uint32_t uCreateSType = VIRTIOGPU_VK_STRUCTURE_TYPE_RING_CREATE_INFO;
+    uint32_t uCreateResource = 15;
+    uint64_t uCreateSize = 4096;
+    uint64_t uCreateIdleTimeout = 5000000;
+    uint64_t uCreateHead = 0, uCreateTail = 64, uCreateStatus = 128;
+    uint64_t uCreateBuffer = 192, uCreateBufferSize = 1024;
+    uint64_t uCreateExtra = 1216, uCreateExtraSize = 128;
+    memcpy(abCreateRing + 0, &uCreateRingType, sizeof(uCreateRingType));
+    memcpy(abCreateRing + 8, &uTestRing, sizeof(uTestRing));
+    memcpy(abCreateRing + 16, &fCreateInfo, sizeof(fCreateInfo));
+    memcpy(abCreateRing + 24, &uCreateSType, sizeof(uCreateSType));
+    memcpy(abCreateRing + 36 + 4, &uCreateResource, sizeof(uCreateResource));
+    memcpy(abCreateRing + 36 + 16, &uCreateSize, sizeof(uCreateSize));
+    memcpy(abCreateRing + 36 + 24, &uCreateIdleTimeout, sizeof(uCreateIdleTimeout));
+    memcpy(abCreateRing + 36 + 32, &uCreateHead, sizeof(uCreateHead));
+    memcpy(abCreateRing + 36 + 40, &uCreateTail, sizeof(uCreateTail));
+    memcpy(abCreateRing + 36 + 48, &uCreateStatus, sizeof(uCreateStatus));
+    memcpy(abCreateRing + 36 + 56, &uCreateBuffer, sizeof(uCreateBuffer));
+    memcpy(abCreateRing + 36 + 64, &uCreateBufferSize, sizeof(uCreateBufferSize));
+    memcpy(abCreateRing + 36 + 72, &uCreateExtra, sizeof(uCreateExtra));
+    memcpy(abCreateRing + 36 + 80, &uCreateExtraSize, sizeof(uCreateExtraSize));
+    VIRTIOGPUDISPLAYRESP RingResp;
+    RT_ZERO(RingResp);
+    RTTESTI_CHECK(virtioGpuR3HandleVenusRingCommand(pGpu, abCreateRing, sizeof(abCreateRing),
+                                                    &RingResp, NULL));
+    PVIRTIOGPURING pTestRing = virtioGpuR3FindRing(pGpu, uTestRing);
+    RTTESTI_CHECK(pTestRing && pTestRing->uResourceId == 15 && pTestRing->offBuffer == 192
+                  && pTestRing->cbBuffer == 1024 && pTestRing->offExtra == 1216
+                  && pTestRing->cbExtra == 128);
+    uint8_t abSetReply[36] = { 0 };
+    uint32_t uSetReplyType = VIRTIOGPU_VK_CMD_SET_REPLY_STREAM;
+    uint64_t fReplyStream = 1;
+    uint64_t uReplyOffset = 2048, uReplySize = 64;
+    memcpy(abSetReply + 0, &uSetReplyType, sizeof(uSetReplyType));
+    memcpy(abSetReply + 8, &fReplyStream, sizeof(fReplyStream));
+    memcpy(abSetReply + 16, &uCreateResource, sizeof(uCreateResource));
+    memcpy(abSetReply + 20, &uReplyOffset, sizeof(uReplyOffset));
+    memcpy(abSetReply + 28, &uReplySize, sizeof(uReplySize));
+    RT_ZERO(RingResp);
+    RTTESTI_CHECK(virtioGpuR3HandleVenusRingCommand(pGpu, abSetReply, sizeof(abSetReply),
+                                                    &RingResp, pTestRing));
+    RTTESTI_CHECK(pTestRing && pTestRing->fReplyValid && pTestRing->offReply == uReplyOffset
+                  && pTestRing->cbReply == uReplySize);
+    uint8_t abWriteExtra[28] = { 0 };
+    uint32_t uWriteExtraType = VIRTIOGPU_VK_CMD_WRITE_RING_EXTRA;
+    uint32_t uWriteExtraFlags = VIRTIOGPU_VK_CMD_FLAG_GENERATE_REPLY;
+    uint64_t uWriteExtraOffset = 8;
+    uint32_t uWriteExtraValue = UINT32_C(0xcafed00d);
+    memcpy(abWriteExtra + 0, &uWriteExtraType, sizeof(uWriteExtraType));
+    memcpy(abWriteExtra + 4, &uWriteExtraFlags, sizeof(uWriteExtraFlags));
+    memcpy(abWriteExtra + 8, &uTestRing, sizeof(uTestRing));
+    memcpy(abWriteExtra + 16, &uWriteExtraOffset, sizeof(uWriteExtraOffset));
+    memcpy(abWriteExtra + 24, &uWriteExtraValue, sizeof(uWriteExtraValue));
+    memcpy(pRingRes->pbPixels + uCreateBuffer, abWriteExtra, sizeof(abWriteExtra));
+    uint32_t const uWriteExtraTail = sizeof(abWriteExtra);
+    memcpy(pRingRes->pbPixels + uCreateTail, &uWriteExtraTail, sizeof(uWriteExtraTail));
+    virtioGpuR3ProcessVenusRings(pGpu);
+    uint32_t uObserved = 0;
+    memcpy(&uObserved, pRingRes->pbPixels + uCreateHead, sizeof(uObserved));
+    RTTESTI_CHECK(uObserved == sizeof(abWriteExtra));
+    memcpy(&uObserved, pRingRes->pbPixels + uCreateStatus, sizeof(uObserved));
+    RTTESTI_CHECK(uObserved == (VIRTIOGPU_VK_RING_STATUS_IDLE | VIRTIOGPU_VK_RING_STATUS_ALIVE));
+    memcpy(&uObserved, pRingRes->pbPixels + uCreateExtra + uWriteExtraOffset, sizeof(uObserved));
+    RTTESTI_CHECK(uObserved == uWriteExtraValue);
+    memcpy(&uObserved, pRingRes->pbPixels + uReplyOffset, sizeof(uObserved));
+    RTTESTI_CHECK(uObserved == uWriteExtraType);
+    static TSTSSM RingSsm;
+    RT_ZERO(RingSsm);
+    PSSMHANDLE pRingSsm = (PSSMHANDLE)&RingSsm;
+    RTTESTI_CHECK_RC(virtioGpuR3SaveExec(pDev, pRingSsm), VINF_SUCCESS);
+    virtioGpuR3Reset(pDev);
+    RingSsm.off = 0;
+    RTTESTI_CHECK_RC(virtioGpuR3LoadExec(pDev, pRingSsm, VIRTIOGPU_SAVED_STATE_VERSION, SSM_PASS_FINAL),
+                     VINF_SUCCESS);
+    pRingRes = virtioGpuR3FindResource(pGpu, 15);
+    pTestRing = virtioGpuR3FindRing(pGpu, uTestRing);
+    RTTESTI_CHECK(pRingRes && pTestRing && pTestRing->fReplyValid
+                  && pTestRing->uResourceId == 15 && pTestRing->offBuffer == uCreateBuffer
+                  && pTestRing->cbBuffer == uCreateBufferSize && pTestRing->offExtra == uCreateExtra
+                  && pTestRing->cbExtra == uCreateExtraSize && pTestRing->offReply == uReplyOffset
+                  && pTestRing->cbReply == uReplySize);
+    memcpy(&uObserved, pRingRes->pbPixels + uCreateStatus, sizeof(uObserved));
+    RTTESTI_CHECK(uObserved == (VIRTIOGPU_VK_RING_STATUS_IDLE | VIRTIOGPU_VK_RING_STATUS_ALIVE));
+    memcpy(&uObserved, pRingRes->pbPixels + uCreateExtra + uWriteExtraOffset, sizeof(uObserved));
+    RTTESTI_CHECK(uObserved == uWriteExtraValue);
+    memcpy(&uObserved, pRingRes->pbPixels + uReplyOffset, sizeof(uObserved));
+    RTTESTI_CHECK(uObserved == uWriteExtraType);
+    uint8_t abDestroyRing[16] = { 0 };
+    uint32_t uDestroyRingType = VIRTIOGPU_VK_CMD_DESTROY_RING;
+    memcpy(abDestroyRing + 0, &uDestroyRingType, sizeof(uDestroyRingType));
+    memcpy(abDestroyRing + 8, &uTestRing, sizeof(uTestRing));
+    RT_ZERO(RingResp);
+    RTTESTI_CHECK(virtioGpuR3HandleVenusRingCommand(pGpu, abDestroyRing, sizeof(abDestroyRing),
+                                                    &RingResp, NULL)
+                  && !virtioGpuR3FindRing(pGpu, uTestRing));
+    struct { uint32_t id, padding; } UnrefRing = { 15, 0 };
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_UNREF, &UnrefRing,
+                   sizeof(UnrefRing), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     struct { uint32_t id, padding; } UnrefMappable = { 14, 0 };
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_UNREF, &UnrefMappable,
