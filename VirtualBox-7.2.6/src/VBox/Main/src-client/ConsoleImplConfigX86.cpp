@@ -1462,6 +1462,7 @@ int Console::i_configConstructorX86(PUVM pUVM, PVM pVM, PCVMMR3VTABLE pVMM, Auto
                 PCFGMNODE pVirtioGpuDev = NULL;
                 PCFGMNODE pVirtioGpuInst = NULL;
                 PCFGMNODE pVirtioGpuCfg = NULL;
+                PCFGMNODE pVirtioGpuLun = NULL;
                 InsertConfigNode(pDevices, "virtio-gpu", &pVirtioGpuDev);
                 InsertConfigNode(pVirtioGpuDev, "0", &pVirtioGpuInst);
                 InsertConfigInteger(pVirtioGpuInst, "Trusted", 1);
@@ -1471,6 +1472,8 @@ int Console::i_configConstructorX86(PUVM pUVM, PVM pVM, PCVMMR3VTABLE pVMM, Auto
                                  &strVirtioGpuBackend);
                 if (strVirtioGpuBackend.isNotEmpty())
                     InsertConfigString(pVirtioGpuCfg, "Backend", strVirtioGpuBackend.c_str());
+                InsertConfigNode(pVirtioGpuInst, "LUN#0", &pVirtioGpuLun);
+                InsertConfigString(pVirtioGpuLun, "Driver", "MainDisplay");
                 vrc = pBusMgr->assignPCIDevice("virtio-gpu", pVirtioGpuInst);
                 if (FAILED(vrc))
                     return vrc;

@@ -82,6 +82,7 @@ $configSources = @{
     modifyVm = Join-Path $repoRoot 'VirtualBox-7.2.6\src\VBox\Frontends\VBoxManage\VBoxManageModifyVM.cpp'
     consoleConfig = Join-Path $repoRoot 'VirtualBox-7.2.6\src\VBox\Main\src-client\ConsoleImplConfigX86.cpp'
     deviceConstruct = Join-Path $repoRoot 'VirtualBox-7.2.6\src\VBox\Devices\VirtIO\DevVirtioGPU.cpp'
+    displayPort = Join-Path $repoRoot 'VirtualBox-7.2.6\src\VBox\Devices\VirtIO\DevVirtioGPU.cpp'
     deviceRegistration = Join-Path $repoRoot 'VirtualBox-7.2.6\src\VBox\Devices\build\VBoxDD.cpp'
 }
 foreach ($source in $configSources.GetEnumerator()) {
@@ -94,6 +95,7 @@ foreach ($source in $configSources.GetEnumerator()) {
         modifyVm { $sourceText -match 'MODIFYVM_GPU_BACKEND' -and $sourceText -match 'VBoxInternal/Devices/virtio-gpu/0/Config/Backend' }
         consoleConfig { $sourceText -match 'InsertConfigNode\(pDevices, "virtio-gpu"' -and $sourceText -match 'InsertConfigNode\(pVirtioGpuInst, "Config", &pVirtioGpuCfg\)' -and $sourceText -match 'InsertConfigString\(pVirtioGpuCfg, "Backend"' }
         deviceConstruct { $sourceText -match 'pfnCFGMQueryStringDef\(pCfg, "Backend"' -and $sourceText -match 'virtioGpuR3ParseBackend' }
+        displayPort { $sourceText -match 'PDMIDISPLAYPORT IPort' -and $sourceText -match 'PDMIDISPLAYPORT, &pThisCC->IPort' -and $sourceText -match 'pfnSetRefreshRate = virtioGpuR3PortSetRefreshRate' }
         deviceRegistration { $sourceText -match 'g_DeviceVirtioGPU' -and $sourceText -match 'pfnRegister' }
     }
 }

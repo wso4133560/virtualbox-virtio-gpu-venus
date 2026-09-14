@@ -81,7 +81,9 @@ foreach ($docFile in $docFiles) {
 $validationFiles = @(
     'virtio-gpu-validation.json', 'baseline-validation.json',
     'virtio-gpu-tests.log', 'build.log', 'ldr-load-config-tests.log',
-    'vmmr0-load-tests.log', 'virtio-gpu-vm-validation.json', 'virtio-gpu-vm-validation.VBox.log'
+    'vmmr0-load-tests.log', 'virtio-gpu-vm-validation.json', 'virtio-gpu-vm-validation.VBox.log',
+    'virtio-gpu-vm-display-validation.json', 'virtio-gpu-vm-display-validation.VBox.log',
+    'gpu-display-port.log', 'build-display-port.log'
 )
 foreach ($name in $validationFiles) {
     $source = Join-Path $repoRoot (Join-Path '.build\windows' $name)

@@ -155,6 +155,7 @@ typedef struct VIRTIOGPUCC
 {
     VIRTIOCORER3 Virtio;     /* Must stay first for the common transport. */
     PDMIBASE     IBase;
+    PDMIDISPLAYPORT IPort;
     R3PTRTYPE(PPDMIBASE) pDrvBase;
     R3PTRTYPE(PPDMIDISPLAYCONNECTOR) pDrv;
 } VIRTIOGPUCC;
@@ -3151,6 +3152,102 @@ static int virtioGpuR3ReadGuest(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, PVIRTIO
     return cb ? VERR_BUFFER_UNDERFLOW : VINF_SUCCESS;
 }
 
+/* MainDisplay drives these callbacks periodically.  VirtIO-GPU owns the
+ * framebuffer contents and pushes updates from RESOURCE_FLUSH, so the port
+ * methods deliberately remain lightweight while preserving the display-driver
+ * contract. */
+static PVIRTIOGPUCC virtioGpuR3PortThis(PPDMIDISPLAYPORT pInterface)
+{
+    return RT_FROM_MEMBER(pInterface, VIRTIOGPUCC, IPort);
+}
+
+static DECLCALLBACK(int) virtioGpuR3PortUpdateDisplay(PPDMIDISPLAYPORT pInterface)
+{
+    RT_NOREF(pInterface);
+    return VINF_SUCCESS;
+}
+
+static DECLCALLBACK(int) virtioGpuR3PortUpdateDisplayAll(PPDMIDISPLAYPORT pInterface, bool fFailOnResize)
+{
+    RT_NOREF(pInterface, fFailOnResize);
+    return VINF_SUCCESS;
+}
+
+static DECLCALLBACK(int) virtioGpuR3PortQueryVideoMode(PPDMIDISPLAYPORT pInterface, uint32_t *pcBits,
+                                                        uint32_t *pcx, uint32_t *pcy)
+{
+    RT_NOREF(virtioGpuR3PortThis(pInterface));
+    if (!pcBits || !pcx || !pcy)
+        return VERR_INVALID_POINTER;
+    *pcBits = 32;
+    *pcx = 1024;
+    *pcy = 768;
+    return VINF_SUCCESS;
+}
+
+static DECLCALLBACK(int) virtioGpuR3PortSetRefreshRate(PPDMIDISPLAYPORT pInterface, uint32_t cMilliesInterval)
+{
+    RT_NOREF(pInterface, cMilliesInterval);
+    return VINF_SUCCESS;
+}
+
+static DECLCALLBACK(int) virtioGpuR3PortTakeScreenshot(PPDMIDISPLAYPORT pInterface, uint8_t **ppbData,
+                                                        size_t *pcbData, uint32_t *pcx, uint32_t *pcy)
+{
+    RT_NOREF(pInterface, ppbData, pcbData, pcx, pcy);
+    return VERR_NOT_SUPPORTED;
+}
+
+static DECLCALLBACK(void) virtioGpuR3PortFreeScreenshot(PPDMIDISPLAYPORT pInterface, uint8_t *pbData)
+{
+    RT_NOREF(pInterface);
+    RTMemFree(pbData);
+}
+
+static DECLCALLBACK(int) virtioGpuR3PortDisplayBlt(PPDMIDISPLAYPORT pInterface, const void *pvData,
+                                                    uint32_t x, uint32_t y, uint32_t cx, uint32_t cy)
+{
+    RT_NOREF(pInterface, pvData, x, y, cx, cy);
+    return VERR_NOT_SUPPORTED;
+}
+
+static DECLCALLBACK(void) virtioGpuR3PortUpdateDisplayRect(PPDMIDISPLAYPORT pInterface, int32_t x, int32_t y,
+                                                             uint32_t cx, uint32_t cy)
+{
+    RT_NOREF(pInterface, x, y, cx, cy);
+}
+
+static DECLCALLBACK(void) virtioGpuR3PortSetRenderVRAM(PPDMIDISPLAYPORT pInterface, bool fRender)
+{
+    RT_NOREF(pInterface, fRender);
+}
+
+static DECLCALLBACK(int) virtioGpuR3PortCopyRect(PPDMIDISPLAYPORT pInterface, uint32_t cx, uint32_t cy,
+                                                  const uint8_t *pbSrc, int32_t xSrc, int32_t ySrc,
+                                                  uint32_t cxSrc, uint32_t cySrc, uint32_t cbSrcLine,
+                                                  uint32_t cSrcBitsPerPixel, uint8_t *pbDst, int32_t xDst,
+                                                  int32_t yDst, uint32_t cxDst, uint32_t cyDst,
+                                                  uint32_t cbDstLine, uint32_t cDstBitsPerPixel)
+{
+    RT_NOREF(pInterface, cx, cy, pbSrc, xSrc, ySrc, cxSrc, cySrc, cbSrcLine, cSrcBitsPerPixel,
+             pbDst, xDst, yDst, cxDst, cyDst, cbDstLine, cDstBitsPerPixel);
+    return VERR_NOT_SUPPORTED;
+}
+
+static DECLCALLBACK(void) virtioGpuR3PortSetViewport(PPDMIDISPLAYPORT pInterface, uint32_t idScreen,
+                                                      uint32_t x, uint32_t y, uint32_t cx, uint32_t cy)
+{
+    RT_NOREF(pInterface, idScreen, x, y, cx, cy);
+}
+
+static DECLCALLBACK(int) virtioGpuR3PortSendModeHint(PPDMIDISPLAYPORT pInterface, uint32_t cx, uint32_t cy,
+                                                      uint32_t cBPP, uint32_t iDisplay, uint32_t dx,
+                                                      uint32_t dy, uint32_t fEnabled, uint32_t fNotifyGuest)
+{
+    RT_NOREF(pInterface, cx, cy, cBPP, iDisplay, dx, dy, fEnabled, fNotifyGuest);
+    return VINF_SUCCESS;
+}
+
 static int virtioGpuR3WriteGuest(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, PVIRTIOGPURESOURCE pRes,
                                  uint64_t off, const void *pvSrc, size_t cb)
 {
@@ -4841,6 +4938,7 @@ static DECLCALLBACK(void *) virtioGpuR3QueryInterface(PPDMIBASE pInterface, cons
 {
     PVIRTIOGPUCC pThisCC = RT_FROM_MEMBER(pInterface, VIRTIOGPUCC, IBase);
     PDMIBASE_RETURN_INTERFACE(pszIID, PDMIBASE, &pThisCC->IBase);
+    PDMIBASE_RETURN_INTERFACE(pszIID, PDMIDISPLAYPORT, &pThisCC->IPort);
     return NULL;
 }
 
@@ -5053,9 +5151,21 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
 static DECLCALLBACK(int) virtioGpuR3Construct(PPDMDEVINS pDevIns, int iInstance, PCFGMNODE pCfg)
 {
     PDMDEV_CHECK_VERSIONS_RETURN(pDevIns);
-    PDMDEV_VALIDATE_CONFIG_RETURN(pDevIns, "Backend", "");
     PVIRTIOGPU pThis = PDMDEVINS_2_DATA(pDevIns, PVIRTIOGPU);
     PVIRTIOGPUCC pThisCC = PDMDEVINS_2_DATA_CC(pDevIns, PVIRTIOGPUCC);
+    pThisCC->IPort.pfnUpdateDisplay = virtioGpuR3PortUpdateDisplay;
+    pThisCC->IPort.pfnUpdateDisplayAll = virtioGpuR3PortUpdateDisplayAll;
+    pThisCC->IPort.pfnQueryVideoMode = virtioGpuR3PortQueryVideoMode;
+    pThisCC->IPort.pfnSetRefreshRate = virtioGpuR3PortSetRefreshRate;
+    pThisCC->IPort.pfnTakeScreenshot = virtioGpuR3PortTakeScreenshot;
+    pThisCC->IPort.pfnFreeScreenshot = virtioGpuR3PortFreeScreenshot;
+    pThisCC->IPort.pfnDisplayBlt = virtioGpuR3PortDisplayBlt;
+    pThisCC->IPort.pfnUpdateDisplayRect = virtioGpuR3PortUpdateDisplayRect;
+    pThisCC->IPort.pfnSetRenderVRAM = virtioGpuR3PortSetRenderVRAM;
+    pThisCC->IPort.pfnCopyRect = virtioGpuR3PortCopyRect;
+    pThisCC->IPort.pfnSetViewport = virtioGpuR3PortSetViewport;
+    pThisCC->IPort.pfnSendModeHint = virtioGpuR3PortSendModeHint;
+    PDMDEV_VALIDATE_CONFIG_RETURN(pDevIns, "Backend", "");
     char szBackend[16];
     int rc = pDevIns->pHlpR3->pfnCFGMQueryStringDef(pCfg, "Backend", szBackend, sizeof(szBackend), "auto");
     if (RT_FAILURE(rc))
