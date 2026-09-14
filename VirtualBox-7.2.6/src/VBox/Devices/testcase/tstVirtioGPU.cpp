@@ -5,6 +5,8 @@
 #include <iprt/mem.h>
 #include <iprt/ldr.h>
 #include <iprt/time.h>
+#include <iprt/env.h>
+#include <iprt/string.h>
 #include <VBox/version.h>
 #include "../VirtIO/VirtioCore.cpp"
 #include "../VirtIO/DevVirtioGPU.cpp"
@@ -26,6 +28,15 @@ static uint32_t g_uCursorScreen;
 static int32_t g_iCursorX;
 static int32_t g_iCursorY;
 static PDMDEVHLPR3 g_Helpers;
+
+static uint32_t tstGpuStressSeconds()
+{
+    const char *psz = RTEnvGet("VBOX_VIRTIO_GPU_STRESS_SECONDS");
+    if (!psz || !*psz)
+        return 0;
+    uint32_t cSeconds = RTStrToUInt32(psz);
+    return RT_MIN(cSeconds, UINT32_C(300));
+}
 
 /* Run the production PCI constructor, then walk raw config bytes like Linux.
  * Queue-only tests bypass this path and cannot catch a malformed capability. */
@@ -1844,6 +1855,25 @@ int main(int argc, char **argv)
     RTTestIPrintf(RTTESTLVL_ALWAYS, "persistent Vulkan fill: single=%llu ns (%llu ns/fill), batch=%llu ns (%llu ns/fill)\n",
                   (unsigned long long)cSingleNs, (unsigned long long)(cSingleNs / 8),
                   (unsigned long long)cBatchNs, (unsigned long long)(cBatchNs / 8));
+    uint32_t const cStressSeconds = tstGpuStressSeconds();
+    if (cStressSeconds)
+    {
+        RTTestSub(g_hTest, "persistent Vulkan GPU utilization stress");
+        uint64_t const tsStressStart = RTTimeMilliTS();
+        uint64_t cStressFills = 0;
+        while (RTTimeMilliTS() - tsStressStart < (uint64_t)cStressSeconds * 1000)
+        {
+            RTTESTI_CHECK_RC(virtioGpuR3VulkanFillBufferBatch(pGpu, &pGpu->aResources[0],
+                                                               aBatch, RT_ELEMENTS(aBatch)), VINF_SUCCESS);
+            cStressFills += RT_ELEMENTS(aBatch);
+        }
+        uint64_t const cStressElapsedMs = RTTimeMilliTS() - tsStressStart;
+        RTTestIPrintf(RTTESTLVL_ALWAYS,
+                      "persistent Vulkan GPU stress: seconds=%u elapsedMs=%llu fills=%llu fillsPerSecond=%llu\n",
+                      cStressSeconds, (unsigned long long)cStressElapsedMs,
+                      (unsigned long long)cStressFills,
+                      (unsigned long long)(cStressElapsedMs ? cStressFills * 1000 / cStressElapsedMs : 0));
+    }
     RTTestSub(g_hTest, "Venus vkCmdFillBuffer serialization boundary");
     uint8_t abCommand[44] = { 0 };
     uint32_t uCommandType = 118;
