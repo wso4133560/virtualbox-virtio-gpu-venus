@@ -9,6 +9,7 @@ param(
     [ValidateRange(60, 1800)][int]$TimeoutSeconds = 600,
     [ValidateRange(1024, 65535)][int]$SshPort = 2222,
     [ValidateRange(1, 16)][int]$CpuCount = 1,
+    [switch]$VerifyGuestVulkan,
     [string]$ReportDirectory
 )
 $ErrorActionPreference = 'Stop'
@@ -69,6 +70,9 @@ $driverBound = $false
 $hostVisible = $null
 $readySeconds = $null
 $hostVulkanDevice = $null
+$guestVulkanVerified = $false
+$guestVulkanExit = $null
+$guestVulkanDevice = $null
 $runtimeHashes = [ordered]@{}
 foreach ($name in @('VBoxDD.dll', 'VBoxHeadless.exe', 'VMMR0.r0')) {
     $runtimeHashes[$name] = (Get-FileHash (Join-Path $runtime $name) -Algorithm SHA256).Hash
@@ -206,6 +210,40 @@ echo VIRTIO_GUEST_END
     $hostVisible = $guestText -match '\[drm\] features:.*\+host_visible'
     if (-not $driverBound) { throw 'Linux reached SSH, but VirtIO-GPU DRM binding failed. Inspect guest.log.' }
     if ($GpuBackend -eq 'venus' -and -not $hostVisible) { throw 'Linux rejected the Venus host-visible shared-memory region. Inspect guest.log.' }
+    if ($VerifyGuestVulkan)
+    {
+        $phase = 'guest-vulkan'
+        $guestVulkanProbe = @'
+set -o pipefail
+echo VIRTIO_VULKAN_BEGIN
+sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq mesa-vulkan-drivers vulkan-tools
+if ! command -v vulkaninfo >/dev/null; then
+    echo VULKANINFO_MISSING
+    exit 127
+fi
+VN_DEBUG=init VK_LOADER_DEBUG=all vulkaninfo --summary 2>&1 | tee /var/tmp/virtio-vulkaninfo-summary.log
+rc=${PIPESTATUS[0]}
+echo "vulkaninfo_exit=$rc"
+if [ "$rc" = 0 ]; then echo VULKANINFO_PASS; else echo VULKANINFO_FAIL; fi
+echo VIRTIO_VULKAN_END
+exit "$rc"
+'@
+        $guestVulkanPath = Join-Path $reportDir 'guest-vulkan-probe.sh'
+        [IO.File]::WriteAllText($guestVulkanPath, $guestVulkanProbe.Replace("`r`n", "`n") + "`n", $utf8)
+        $saved = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $guestVulkanOutput = Get-Content $guestVulkanPath -Raw | & $ssh @sshArgs "tr -d '\r' | bash -s" 2>&1
+            $guestVulkanExit = $LASTEXITCODE
+        } finally { $ErrorActionPreference = $saved }
+        $guestVulkanText = $guestVulkanOutput -join "`n"
+        [IO.File]::WriteAllText((Join-Path $reportDir 'guest-vulkan.log'), $guestVulkanText, $utf8)
+        $guestVulkanVerified = $guestVulkanExit -eq 0 -and $guestVulkanText -match '(?m)^VULKANINFO_PASS$'
+        $deviceMatch = [regex]::Match($guestVulkanText, '(?im)^\s*deviceName\s*=\s*(.+?)\s*$')
+        if ($deviceMatch.Success) { $guestVulkanDevice = $deviceMatch.Groups[1].Value.Trim() }
+        if (-not $guestVulkanVerified) { throw "Guest vulkaninfo failed (exit $guestVulkanExit). Inspect guest-vulkan.log." }
+    }
     $phase = 'complete'
 } catch {
     $failure = $_.Exception.Message
@@ -240,7 +278,8 @@ echo VIRTIO_GUEST_END
         created = $created; guestReady = $ready; sshReady = $sshReady; drmDriverBound = $driverBound
         hostVisible = $hostVisible
         readySeconds = $readySeconds; hostVulkanDevice = $hostVulkanDevice; runtimeHashes = $runtimeHashes
-        guestVulkanVerified = $false; phase = $phase; failure = $failure
+        guestVulkanVerified = $guestVulkanVerified; guestVulkanExit = $guestVulkanExit
+        guestVulkanDevice = $guestVulkanDevice; phase = $phase; failure = $failure
         cleanupErrors = @($cleanupErrors)
         passed = [bool]($driverBound -and -not $failure -and -not $cleanupErrors.Count)
     } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $reportDir 'report.json') -Encoding utf8

@@ -369,6 +369,7 @@ AssertCompileSize(VIRTIOGPUMOVECURSOR, 40);
 #define VIRTIOGPU_F_RESOURCE_UUID           (UINT64_C(1) << 2)
 #define VIRTIOGPU_F_RESOURCE_BLOB            (UINT64_C(1) << 3)
 #define VIRTIOGPU_F_CONTEXT_INIT             (UINT64_C(1) << 4)
+#define VIRTIOGPU_CONTEXT_INIT_CAPSET        UINT32_C(1)
 
 /* RESOURCE_CREATE_BLOB memory domains and flags from virtio_gpu.h. */
 #define VIRTIOGPU_BLOB_MEM_GUEST             UINT32_C(1)

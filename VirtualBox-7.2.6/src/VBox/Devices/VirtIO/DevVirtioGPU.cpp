@@ -3670,11 +3670,16 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
             case VIRTIOGPU_CMD_RESOURCE_MAP_BLOB:
             case VIRTIOGPU_CMD_RESOURCE_MAP_BLOB_LEGACY:
             {
-                VIRTIOGPURESOURCEMAPBLOB Cmd;
+                struct { uint32_t uResourceId; uint32_t uPadding; } Cmd;
                 RT_ZERO(Cmd);
-                if (pBuf->cbPhysSend < sizeof(Cmd) || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Cmd, sizeof(Cmd)))
-                    || Cmd.uPadding != 0 || pBuf->cbPhysReturn < sizeof(VIRTIOGPURESPMAPINFO))
+                int rcMapRead = pBuf->cbPhysSend < sizeof(Cmd) ? VERR_BUFFER_UNDERFLOW
+                                                               : virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Cmd, sizeof(Cmd));
+                if (RT_FAILURE(rcMapRead) || Cmd.uPadding != 0 || pBuf->cbPhysReturn < sizeof(VIRTIOGPURESPMAPINFO))
+                {
+                    LogRel(("virtio-gpu: map blob request rejected rc=%Rrc send=%u return=%u id=%u padding=%u\n",
+                            rcMapRead, pBuf->cbPhysSend, pBuf->cbPhysReturn, Cmd.uResourceId, Cmd.uPadding));
                     Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                }
                 else
                 {
                     PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResource(pThis, Cmd.uResourceId);
@@ -3707,7 +3712,7 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
             case VIRTIOGPU_CMD_RESOURCE_UNMAP_BLOB:
             case VIRTIOGPU_CMD_RESOURCE_UNMAP_BLOB_LEGACY:
             {
-                VIRTIOGPURESOURCEMAPBLOB Cmd;
+                struct { uint32_t uResourceId; uint32_t uPadding; } Cmd;
                 RT_ZERO(Cmd);
                 if (pBuf->cbPhysSend < sizeof(Cmd) || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Cmd, sizeof(Cmd)))
                     || Cmd.uPadding != 0)
@@ -3771,7 +3776,8 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                 if (!Req.uCtxId || virtioGpuR3FindContext(pThis, Req.uCtxId)
                     || pBuf->cbPhysSend < sizeof(Cmd)
                     || RT_FAILURE(virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Cmd, sizeof(Cmd)))
-                    || Cmd.cchName > sizeof(Cmd.szName) || Cmd.fInit != 0)
+                    || Cmd.cchName > sizeof(Cmd.szName)
+                    || (Cmd.fInit != 0 && Cmd.fInit != VIRTIOGPU_CONTEXT_INIT_CAPSET))
                     Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
                 else
                 {
