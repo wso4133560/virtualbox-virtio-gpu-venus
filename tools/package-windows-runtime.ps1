@@ -46,6 +46,16 @@ $runtimeDocs = Join-Path $OutputDirectory 'docs'
 $runtimeValidation = Join-Path $OutputDirectory 'validation'
 New-Item -ItemType Directory -Force $runtimeBin, $runtimeDocs, $runtimeValidation | Out-Null
 
+# VBoxManage unattended install needs the distro templates at runtime.  Keep
+# the complete template set beside the binaries so a clean ZIP extraction can
+# create Ubuntu/Debian guests without depending on the source checkout.
+$templateSource = Join-Path $repoRoot 'VirtualBox-7.2.6\src\VBox\Main\UnattendedTemplates'
+$templateTarget = Join-Path $runtimeBin 'UnattendedTemplates'
+if (-not (Test-Path -LiteralPath $templateSource -PathType Container)) {
+    throw "Missing unattended template directory: $templateSource"
+}
+Copy-Item -LiteralPath $templateSource -Destination $templateTarget -Recurse
+
 foreach ($name in $required) {
     $sourcePath = Join-Path $binRoot $name
     # kBuild may finish a locked executable in the object directory while the

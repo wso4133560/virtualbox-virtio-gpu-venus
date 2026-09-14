@@ -9,6 +9,7 @@ param(
     [ValidateSet('auto', 'software', 'venus')][string]$GpuBackend = 'venus',
     [ValidateRange(1024, 131072)][int]$MemoryMB = 4096,
     [ValidateRange(1, 300)][int]$TimeoutSeconds = 60,
+    [ValidateRange(0, 600)][int]$ObserveSeconds = 15,
     [switch]$KeepVm,
     [string]$ReportPath
 )
@@ -81,6 +82,9 @@ try {
         if ([DateTime]::UtcNow -ge $deadline) { throw "VM did not reach running state within $TimeoutSeconds seconds (state=$state)." }
         Start-Sleep -Milliseconds 500
     } while ($true)
+    if ($ObserveSeconds -gt 0) {
+        Start-Sleep -Seconds $ObserveSeconds
+    }
     $phase = 'complete'
     Write-Host "VirtIO-GPU VM launch: PASS (state=$state, name=$VmName)"
 }
@@ -120,6 +124,7 @@ finally {
         graphicsController = 'virtio-gpu'
         gpuBackend = $GpuBackend
         memoryMB = $MemoryMB
+        observeSeconds = $ObserveSeconds
         created = $created
         started = $started
         state = $state

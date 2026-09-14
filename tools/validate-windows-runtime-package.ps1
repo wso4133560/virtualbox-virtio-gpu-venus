@@ -46,6 +46,12 @@ try {
     $test = Join-Path $bin 'testcase\tstVirtioGPU.exe'
     if (-not (Test-Path -LiteralPath $manage -PathType Leaf)) { throw "Missing VBoxManage.exe" }
     if (-not (Test-Path -LiteralPath $test -PathType Leaf)) { throw "Missing tstVirtioGPU.exe" }
+    foreach ($template in @('ubuntu_autoinstall_user_data', 'ubuntu_autoinstall_meta_data', 'debian_postinstall.sh')) {
+        $templatePath = Join-Path $bin (Join-Path 'UnattendedTemplates' $template)
+        if (-not (Test-Path -LiteralPath $templatePath -PathType Leaf)) {
+            throw "Missing unattended template: $template"
+        }
+    }
 
     $version = (& $manage --version 2>&1 | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $version -notmatch '^7\.2\.6r172322$') { throw "Unexpected VBoxManage version: $version" }
