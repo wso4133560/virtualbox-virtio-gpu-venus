@@ -47,6 +47,7 @@ Write-Host $text
 $passed = -not $timedOut -and $testExit -eq 0 -and $text -match '(?m)^tstVirtioGPU: SUCCESS\s*$'
 $groups = @([regex]::Matches($text, '(?m)^tstVirtioGPU: (.+?)\s+: PASSED\s*$') | ForEach-Object { $_.Groups[1].Value.Trim() })
 $requiredGroups = @(
+    'PCI shared-memory capability and MSI-X chain'
     'Vulkan RGBA8 resource format'
     'R8G8B8A8 resource control path'
     'Vulkan persistent buffer transfer throughput'

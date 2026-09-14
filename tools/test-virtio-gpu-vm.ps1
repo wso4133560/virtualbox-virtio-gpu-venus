@@ -10,6 +10,8 @@ param(
     [ValidateRange(1024, 131072)][int]$MemoryMB = 4096,
     [ValidateRange(1, 300)][int]$TimeoutSeconds = 60,
     [ValidateRange(0, 600)][int]$ObserveSeconds = 15,
+    [ValidateSet('efi', 'bios')][string]$Firmware = 'efi',
+    [string]$SerialLogPath,
     [switch]$KeepVm,
     [string]$ReportPath
 )
@@ -58,6 +60,8 @@ $phase = 'create'
 $vmBase = Join-Path (Split-Path $PSScriptRoot -Parent) '.build\windows\vms'
 $savedLog = [IO.Path]::ChangeExtension([IO.Path]::GetFullPath($ReportPath), '.VBox.log')
 $logCaptured = $false
+$cleanupErrors = @()
+$observations = @()
 try {
     Invoke-VBoxManage @('createvm', '--name', $VmName, '--basefolder', $vmBase, '--register') | Out-Null
     $created = $true
@@ -65,7 +69,12 @@ try {
     $phase = 'configure'
     Invoke-VBoxManage @('modifyvm', $VmName, '--memory', $MemoryMB, '--vram', 64,
                         '--graphicscontroller', 'virtio-gpu', '--gpu-backend', $GpuBackend,
-                        '--firmware', 'efi', '--audio-enabled', 'off') | Out-Null
+                        '--firmware', $Firmware, '--audio-enabled', 'off') | Out-Null
+    if ($SerialLogPath) {
+        $SerialLogPath = [IO.Path]::GetFullPath($SerialLogPath)
+        New-Item -ItemType Directory -Force (Split-Path $SerialLogPath -Parent) | Out-Null
+        Invoke-VBoxManage @('modifyvm', $VmName, '--uart1', '0x3f8', '4', '--uartmode1', 'file', $SerialLogPath) | Out-Null
+    }
     Invoke-VBoxManage @('storagectl', $VmName, '--name', 'SATA', '--add', 'sata', '--controller', 'IntelAhci') | Out-Null
     Invoke-VBoxManage @('storageattach', $VmName, '--storagectl', 'SATA', '--port', 0,
                         '--device', 0, '--type', 'dvddrive', '--medium', $iso) | Out-Null
@@ -82,11 +91,20 @@ try {
         if ([DateTime]::UtcNow -ge $deadline) { throw "VM did not reach running state within $TimeoutSeconds seconds (state=$state)." }
         Start-Sleep -Milliseconds 500
     } while ($true)
-    if ($ObserveSeconds -gt 0) {
-        Start-Sleep -Seconds $ObserveSeconds
-    }
+    $observeDeadline = [DateTime]::UtcNow.AddSeconds($ObserveSeconds)
+    do {
+        # RUNNING is only a launch result. Re-query throughout the observation
+        # window so an early crash cannot leave the original state as a PASS.
+        $info = Invoke-VBoxManage @('showvminfo', $VmName, '--machinereadable')
+        $stateLine = $info | Where-Object { $_ -match '^VMState="([^"]+)"' } | Select-Object -First 1
+        $state = if ($stateLine -match '^VMState="([^"]+)"') { $Matches[1] } else { 'unknown' }
+        $observations += [ordered]@{ timestamp = [DateTime]::UtcNow.ToString('o'); state = $state }
+        if ($state -ne 'running') { throw "VM left running state during observation (state=$state)." }
+        $remaining = ($observeDeadline - [DateTime]::UtcNow).TotalMilliseconds
+        if ($remaining -le 0) { break }
+        Start-Sleep -Milliseconds ([int][Math]::Min(1000, [Math]::Ceiling($remaining)))
+    } while ($true)
     $phase = 'complete'
-    Write-Host "VirtIO-GPU VM launch: PASS (state=$state, name=$VmName)"
 }
 catch {
     $failure = $_.Exception.Message
@@ -106,7 +124,7 @@ finally {
             if ($shutdownState -notin @('poweroff', 'aborted')) {
                 Invoke-VBoxManage @('controlvm', $VmName, 'poweroff') | Out-Null
             }
-        } catch { }
+        } catch { $cleanupErrors += $_.Exception.Message }
     }
     if ($created -and -not $KeepVm) {
         $logPath = Join-Path (Join-Path $vmBase $VmName) 'Logs\VBox.log'
@@ -114,7 +132,8 @@ finally {
             Copy-Item -LiteralPath $logPath -Destination $savedLog -Force
             $logCaptured = $true
         }
-        try { Invoke-VBoxManage @('unregistervm', $VmName, '--delete') | Out-Null } catch { }
+        try { Invoke-VBoxManage @('unregistervm', $VmName, '--delete') | Out-Null }
+        catch { $cleanupErrors += $_.Exception.Message }
     }
     [ordered]@{
         timestamp = (Get-Date).ToString('o')
@@ -125,14 +144,20 @@ finally {
         gpuBackend = $GpuBackend
         memoryMB = $MemoryMB
         observeSeconds = $ObserveSeconds
+        firmware = $Firmware
+        serialLogPath = $SerialLogPath
+        observations = @($observations)
         created = $created
         started = $started
         state = $state
         phase = $phase
         logPath = if ($logCaptured) { $savedLog } else { $null }
         keptVm = [bool]$KeepVm
-        passed = [bool]($started -and $state -eq 'running' -and -not $failure)
+        cleanupErrors = @($cleanupErrors)
+        passed = [bool]($started -and $state -eq 'running' -and -not $failure -and -not $cleanupErrors.Count)
         failure = $failure
     } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $ReportPath -Encoding utf8
 }
 if ($failure) { throw $failure }
+if ($cleanupErrors.Count) { throw "VM cleanup failed: $($cleanupErrors -join '; ')" }
+Write-Host "VirtIO-GPU VM launch: PASS (state=$state, name=$VmName)"

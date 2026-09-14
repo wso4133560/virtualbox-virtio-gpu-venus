@@ -27,6 +27,129 @@ static int32_t g_iCursorX;
 static int32_t g_iCursorY;
 static PDMDEVHLPR3 g_Helpers;
 
+/* Run the production PCI constructor, then walk raw config bytes like Linux.
+ * Queue-only tests bypass this path and cannot catch a malformed capability. */
+static bool g_fFailMsiRegistration;
+static DECLCALLBACK(int) tstPciRegister(PPDMDEVINS pDev, PPDMPCIDEV pPci, uint32_t fFlags,
+                                      uint8_t uDevNo, uint8_t uFunNo, const char *pszName)
+{
+    RT_NOREF(pDev, pPci, fFlags, uDevNo, uFunNo, pszName);
+    return VINF_SUCCESS;
+}
+static DECLCALLBACK(int) tstPciIntercept(PPDMDEVINS pDev, PPDMPCIDEV pPci,
+                                       PFNPCICONFIGREAD pfnRead, PFNPCICONFIGWRITE pfnWrite)
+{
+    RT_NOREF(pDev, pPci, pfnRead, pfnWrite);
+    return VINF_SUCCESS;
+}
+static DECLCALLBACK(int) tstPciMsi(PPDMDEVINS pDev, PPDMPCIDEV pPci, PPDMMSIREG pMsi)
+{
+    RT_NOREF(pPci);
+    if (g_fFailMsiRegistration)
+        return VERR_NOT_SUPPORTED;
+    uint8_t *pb = &pDev->apPciDevs[0]->abConfig[pMsi->iMsixCapOffset];
+    memset(pb, 0, 12);
+    pb[0] = 0x11; /* PCI_CAP_ID_MSIX */
+    pb[1] = pMsi->iMsixNextOffset;
+    return VINF_SUCCESS;
+}
+static DECLCALLBACK(int) tstPciRegion(PPDMDEVINS pDev, PPDMPCIDEV pPci, uint32_t iRegion,
+                                    RTGCPHYS cb, PCIADDRESSSPACE enmType, uint32_t fFlags,
+                                    uint64_t hHandle, PFNPCIIOREGIONMAP pfnMap)
+{
+    RT_NOREF(pDev, pPci, iRegion, cb, enmType, fFlags, hHandle, pfnMap);
+    return VINF_SUCCESS;
+}
+static DECLCALLBACK(int) tstPciMmio(PPDMDEVINS pDev, RTGCPHYS cb, uint32_t fFlags,
+                                  PPDMPCIDEV pPci, uint32_t iRegion, PFNIOMMMIONEWWRITE pfnWrite,
+                                  PFNIOMMMIONEWREAD pfnRead, PFNIOMMMIONEWFILL pfnFill,
+                                  void *pvUser, const char *pszDesc, PIOMMMIOHANDLE phRegion)
+{
+    RT_NOREF(pDev, cb, fFlags, pPci, iRegion, pfnWrite, pfnRead, pfnFill, pvUser, pszDesc);
+    *phRegion = 1;
+    return VINF_SUCCESS;
+}
+static DECLCALLBACK(int) tstPciMmio2(PPDMDEVINS pDev, PPDMPCIDEV pPci, uint32_t iRegion,
+                                   RTGCPHYS cb, uint32_t fFlags, const char *pszDesc,
+                                   void **ppvMapping, PPGMMMIO2HANDLE phRegion)
+{
+    RT_NOREF(pDev, pPci, iRegion, cb, fFlags, pszDesc);
+    *ppvMapping = g_abRam; /* Mapping is not accessed by PCI construction. */
+    *phRegion = 2;
+    return VINF_SUCCESS;
+}
+static void tstPciCapabilities()
+{
+    RTTestSub(g_hTest, "PCI shared-memory capability and MSI-X chain");
+    PPDMDEVINS pDev = (PPDMDEVINS)RTMemAllocZ(sizeof(PDMDEVINS));
+    PPDMPCIDEV pPci = (PPDMPCIDEV)RTMemAllocZ(sizeof(PDMPCIDEV));
+    RTTESTI_CHECK(pDev && pPci);
+    if (!pDev || !pPci) { RTMemFree(pDev); RTMemFree(pPci); return; }
+    PDMDEVHLPR3 Helpers = {};
+    Helpers.pfnPCIRegister = tstPciRegister;
+    Helpers.pfnPCIInterceptConfigAccesses = tstPciIntercept;
+    Helpers.pfnPCIRegisterMsi = tstPciMsi;
+    Helpers.pfnPCIIORegionRegister = tstPciRegion;
+    Helpers.pfnMmioCreateEx = tstPciMmio;
+    Helpers.pfnMmio2Create = tstPciMmio2;
+    pDev->pHlpR3 = &Helpers;
+    pDev->apPciDevs[0] = pPci;
+    pDev->cPciDevs = 1;
+    pDev->cbPciDev = sizeof(PDMPCIDEV);
+    for (unsigned fShared = 0; fShared < 2; ++fShared)
+        for (unsigned uMsiMode = 0; uMsiMode < 3; ++uMsiMode)
+        {
+            RT_ZERO(*pPci);
+            pPci->u32Magic = PDMPCIDEV_MAGIC;
+            VIRTIOCORE Core = {};
+            VIRTIOCORECC CoreCC = {};
+            uint8_t abDeviceCfg[16] = {};
+            CoreCC.pbDevSpecificCfg = abDeviceCfg;
+            Core.fMsiSupport = uMsiMode != 0;
+            g_fFailMsiRegistration = uMsiMode == 2;
+            VIRTIOPCIPARAMS Params = {};
+            Params.uDeviceId = 0x1050;
+            void *pvShared = NULL;
+            PGMMMIO2HANDLE hShared = NIL_PGMMMIO2HANDLE;
+            Params.cbSharedMemory = fShared ? 0x10000000 : 0;
+            Params.ppvSharedMemory = &pvShared;
+            Params.phSharedMemory = &hShared;
+            RTTESTI_CHECK_RC(virtioR3PciTransportInit(pDev, &Core, &CoreCC, &Params, "pci-test", sizeof(abDeviceCfg)), VINF_SUCCESS);
+            unsigned cShared = 0, cMsi = 0, cCaps = 0;
+            unsigned off = pPci->abConfig[0x34];
+            for (; off && cCaps < 16; ++cCaps)
+            {
+                RTTESTI_CHECK(off >= 0x40 && off + 2 <= 256);
+                if (off < 0x40 || off + 2 > 256) break;
+                const uint8_t *pb = &pPci->abConfig[off];
+                unsigned cb = 0;
+                if (pb[0] == 0x09)
+                {
+                    cb = pb[2];
+                    if (pb[3] == 8) /* VIRTIO_PCI_CAP_SHARED_MEMORY_CFG */
+                    {
+                        ++cShared;
+                        /* Linux requires sizeof(virtio_pci_cap64) == 24,
+                         * region ID at byte 5, length at byte 12. */
+                        RTTESTI_CHECK(cb == 24 && pb[4] == 4 && pb[5] == 1);
+                        RTTESTI_CHECK(*(const uint32_t *)(pb + 8) == 0);
+                        RTTESTI_CHECK(*(const uint32_t *)(pb + 12) == 0x10000000);
+                        RTTESTI_CHECK(*(const uint32_t *)(pb + 16) == 0 && *(const uint32_t *)(pb + 20) == 0);
+                    }
+                }
+                else if (pb[0] == 0x11) { ++cMsi; cb = 12; }
+                else { RTTestFailed(g_hTest, "Dangling PCI capability at %#x (shared=%u msi=%u)", off, fShared, uMsiMode); break; }
+                RTTESTI_CHECK(cb >= 12 && off + cb <= 256);
+                RTTESTI_CHECK(pb[1] == 0 || pb[1] >= off + cb);
+                off = pb[1];
+            }
+            RTTESTI_CHECK(off == 0 && cCaps < 16);
+            RTTESTI_CHECK(cShared == fShared && cMsi == (uMsiMode == 1 ? 1U : 0U));
+        }
+    RTMemFree(pPci);
+    RTMemFree(pDev);
+}
+
 static DECLCALLBACK(int) tstDisplayResize(PPDMIDISPLAYCONNECTOR pInterface, uint32_t cBits, void *pvVRAM,
                                           uint32_t cbLine, uint32_t cx, uint32_t cy)
 {
@@ -557,6 +680,7 @@ int main(int argc, char **argv)
     if (rc != VINF_SUCCESS)
         return rc;
     RTTestBanner(g_hTest);
+    tstPciCapabilities();
     RTTestSub(g_hTest, "host Vulkan loader probe");
     RTLDRMOD hVulkan = NIL_RTLDRMOD;
     PFNRT pfnVkGetInstanceProcAddr = NULL;
@@ -2400,6 +2524,7 @@ int main(int argc, char **argv)
                      VERR_SSM_LOAD_CONFIG_MISMATCH);
     pGpu->enmBackend = VIRTIOGPU_BACKEND_AUTO;
     RTTESTI_CHECK_RC(virtioGpuR3LoadExec(pDev, pSSM, 42, SSM_PASS_FINAL), VERR_SSM_UNSUPPORTED_DATA_UNIT_VERSION);
+    RTTESTI_CHECK_RC(virtioGpuR3LoadExec(pDev, pSSM, 8, SSM_PASS_FINAL), VERR_SSM_UNSUPPORTED_DATA_UNIT_VERSION);
     Ssm.off = 0;
     Ssm.cb--;
     RTTESTI_CHECK_RC(virtioGpuR3LoadExec(pDev, pSSM, VIRTIOGPU_SAVED_STATE_VERSION, SSM_PASS_FINAL), VERR_BUFFER_UNDERFLOW);

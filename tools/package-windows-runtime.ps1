@@ -45,6 +45,11 @@ $runtimeBin = Join-Path $OutputDirectory 'bin'
 $runtimeDocs = Join-Path $OutputDirectory 'docs'
 $runtimeValidation = Join-Path $OutputDirectory 'validation'
 New-Item -ItemType Directory -Force $runtimeBin, $runtimeDocs, $runtimeValidation | Out-Null
+$runtimeTools = Join-Path $OutputDirectory 'tools'
+New-Item -ItemType Directory -Force $runtimeTools | Out-Null
+foreach ($name in @('get-linux-test-image.ps1', 'linux-test-image.json', 'test-linux-virtio-gpu.ps1')) {
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $runtimeTools
+}
 
 # VBoxManage unattended install needs the distro templates at runtime.  Keep
 # the complete template set beside the binaries so a clean ZIP extraction can
@@ -93,12 +98,28 @@ $validationFiles = @(
     'virtio-gpu-tests.log', 'build.log', 'ldr-load-config-tests.log',
     'vmmr0-load-tests.log', 'virtio-gpu-vm-validation.json', 'virtio-gpu-vm-validation.VBox.log',
     'virtio-gpu-vm-display-validation.json', 'virtio-gpu-vm-display-validation.VBox.log',
-    'gpu-display-port.log', 'build-display-port.log'
+    'gpu-display-port.log', 'build-display-port.log', 'pci-cap-before.log',
+    'build-linux-shm-id.log', 'vm-observation-tests.log'
 )
 foreach ($name in $validationFiles) {
     $source = Join-Path $repoRoot (Join-Path '.build\windows' $name)
     if (Test-Path -LiteralPath $source -PathType Leaf) {
         Copy-Item -LiteralPath $source -Destination $runtimeValidation
+    }
+}
+
+# Guest evidence has no seed media or keys: those are removed by the runner.
+foreach ($scenario in @('linux-venus-before', 'linux-venus-final', 'linux-software-final', 'linux-venus-repeat')) {
+    $sourceDir = Join-Path $repoRoot (Join-Path '.build\windows' $scenario)
+    if (Test-Path -LiteralPath $sourceDir -PathType Container) {
+        $destination = Join-Path $runtimeValidation $scenario
+        New-Item -ItemType Directory -Force $destination | Out-Null
+        foreach ($name in @('report.json', 'guest.log', 'serial.log', 'VBox.log')) {
+            $source = Join-Path $sourceDir $name
+            if (Test-Path -LiteralPath $source -PathType Leaf) {
+                Copy-Item -LiteralPath $source -Destination $destination
+            }
+        }
     }
 }
 

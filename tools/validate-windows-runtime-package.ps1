@@ -59,6 +59,9 @@ try {
     if ($LASTEXITCODE -ne 0 -or $testOutput -notmatch 'tstVirtioGPU: SUCCESS') {
         throw "VirtIO-GPU package test failed (exit $LASTEXITCODE)."
     }
+    if ($testOutput -notmatch 'PCI shared-memory capability and MSI-X chain\s+: PASSED') {
+        throw 'Package is missing the passing PCI shared-memory regression.'
+    }
     # Check both synthetic PE32/PE32+ metadata and the actual kernel image in
     # this package. These probes load/relocate in user mode without a driver.
     $loaderChecks = @(

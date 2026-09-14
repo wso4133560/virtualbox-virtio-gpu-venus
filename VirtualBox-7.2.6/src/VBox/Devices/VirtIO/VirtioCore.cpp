@@ -3186,8 +3186,10 @@ static int virtioR3PciTransportInit(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, PVI
         pShm->pciCap.uLength  = pPciParams->cbSharedMemory;
         pShm->uOffsetHi       = 0;
         pShm->uLengthHi       = 0;
-        pShm->uId             = VIRTIO_PCI_SHM_ID_HOST_VISIBLE;
-        RT_ZERO(pShm->abPadding);
+        pShm->pciCap.uId      = VIRTIO_PCI_SHM_ID_HOST_VISIBLE;
+        RT_ZERO(pShm->pciCap.uPadding);
+        /* MSI-X must follow the shared-memory capability, not overwrite it. */
+        pCfg = &pShm->pciCap;
         rc = PDMDevHlpPCIIORegionCreateMmio2(pDevIns, VIRTIO_REGION_PCI_SHARED,
                                              pPciParams->cbSharedMemory, PCI_ADDRESS_SPACE_MEM_PREFETCH,
                                              pcszInstance, pPciParams->ppvSharedMemory, pPciParams->phSharedMemory);
@@ -3208,6 +3210,8 @@ static int virtioR3PciTransportInit(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, PVI
             /* See PDMDevHlp.cpp:pdmR3DevHlp_PCIRegisterMsi */
             LogFunc(("Failed to configure MSI-X (%Rrc). Reverting to INTx\n", rc));
             pVirtio->fMsiSupport = false;
+            /* Do not leave a next pointer to an unregistered capability. */
+            pCfg->uCapNext = 0;
         }
         else
             Log2Func(("Using MSI-X for guest driver notification\n"));

@@ -332,7 +332,7 @@ typedef enum VIRTIOVMSTATECHANGED
 #define VIRTIO_PCI_CAP_DEVICE_CFG                       4        /**< Device-specific PCI cfg capability ID     */
 #define VIRTIO_PCI_CAP_PCI_CFG                          5        /**< PCI CFG capability ID                     */
 #define VIRTIO_PCI_CAP_SHARED_MEMORY_CFG                8        /**< Shared memory capability ID              */
-#define VIRTIO_PCI_SHM_ID_HOST_VISIBLE                  0        /**< Host-visible shared memory region       */
+#define VIRTIO_PCI_SHM_ID_HOST_VISIBLE                  1        /**< VirtIO-GPU host-visible region (0 is undefined). */
 
 #define VIRTIO_PCI_CAP_ID_VENDOR                     0x09        /**< Vendor-specific PCI CFG Device Cap. ID    */
 
@@ -347,7 +347,8 @@ typedef struct virtio_pci_cap
     uint8_t   uCapLen;                                           /**< Generic PCI field: capability length      */
     uint8_t   uCfgType;                                          /**< Identifies the structure.                 */
     uint8_t   uBar;                                              /**< Where to find it.                         */
-    uint8_t   uPadding[3];                                       /**< Pad to full dword.                        */
+    uint8_t   uId;                                               /**< Region ID for capabilities of same type. */
+    uint8_t   uPadding[2];                                       /**< Pad to full dword.                        */
     uint32_t  uOffset;                                           /**< Offset within bar.  (L.E.)                */
     uint32_t  uLength;                                           /**< Length of struct, in bytes. (L.E.)        */
 }  VIRTIO_PCI_CAP_T, *PVIRTIO_PCI_CAP_T;
@@ -419,9 +420,11 @@ typedef struct virtio_pci_shm_cap
     struct virtio_pci_cap pciCap;
     uint32_t uOffsetHi;
     uint32_t uLengthHi;
-    uint8_t  uId;
-    uint8_t  abPadding[3];
 } VIRTIO_PCI_SHM_CAP_T, *PVIRTIO_PCI_SHM_CAP_T;
+AssertCompileSize(VIRTIO_PCI_CAP_T, 16);
+AssertCompileMemberOffset(VIRTIO_PCI_CAP_T, uId, 5);
+/* Linux requires exactly virtio_pci_cap64, not a cap plus a trailing ID. */
+AssertCompileSize(VIRTIO_PCI_SHM_CAP_T, 24);
 
 /**
  * PCI capability data locations (PCI CFG and MMIO).

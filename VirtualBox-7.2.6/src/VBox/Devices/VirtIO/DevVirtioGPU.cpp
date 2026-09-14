@@ -29,7 +29,8 @@
 # error "VirtIO-GPU currently runs entirely in ring 3."
 #endif
 
-#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(8)
+/* Version 9 rejects snapshots containing the old 28-byte PCI SHM capability. */
+#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(9)
 #define VIRTIOGPU_MAX_RESOURCES 256
 #define VIRTIOGPU_MAX_CONTEXTS 64
 #define VIRTIOGPU_MAX_CONTEXT_RESOURCES 64
