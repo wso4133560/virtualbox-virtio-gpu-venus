@@ -88,8 +88,27 @@ try {
     $si.CreateNoWindow = $true
     $kp = [Diagnostics.Process]::Start($si)
     $kp.WaitForExit()
-    if ($kp.ExitCode -ne 0) { throw 'Temporary SSH key generation failed.' }
-    $pubkey = (Get-Content ($key + '.pub') -Raw).Trim()
+    if ($kp.ExitCode -ne 0 -and -not (Test-Path -LiteralPath $key)) {
+        throw 'Temporary SSH key generation failed.'
+    }
+    $pubkeyPath = $key + '.pub'
+    [string]$pubkey = ''
+    if (Test-Path -LiteralPath $pubkeyPath) {
+        $pubkey = Get-Content $pubkeyPath -Raw
+        if ($pubkey) { $pubkey = $pubkey.Trim() }
+    }
+    if (-not $pubkey) {
+        $saved = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $pubkeyOutput = & $keygen -y -f $key 2>$null
+            $pubkeyExit = $LASTEXITCODE
+        } finally { $ErrorActionPreference = $saved }
+        if ($pubkeyExit -ne 0 -or -not $pubkeyOutput) {
+            throw 'Temporary SSH public-key derivation failed.'
+        }
+        $pubkey = ($pubkeyOutput -join "`n").Trim()
+    }
     $userData = @"
 #cloud-config
 hostname: $vmName
