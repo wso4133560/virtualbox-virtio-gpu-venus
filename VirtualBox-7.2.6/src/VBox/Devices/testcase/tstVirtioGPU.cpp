@@ -1870,7 +1870,23 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(virtioGpuR3HandleVenusRingCommand(pGpu, abSetReply, sizeof(abSetReply),
                                                     &RingResp, pTestRing));
     RTTESTI_CHECK(pTestRing && pTestRing->fReplyValid && pTestRing->offReply == uReplyOffset
-                  && pTestRing->cbReply == uReplySize);
+                  && pTestRing->cbReply == uReplySize && pTestRing->fReplyPositionValid
+                  && pTestRing->uReplyPosition == 0);
+    uint8_t abSeekReply[20] = { 0 };
+    uint32_t uSeekReplyType = VIRTIOGPU_VK_CMD_SEEK_REPLY_STREAM;
+    uint64_t uSeekReplyPosition = 12;
+    memcpy(abSeekReply + 0, &uSeekReplyType, sizeof(uSeekReplyType));
+    memcpy(abSeekReply + 8, &uSeekReplyPosition, sizeof(uSeekReplyPosition));
+    RT_ZERO(RingResp);
+    RTTESTI_CHECK(virtioGpuR3HandleVenusRingCommand(pGpu, abSeekReply, sizeof(abSeekReply),
+                                                    &RingResp, pTestRing));
+    RTTESTI_CHECK(pTestRing->uReplyPosition == uSeekReplyPosition);
+    uSeekReplyPosition = 0;
+    memcpy(abSeekReply + 8, &uSeekReplyPosition, sizeof(uSeekReplyPosition));
+    RT_ZERO(RingResp);
+    RTTESTI_CHECK(virtioGpuR3HandleVenusRingCommand(pGpu, abSeekReply, sizeof(abSeekReply),
+                                                    &RingResp, pTestRing));
+    RTTESTI_CHECK(pTestRing->uReplyPosition == 0);
     uint8_t abWriteExtra[28] = { 0 };
     uint32_t uWriteExtraType = VIRTIOGPU_VK_CMD_WRITE_RING_EXTRA;
     uint32_t uWriteExtraFlags = VIRTIOGPU_VK_CMD_FLAG_GENERATE_REPLY;
@@ -1961,6 +1977,12 @@ int main(int argc, char **argv)
     memcpy(&uObserved, pRingRes->pbPixels + uCreateHead, sizeof(uObserved));
     RTTESTI_CHECK(uObserved == uFillTail);
     RTTESTI_CHECK(*(uint32_t *)pGpu->aResources[0].pbPixels == uFillData);
+    uSeekReplyPosition = 12;
+    memcpy(abSeekReply + 8, &uSeekReplyPosition, sizeof(uSeekReplyPosition));
+    RT_ZERO(RingResp);
+    RTTESTI_CHECK(virtioGpuR3HandleVenusRingCommand(pGpu, abSeekReply, sizeof(abSeekReply),
+                                                    &RingResp, pTestRing));
+    RTTESTI_CHECK(pTestRing->uReplyPosition == uSeekReplyPosition);
     static TSTSSM RingSsm;
     RT_ZERO(RingSsm);
     PSSMHANDLE pRingSsm = (PSSMHANDLE)&RingSsm;
@@ -1975,11 +1997,12 @@ int main(int argc, char **argv)
                   && pTestRing->uResourceId == 15 && pTestRing->offBuffer == uCreateBuffer
                   && pTestRing->cbBuffer == uCreateBufferSize && pTestRing->offExtra == uCreateExtra
                   && pTestRing->cbExtra == uCreateExtraSize && pTestRing->offReply == uReplyOffset
-                  && pTestRing->cbReply == uReplySize);
+                  && pTestRing->cbReply == uReplySize && pTestRing->fReplyPositionValid
+                  && pTestRing->uReplyPosition == uSeekReplyPosition);
     memcpy(&uObserved, pRingRes->pbPixels + uCreateStatus, sizeof(uObserved));
     RTTESTI_CHECK(uObserved == (VIRTIOGPU_VK_RING_STATUS_IDLE | VIRTIOGPU_VK_RING_STATUS_ALIVE));
     memcpy(&uObserved, pRingRes->pbPixels + uCreateExtra + uWriteExtraOffset, sizeof(uObserved));
-    RTTESTI_CHECK(uObserved == uWriteExtraValue);
+    RTTESTI_CHECK(uObserved == uNestedValue);
     memcpy(&uObserved, pRingRes->pbPixels + uReplyOffset, sizeof(uObserved));
     RTTESTI_CHECK(uObserved == uWriteExtraType);
     uint8_t abDestroyRing[16] = { 0 };

@@ -29,8 +29,8 @@
 # error "VirtIO-GPU currently runs entirely in ring 3."
 #endif
 
-/* Version 11 adds the complete Venus ring/reply state and resource byte sizes. */
-#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(11)
+/* Version 12 adds the Venus reply-stream seek position. */
+#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(12)
 #define VIRTIOGPU_MAX_RESOURCES 256
 #define VIRTIOGPU_MAX_CONTEXTS 64
 #define VIRTIOGPU_MAX_CONTEXT_RESOURCES 64
@@ -51,6 +51,7 @@
 #define VIRTIOGPU_VK_CMD_PIPELINE_BARRIER2 UINT32_C(204)
 #define VIRTIOGPU_VK_CMD_BLIT_IMAGE2 UINT32_C(211)
 #define VIRTIOGPU_VK_CMD_SET_REPLY_STREAM UINT32_C(178)
+#define VIRTIOGPU_VK_CMD_SEEK_REPLY_STREAM UINT32_C(179)
 #define VIRTIOGPU_VK_CMD_EXECUTE_STREAMS UINT32_C(180)
 #define VIRTIOGPU_VK_CMD_CREATE_RING UINT32_C(188)
 #define VIRTIOGPU_VK_CMD_DESTROY_RING UINT32_C(189)
@@ -151,8 +152,10 @@ typedef struct VIRTIOGPURING
     uint32_t uReplyResourceId;
     uint64_t offReply;
     uint64_t cbReply;
+    uint64_t uReplyPosition;
     uint64_t uSubmittedSeqno;
     bool fReplyValid;
+    bool fReplyPositionValid;
 } VIRTIOGPURING;
 typedef VIRTIOGPURING *PVIRTIOGPURING;
 
@@ -450,6 +453,9 @@ static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pc
             *pcbCommand = fStream ? 36 : 16;
             return cb >= *pcbCommand;
         }
+        case VIRTIOGPU_VK_CMD_SEEK_REPLY_STREAM:
+            *pcbCommand = 20;
+            return cb >= *pcbCommand;
         case VIRTIOGPU_VK_CMD_SUBMIT_VIRTQUEUE_SEQNO:
             *pcbCommand = 24;
             return cb >= *pcbCommand;
@@ -514,6 +520,7 @@ static bool virtioGpuR3HandleVenusRingCommand(PVIRTIOGPU pThis, const uint8_t *p
     memcpy(&uType, pb, sizeof(uType));
     if (uType != VIRTIOGPU_VK_CMD_CREATE_RING && uType != VIRTIOGPU_VK_CMD_DESTROY_RING
         && uType != VIRTIOGPU_VK_CMD_NOTIFY_RING && uType != VIRTIOGPU_VK_CMD_WRITE_RING_EXTRA
+        && uType != VIRTIOGPU_VK_CMD_SEEK_REPLY_STREAM
         && uType != VIRTIOGPU_VK_CMD_SET_REPLY_STREAM && uType != VIRTIOGPU_VK_CMD_EXECUTE_STREAMS
         && uType != VIRTIOGPU_VK_CMD_SUBMIT_VIRTQUEUE_SEQNO && uType != VIRTIOGPU_VK_CMD_WAIT_VIRTQUEUE_SEQNO
         && uType != VIRTIOGPU_VK_CMD_WAIT_RING_SEQNO)
@@ -674,7 +681,11 @@ static bool virtioGpuR3HandleVenusRingCommand(PVIRTIOGPU pThis, const uint8_t *p
         if (!pCurrentRing)
             pResp->Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
         else if (!fStream)
+        {
             pCurrentRing->fReplyValid = false;
+            pCurrentRing->fReplyPositionValid = false;
+            pCurrentRing->uReplyPosition = 0;
+        }
         else
         {
             uint32_t uResource = 0;
@@ -691,9 +702,21 @@ static bool virtioGpuR3HandleVenusRingCommand(PVIRTIOGPU pThis, const uint8_t *p
                 pCurrentRing->uReplyResourceId = uResource;
                 pCurrentRing->offReply = offReply;
                 pCurrentRing->cbReply = cbReply;
+                pCurrentRing->uReplyPosition = 0;
                 pCurrentRing->fReplyValid = true;
+                pCurrentRing->fReplyPositionValid = true;
             }
         }
+    }
+    else if (uType == VIRTIOGPU_VK_CMD_SEEK_REPLY_STREAM)
+    {
+        uint64_t uPosition = 0;
+        memcpy(&uPosition, pb + 8, sizeof(uPosition));
+        if (!pCurrentRing || !pCurrentRing->fReplyValid || !pCurrentRing->fReplyPositionValid
+            || uPosition > pCurrentRing->cbReply)
+            pResp->Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+        else
+            pCurrentRing->uReplyPosition = uPosition;
     }
     else if (uType == VIRTIOGPU_VK_CMD_EXECUTE_STREAMS)
     {
@@ -811,7 +834,11 @@ static bool virtioGpuR3HandleVenusRingCommand(PVIRTIOGPU pThis, const uint8_t *p
         }
     }
     if (pCurrentRing && (uFlags & VIRTIOGPU_VK_CMD_FLAG_GENERATE_REPLY))
-        virtioGpuR3RingWriteReplyType(pThis, pCurrentRing, 0, uType);
+    {
+        uint64_t const uReplyPosition = pCurrentRing->fReplyPositionValid
+                                       ? pCurrentRing->uReplyPosition : 0;
+        virtioGpuR3RingWriteReplyType(pThis, pCurrentRing, uReplyPosition, uType);
+    }
     return true;
 }
 
@@ -5796,8 +5823,10 @@ static DECLCALLBACK(int) virtioGpuR3SaveExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, pRing->uReplyResourceId);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU64(pSSM, pRing->offReply);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU64(pSSM, pRing->cbReply);
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU64(pSSM, pRing->uReplyPosition);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU64(pSSM, pRing->uSubmittedSeqno);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutBool(pSSM, pRing->fReplyValid);
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutBool(pSSM, pRing->fReplyPositionValid);
         }
     }
     for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aScanouts); ++i)
@@ -5966,8 +5995,10 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &pRing->uReplyResourceId);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU64(pSSM, &pRing->offReply);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU64(pSSM, &pRing->cbReply);
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU64(pSSM, &pRing->uReplyPosition);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU64(pSSM, &pRing->uSubmittedSeqno);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetBool(pSSM, &pRing->fReplyValid);
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetBool(pSSM, &pRing->fReplyPositionValid);
             PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResource(pThis, pRing->uResourceId);
             bool fValid = RT_SUCCESS(rc) && pRing->uRingId && pRes && pRes->fSharedMemory
                        && pRing->cb >= sizeof(uint32_t) && pRing->off <= pRes->cbPixels
@@ -5988,7 +6019,11 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
                 fValid = pReply && pReply->pbPixels && pRing->cbReply
                       && pRing->offReply <= pReply->cbPixels
                       && pRing->cbReply <= pReply->cbPixels - pRing->offReply;
+                if (fValid && pRing->fReplyPositionValid && pRing->uReplyPosition > pRing->cbReply)
+                    fValid = false;
             }
+            if (fValid && pRing->fReplyPositionValid != pRing->fReplyValid)
+                fValid = false;
             if (!fValid)
             {
                 rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
