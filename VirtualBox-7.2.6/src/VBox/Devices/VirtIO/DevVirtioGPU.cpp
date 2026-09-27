@@ -30,10 +30,12 @@
 # error "VirtIO-GPU currently runs entirely in ring 3."
 #endif
 
-/* Version 14 retains buffer bindings even when the blob is created later. */
-#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(14)
+/* Version 15 retains buffer bindings and bounded command/fence state. */
+#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(15)
 #define VIRTIOGPU_MAX_RESOURCES 256
 #define VIRTIOGPU_MAX_BUFFER_BINDINGS 512
+#define VIRTIOGPU_MAX_COMMAND_BUFFERS 512
+#define VIRTIOGPU_MAX_FENCES 512
 #define VIRTIOGPU_MAX_CONTEXTS 64
 #define VIRTIOGPU_MAX_CONTEXT_RESOURCES 64
 #define VIRTIOGPU_MAX_SUBMIT_BYTES (UINT32_C(1) * _1M)
@@ -102,6 +104,7 @@
 #define VIRTIOGPU_VK_CMD_BIND_BUFFER_MEMORY2 UINT32_C(138)
 #define VIRTIOGPU_VK_CMD_GET_BUFFER_MEMORY_REQUIREMENTS UINT32_C(30)
 #define VIRTIOGPU_VK_CMD_CREATE_FENCE UINT32_C(35)
+#define VIRTIOGPU_VK_CMD_RESET_FENCES UINT32_C(37)
 #define VIRTIOGPU_VK_CMD_GET_FENCE_STATUS UINT32_C(38)
 #define VIRTIOGPU_VK_CMD_WAIT_FOR_FENCES UINT32_C(39)
 #define VIRTIOGPU_VK_CMD_CREATE_BUFFER UINT32_C(50)
@@ -111,6 +114,7 @@
 #define VIRTIOGPU_VK_CMD_FREE_COMMAND_BUFFERS UINT32_C(89)
 #define VIRTIOGPU_VK_CMD_BEGIN_COMMAND_BUFFER UINT32_C(90)
 #define VIRTIOGPU_VK_CMD_END_COMMAND_BUFFER UINT32_C(91)
+#define VIRTIOGPU_VK_CMD_RESET_COMMAND_BUFFER UINT32_C(92)
 #define VIRTIOGPU_VK_CMD_GET_BUFFER_MEMORY_REQUIREMENTS2 UINT32_C(145)
 #define VIRTIOGPU_VK_CMD_FLAG_GENERATE_REPLY UINT32_C(0x00000001)
 #define VIRTIOGPU_VK_RING_STATUS_IDLE UINT32_C(0x00000001)
@@ -223,6 +227,24 @@ typedef struct VIRTIOGPUBUFFERBINDING
 } VIRTIOGPUBUFFERBINDING;
 typedef VIRTIOGPUBUFFERBINDING *PVIRTIOGPUBUFFERBINDING;
 
+/* Keep the renderer-visible lifecycle state separate from host Vulkan handles.
+ * These bounded tables let replies and saved state preserve command-buffer and
+ * fence semantics while command execution remains in the existing submit path. */
+typedef struct VIRTIOGPUCOMMANDBUFFERSTATE
+{
+    uint64_t uCommandBuffer;
+    bool fRecording;
+    bool fExecutable;
+} VIRTIOGPUCOMMANDBUFFERSTATE;
+typedef VIRTIOGPUCOMMANDBUFFERSTATE *PVIRTIOGPUCOMMANDBUFFERSTATE;
+
+typedef struct VIRTIOGPUFENCESTATE
+{
+    uint64_t uFence;
+    bool fSignaled;
+} VIRTIOGPUFENCESTATE;
+typedef VIRTIOGPUFENCESTATE *PVIRTIOGPUFENCESTATE;
+
 typedef struct VIRTIOGPU
 {
     VIRTIOCORE      Virtio;  /* Must stay first for the common transport. */
@@ -231,6 +253,8 @@ typedef struct VIRTIOGPU
     VIRTIOGPUCONTEXT aContexts[VIRTIOGPU_MAX_CONTEXTS];
     VIRTIOGPURING aRings[8];
     VIRTIOGPUBUFFERBINDING aBufferBindings[VIRTIOGPU_MAX_BUFFER_BINDINGS];
+    VIRTIOGPUCOMMANDBUFFERSTATE aCommandBuffers[VIRTIOGPU_MAX_COMMAND_BUFFERS];
+    VIRTIOGPUFENCESTATE aFences[VIRTIOGPU_MAX_FENCES];
     VIRTIOGPUSCANOUT aScanouts[VIRTIOGPU_MAX_SCANOUTS];
     uint64_t cbAllocated;
     uint8_t *pbSharedMemory;
@@ -382,6 +406,56 @@ static PVIRTIOGPUBUFFERBINDING virtioGpuR3GetBufferBinding(PVIRTIOGPU pThis, uin
         {
             pThis->aBufferBindings[i].uBuffer = uBuffer;
             return &pThis->aBufferBindings[i];
+        }
+    return NULL;
+}
+
+static PVIRTIOGPUCOMMANDBUFFERSTATE virtioGpuR3FindCommandBuffer(PVIRTIOGPU pThis,
+                                                                  uint64_t uCommandBuffer)
+{
+    if (!pThis || !uCommandBuffer)
+        return NULL;
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aCommandBuffers); ++i)
+        if (pThis->aCommandBuffers[i].uCommandBuffer == uCommandBuffer)
+            return &pThis->aCommandBuffers[i];
+    return NULL;
+}
+
+static PVIRTIOGPUCOMMANDBUFFERSTATE virtioGpuR3GetCommandBuffer(PVIRTIOGPU pThis,
+                                                                 uint64_t uCommandBuffer)
+{
+    PVIRTIOGPUCOMMANDBUFFERSTATE pState = virtioGpuR3FindCommandBuffer(pThis, uCommandBuffer);
+    if (pState || !uCommandBuffer)
+        return pState;
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aCommandBuffers); ++i)
+        if (!pThis->aCommandBuffers[i].uCommandBuffer)
+        {
+            pThis->aCommandBuffers[i].uCommandBuffer = uCommandBuffer;
+            return &pThis->aCommandBuffers[i];
+        }
+    return NULL;
+}
+
+static PVIRTIOGPUFENCESTATE virtioGpuR3FindFence(PVIRTIOGPU pThis, uint64_t uFence)
+{
+    if (!pThis || !uFence)
+        return NULL;
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aFences); ++i)
+        if (pThis->aFences[i].uFence == uFence)
+            return &pThis->aFences[i];
+    return NULL;
+}
+
+static PVIRTIOGPUFENCESTATE virtioGpuR3GetFence(PVIRTIOGPU pThis, uint64_t uFence)
+{
+    PVIRTIOGPUFENCESTATE pState = virtioGpuR3FindFence(pThis, uFence);
+    if (pState || !uFence)
+        return pState;
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aFences); ++i)
+        if (!pThis->aFences[i].uFence)
+        {
+            pThis->aFences[i].uFence = uFence;
+            return &pThis->aFences[i];
         }
     return NULL;
 }
@@ -860,6 +934,9 @@ static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pc
         case VIRTIOGPU_VK_CMD_GET_FENCE_STATUS:
             *pcbCommand = 24;
             return cb >= *pcbCommand;
+        case VIRTIOGPU_VK_CMD_RESET_COMMAND_BUFFER:
+            *pcbCommand = 24;
+            return cb >= *pcbCommand;
         case VIRTIOGPU_VK_CMD_DESTROY_BUFFER:
         case VIRTIOGPU_VK_CMD_DESTROY_FENCE:
         case VIRTIOGPU_VK_CMD_FREE_MEMORY:
@@ -884,6 +961,20 @@ static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pc
                 || cEncoded > (cb - 28) / 36)
                 return false;
             *pcbCommand = 28 + (size_t)cEncoded * 36;
+            return cb >= *pcbCommand;
+        }
+        case VIRTIOGPU_VK_CMD_RESET_FENCES:
+        {
+            if (cb < 28)
+                return false;
+            uint32_t cFences = 0;
+            memcpy(&cFences, pb + 16, sizeof(cFences));
+            uint64_t cEncoded = 0;
+            if (!virtioGpuR3ReadU64(pb, cb, 20, &cEncoded)
+                || cFences > 64 || cEncoded > cFences
+                || cEncoded > (cb - 28) / sizeof(uint64_t))
+                return false;
+            *pcbCommand = 28 + (size_t)cEncoded * sizeof(uint64_t);
             return cb >= *pcbCommand;
         }
         case VIRTIOGPU_VK_CMD_ALLOCATE_COMMAND_BUFFERS:
@@ -1641,6 +1732,20 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                     return false;
                 pBinding->cbBuffer = cbBuffer;
             }
+            if (fOutputId && fOutput && uType == VIRTIOGPU_VK_CMD_CREATE_FENCE)
+            {
+                uint64_t fCreateInfo = 0;
+                uint32_t fFence = 0;
+                if (!virtioGpuR3VenusReadU64(pb, cb, 16, &fCreateInfo) || !fCreateInfo
+                    || !virtioGpuR3VenusReadU64(pb, cb, 28, &fCreateInfo)
+                    || fCreateInfo || cb < 40)
+                    return false;
+                memcpy(&fFence, pb + 36, sizeof(fFence));
+                PVIRTIOGPUFENCESTATE pFence = virtioGpuR3GetFence(pThis, uId);
+                if (!pFence)
+                    return false;
+                pFence->fSignaled = !!(fFence & VK_FENCE_CREATE_SIGNALED_BIT);
+            }
             if (!fOutputId
                 || !virtioGpuR3VenusPutU32(&Enc, uType)
                 || !virtioGpuR3VenusPutResult(&Enc, VK_SUCCESS)
@@ -1758,17 +1863,156 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                 return false;
             for (uint64_t i = 0; i < cBuffers; ++i)
                 if (!virtioGpuR3VenusReadU64(pb, cb, off + sizeof(uint64_t) + i * sizeof(uint64_t), &uId)
-                    || !virtioGpuR3VenusPutU64(&Enc, uId))
+                    || !virtioGpuR3VenusPutU64(&Enc, uId)
+                    || !virtioGpuR3GetCommandBuffer(pThis, uId))
                     return false;
             break;
         }
         case VIRTIOGPU_VK_CMD_FREE_COMMAND_BUFFERS:
+        {
+            uint32_t cBuffers = 0;
+            uint64_t cEncoded = 0;
+            if (cb < 36 || !virtioGpuR3VenusReadU64(pb, cb, 28, &cEncoded))
+                return false;
+            memcpy(&cBuffers, pb + 24, sizeof(cBuffers));
+            if (cBuffers > 64 || cEncoded > cBuffers || cEncoded > (cb - 36) / sizeof(uint64_t))
+                return false;
+            for (uint64_t i = 0; i < cEncoded; ++i)
+            {
+                if (!virtioGpuR3VenusReadU64(pb, cb, 36 + i * sizeof(uint64_t), &uId))
+                    return false;
+                PVIRTIOGPUCOMMANDBUFFERSTATE pState = virtioGpuR3FindCommandBuffer(pThis, uId);
+                if (pState)
+                    RT_ZERO(*pState);
+            }
             if (!virtioGpuR3VenusPutU32(&Enc, uType))
                 return false;
             break;
+        }
         case VIRTIOGPU_VK_CMD_QUEUE_SUBMIT:
+        {
+            uint32_t cSubmits = 0;
+            uint64_t cEncoded = 0;
+            if (cb < 28 || !virtioGpuR3VenusReadU64(pb, cb, 20, &cEncoded))
+                return false;
+            memcpy(&cSubmits, pb + 16, sizeof(cSubmits));
+            if (cSubmits > 64 || cEncoded > cSubmits)
+                return false;
+            size_t off = 28;
+            for (uint64_t i = 0; i < cEncoded; ++i)
+            {
+                if (off > cb || cb - off < 24)
+                    return false;
+                off += 4 + 8;
+                uint32_t cWait = 0, cCmd = 0, cSignal = 0;
+                uint64_t cWaitEncoded = 0, cStageEncoded = 0, cCmdEncoded = 0, cSignalEncoded = 0;
+                memcpy(&cWait, pb + off, sizeof(cWait)); off += 4;
+                if (!virtioGpuR3VenusReadU64(pb, cb, off, &cWaitEncoded)) return false;
+                off += 8;
+                if (cWaitEncoded > cWait || cWaitEncoded > (cb - off) / 8) return false;
+                off += (size_t)cWaitEncoded * 8;
+                if (!virtioGpuR3VenusReadU64(pb, cb, off, &cStageEncoded)) return false;
+                off += 8;
+                if (cStageEncoded > cWait || cStageEncoded > (cb - off) / 4) return false;
+                off += (size_t)cStageEncoded * 4;
+                if (off > cb - sizeof(uint32_t)) return false;
+                memcpy(&cCmd, pb + off, sizeof(cCmd)); off += 4;
+                if (!virtioGpuR3VenusReadU64(pb, cb, off, &cCmdEncoded)) return false;
+                off += 8;
+                if (cCmdEncoded > cCmd || cCmdEncoded > (cb - off) / 8) return false;
+                for (uint64_t j = 0; j < cCmdEncoded; ++j)
+                {
+                    if (!virtioGpuR3VenusReadU64(pb, cb, off + j * 8, &uId)) return false;
+                    PVIRTIOGPUCOMMANDBUFFERSTATE pState = virtioGpuR3FindCommandBuffer(pThis, uId);
+                    if (pState && !pState->fExecutable)
+                        return false;
+                }
+                off += (size_t)cCmdEncoded * 8;
+                if (off > cb - sizeof(uint32_t)) return false;
+                memcpy(&cSignal, pb + off, sizeof(cSignal)); off += 4;
+                if (!virtioGpuR3VenusReadU64(pb, cb, off, &cSignalEncoded)) return false;
+                off += 8;
+                if (cSignalEncoded > cSignal || cSignalEncoded > (cb - off) / 8) return false;
+                off += (size_t)cSignalEncoded * 8;
+            }
+            if (off > cb - sizeof(uint64_t)) return false;
+            if (!virtioGpuR3VenusReadU64(pb, cb, off, &uId)) return false;
+            if (uId)
+            {
+                PVIRTIOGPUFENCESTATE pFence = virtioGpuR3FindFence(pThis, uId);
+                if (!pFence)
+                    return false;
+                pFence->fSignaled = true;
+            }
+            if (!virtioGpuR3VenusPutU32(&Enc, uType)
+                || !virtioGpuR3VenusPutResult(&Enc, VK_SUCCESS))
+                return false;
+            break;
+        }
         case VIRTIOGPU_VK_CMD_GET_FENCE_STATUS:
+        {
+            if (!virtioGpuR3VenusReadU64(pb, cb, 16, &uId))
+                return false;
+            PVIRTIOGPUFENCESTATE pFence = virtioGpuR3FindFence(pThis, uId);
+            if (!pFence || !virtioGpuR3VenusPutU32(&Enc, uType)
+                || !virtioGpuR3VenusPutResult(&Enc, pFence->fSignaled ? VK_SUCCESS : VK_NOT_READY))
+                return false;
+            break;
+        }
         case VIRTIOGPU_VK_CMD_WAIT_FOR_FENCES:
+        {
+            uint32_t cFences = 0;
+            uint64_t cEncoded = 0;
+            if (cb < 28 || !virtioGpuR3VenusReadU64(pb, cb, 20, &cEncoded))
+                return false;
+            memcpy(&cFences, pb + 16, sizeof(cFences));
+            if (cFences > 64 || cEncoded > cFences || cEncoded > (cb - 28) / 8)
+                return false;
+            bool fWaitAll = false;
+            size_t off = 28 + (size_t)cEncoded * 8;
+            uint32_t fWaitAll32 = 0;
+            uint64_t uTimeout = 0;
+            if (off > cb - sizeof(uint32_t) - sizeof(uint64_t)) return false;
+            memcpy(&fWaitAll32, pb + off, sizeof(fWaitAll32));
+            memcpy(&uTimeout, pb + off + sizeof(uint32_t), sizeof(uTimeout));
+            fWaitAll = !!fWaitAll32;
+            bool fAny = false, fReady = fWaitAll;
+            for (uint64_t i = 0; i < cEncoded; ++i)
+            {
+                if (!virtioGpuR3VenusReadU64(pb, cb, 28 + i * 8, &uId)) return false;
+                PVIRTIOGPUFENCESTATE pFence = virtioGpuR3FindFence(pThis, uId);
+                if (!pFence) return false;
+                fAny |= pFence->fSignaled;
+                if (fWaitAll) fReady &= pFence->fSignaled;
+            }
+            if (!fWaitAll) fReady = fAny;
+            (void)uTimeout;
+            if (!virtioGpuR3VenusPutU32(&Enc, uType)
+                || !virtioGpuR3VenusPutResult(&Enc, fReady ? VK_SUCCESS : VK_TIMEOUT))
+                return false;
+            break;
+        }
+        case VIRTIOGPU_VK_CMD_RESET_FENCES:
+        {
+            uint32_t cFences = 0;
+            uint64_t cEncoded = 0;
+            if (cb < 28 || !virtioGpuR3VenusReadU64(pb, cb, 20, &cEncoded))
+                return false;
+            memcpy(&cFences, pb + 16, sizeof(cFences));
+            if (cFences > 64 || cEncoded > cFences || cEncoded > (cb - 28) / 8)
+                return false;
+            for (uint64_t i = 0; i < cEncoded; ++i)
+            {
+                if (!virtioGpuR3VenusReadU64(pb, cb, 28 + i * 8, &uId)) return false;
+                PVIRTIOGPUFENCESTATE pFence = virtioGpuR3FindFence(pThis, uId);
+                if (!pFence) return false;
+                pFence->fSignaled = false;
+            }
+            if (!virtioGpuR3VenusPutU32(&Enc, uType)
+                || !virtioGpuR3VenusPutResult(&Enc, VK_SUCCESS))
+                return false;
+            break;
+        }
         case VIRTIOGPU_VK_CMD_FLUSH_MAPPED_MEMORY_RANGES:
         case VIRTIOGPU_VK_CMD_INVALIDATE_MAPPED_MEMORY_RANGES:
             if (!virtioGpuR3VenusPutU32(&Enc, uType)
@@ -1777,6 +2021,32 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
             break;
         case VIRTIOGPU_VK_CMD_BEGIN_COMMAND_BUFFER:
         case VIRTIOGPU_VK_CMD_END_COMMAND_BUFFER:
+        {
+            if (!virtioGpuR3VenusReadU64(pb, cb, 8, &uId))
+                return false;
+            PVIRTIOGPUCOMMANDBUFFERSTATE pState = virtioGpuR3GetCommandBuffer(pThis, uId);
+            if (!pState)
+                return false;
+            if (uType == VIRTIOGPU_VK_CMD_BEGIN_COMMAND_BUFFER)
+            {
+                pState->fRecording = true;
+                pState->fExecutable = false;
+            }
+            else
+            {
+                pState->fRecording = false;
+                pState->fExecutable = true;
+            }
+            if (!virtioGpuR3VenusPutU32(&Enc, uType)
+                || !virtioGpuR3VenusPutResult(&Enc, VK_SUCCESS))
+                return false;
+            break;
+        }
+        case VIRTIOGPU_VK_CMD_RESET_COMMAND_BUFFER:
+            if (!virtioGpuR3VenusReadU64(pb, cb, 8, &uId))
+                return false;
+            if (PVIRTIOGPUCOMMANDBUFFERSTATE pState = virtioGpuR3FindCommandBuffer(pThis, uId))
+                pState->fRecording = pState->fExecutable = false;
             if (!virtioGpuR3VenusPutU32(&Enc, uType)
                 || !virtioGpuR3VenusPutResult(&Enc, VK_SUCCESS))
                 return false;
@@ -1809,7 +2079,14 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
             break;
         }
         case VIRTIOGPU_VK_CMD_UNMAP_MEMORY:
+            if (!virtioGpuR3VenusPutU32(&Enc, uType))
+                return false;
+            break;
         case VIRTIOGPU_VK_CMD_DESTROY_FENCE:
+            if (!virtioGpuR3VenusReadU64(pb, cb, 16, &uId))
+                return false;
+            if (PVIRTIOGPUFENCESTATE pFence = virtioGpuR3FindFence(pThis, uId))
+                RT_ZERO(*pFence);
             if (!virtioGpuR3VenusPutU32(&Enc, uType))
                 return false;
             break;
@@ -2987,6 +3264,8 @@ static void virtioGpuR3FreeResources(PVIRTIOGPU pThis)
     RT_ZERO(pThis->aContexts);
     RT_ZERO(pThis->aRings);
     RT_ZERO(pThis->aBufferBindings);
+    RT_ZERO(pThis->aCommandBuffers);
+    RT_ZERO(pThis->aFences);
     pThis->cbAllocated = 0;
     pThis->offSharedMemoryNext = 0;
 }
@@ -7970,6 +8249,19 @@ static DECLCALLBACK(int) virtioGpuR3SaveExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
         if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU64(pSSM, pBinding->offMemory);
         if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU64(pSSM, pBinding->cbBuffer);
     }
+    for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aCommandBuffers); ++i)
+    {
+        VIRTIOGPUCOMMANDBUFFERSTATE const *pState = &pThis->aCommandBuffers[i];
+        if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU64(pSSM, pState->uCommandBuffer);
+        if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutBool(pSSM, pState->fRecording);
+        if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutBool(pSSM, pState->fExecutable);
+    }
+    for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aFences); ++i)
+    {
+        VIRTIOGPUFENCESTATE const *pFence = &pThis->aFences[i];
+        if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU64(pSSM, pFence->uFence);
+        if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutBool(pSSM, pFence->fSignaled);
+    }
     for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aScanouts); ++i)
         rc = pDevIns->pHlpR3->pfnSSMPutMem(pSSM, &pThis->aScanouts[i], sizeof(pThis->aScanouts[i]));
     if (RT_SUCCESS(rc))
@@ -8188,6 +8480,35 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
                    && (pBinding->uBuffer || (!pBinding->uMemory && !pBinding->offMemory && !pBinding->cbBuffer));
         for (unsigned j = 0; fValid && pBinding->uBuffer && j < i; ++j)
             if (pThis->aBufferBindings[j].uBuffer == pBinding->uBuffer)
+                fValid = false;
+        if (RT_SUCCESS(rc) && !fValid)
+            rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
+    }
+    for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aCommandBuffers); ++i)
+    {
+        PVIRTIOGPUCOMMANDBUFFERSTATE pState = &pThis->aCommandBuffers[i];
+        rc = pDevIns->pHlpR3->pfnSSMGetU64(pSSM, &pState->uCommandBuffer);
+        if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetBool(pSSM, &pState->fRecording);
+        if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetBool(pSSM, &pState->fExecutable);
+        bool fValid = pState->uCommandBuffer
+                   ? (!pState->fRecording || !pState->fExecutable)
+                   : (!pState->fRecording && !pState->fExecutable);
+        for (unsigned j = 0; RT_SUCCESS(rc) && fValid && pState->uCommandBuffer && j < i; ++j)
+            if (pThis->aCommandBuffers[j].uCommandBuffer
+                && pThis->aCommandBuffers[j].uCommandBuffer == pState->uCommandBuffer)
+                fValid = false;
+        if (RT_SUCCESS(rc) && !fValid)
+            rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
+    }
+    for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aFences); ++i)
+    {
+        PVIRTIOGPUFENCESTATE pFence = &pThis->aFences[i];
+        rc = pDevIns->pHlpR3->pfnSSMGetU64(pSSM, &pFence->uFence);
+        if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetBool(pSSM, &pFence->fSignaled);
+        bool fValid = pFence->uFence != 0 || !pFence->fSignaled;
+        for (unsigned j = 0; RT_SUCCESS(rc) && fValid && pFence->uFence && j < i; ++j)
+            if (pThis->aFences[j].uFence
+                && pThis->aFences[j].uFence == pFence->uFence)
                 fValid = false;
         if (RT_SUCCESS(rc) && !fValid)
             rc = VERR_SSM_LOAD_CONFIG_MISMATCH;

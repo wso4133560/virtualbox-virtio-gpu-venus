@@ -111,7 +111,9 @@ foreach ($name in $validationFiles) {
 # Guest evidence has no seed media or keys: those are removed by the runner.
 foreach ($scenario in @('linux-venus-before', 'linux-venus-final', 'linux-software-final', 'linux-venus-repeat',
                         'linux-venus-final-admin46', 'linux-venus-save-restore-admin47',
-                        'linux-venus-cpu2-admin48', 'linux-venus-reset-admin51')) {
+                        'linux-venus-cpu2-admin48', 'linux-venus-reset-admin51',
+                        'linux-venus-object-admin52', 'linux-venus-object-save-admin53',
+                        'linux-venus-object-reset-admin55')) {
     $sourceDir = Join-Path $repoRoot (Join-Path '.build\windows' $scenario)
     if (Test-Path -LiteralPath $sourceDir -PathType Container) {
         $destination = Join-Path $runtimeValidation $scenario

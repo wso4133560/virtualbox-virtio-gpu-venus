@@ -38,7 +38,7 @@ $image = .\tools\get-linux-test-image.ps1
 
 `guest.log` 保存 Linux 版本、`lspci -nnk/-vv`、DRM 节点、virtio 驱动链接及内核日志；`serial.log` 保存从启动到关闭的串口输出；`VBox.log` 保存宿主设备和 VM 日志。JSON 记录 CPU 配置、启动就绪耗时、宿主 Vulkan 设备和运行文件哈希。启用 Vulkan 选项时，`guestVulkanVerified`、`guestVulkanWorkloadVerified`、`resetVerified` 和 `saveRestoreVerified` 分别记录初始化、工作负载、reset 后和恢复后的结果。
 
-2026-09-28 的最终验收报告为 `.build/windows/linux-venus-final-admin46/report.json`：`guestReady=true`、`sshReady=true`、`drmDriverBound=true`、`hostVisible=true`、`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`cleanupErrors=[]`。标准 `vulkaninfo --summary` 识别设备为 `Virtio-GPU Venus (AMD Radeon 780M Graphics)`，宿主运行时 `VBoxDD.dll` SHA256 为 `6211FE9BECA5F3FC9C86E648DA55A1EC479517CF8014748C7A173A2CDAEE1CDD`。
+2026-09-28 的最终验收报告为 `.build/windows/linux-venus-final-admin46/report.json`：`guestReady=true`、`sshReady=true`、`drmDriverBound=true`、`hostVisible=true`、`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`cleanupErrors=[]`。标准 `vulkaninfo --summary` 识别设备为 `Virtio-GPU Venus (AMD Radeon 780M Graphics)`；对象生命周期改动后的运行时 `VBoxDD.dll` SHA256 为 `E7DCC24FCA9DDDD7272C1CC28D21964F18B2C32E93E8B91CB5E91E5E323D74D3`。
 
 2026-09-28 的 saved-state 验收报告为 `.build/windows/linux-venus-save-restore-admin47/report.json`：`saveRestoreVerified=true`、`saveRestoreVulkanExit=0`、`cleanupErrors=[]`；恢复日志 `.build/windows/linux-venus-save-restore-admin47/guest-vulkan-restore.log` 同时包含 `VULKANINFO_PASS` 和 `VULKAN_WORKLOAD_PASS`。
 
@@ -47,6 +47,8 @@ $image = .\tools\get-linux-test-image.ps1
 `-VerifyReset` 会执行 `controlvm reset`，等待同一 VM 的 SSH 再次可用，并把第二次探测写入 `guest-vulkan-reset.log`；未跳过 `vulkaninfo` 时要求 `VULKANINFO_PASS`，所有模式都要求 `VULKAN_WORKLOAD_PASS` 和退出码 0 才报告 `resetVerified=true`。
 
 实际 reset 报告 `.build/windows/linux-venus-reset-admin51/report.json` 的 `resetVerified=true`、`resetVulkanExit=0`、`cleanupErrors=[]`、`passed=true`；该次使用 `-SkipGuestVulkanInfo`，日志中的两次 workload 均为 `VULKAN_WORKLOAD_PASS`，完整 `vulkaninfo` 证据仍见 admin46。
+
+对象生命周期改动后的复验报告为 `.build/windows/linux-venus-object-admin52/report.json`、`.build/windows/linux-venus-object-save-admin53/report.json` 和 `.build/windows/linux-venus-object-reset-admin55/report.json`：标准 Vulkan/workload、saved-state 恢复后的同一 workload、reset 后 workload 均通过，且 `cleanupErrors=[]`。
 
 ## 2026-09-14 协议修复证据
 
