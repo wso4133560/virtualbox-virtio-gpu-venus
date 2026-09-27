@@ -11,7 +11,7 @@
 - 工作目录：`D:\code\virtualbox-virtio-gpu-venus`
 - 分支：`main`
 - 远端：`git@github.com:wso4133560/virtualbox-virtio-gpu-venus.git`
-- 最新已推送提交：`064169f89b2cbe64635426cecf2a35c7f9bd7cd8`（Extend Venus image binding and object dispatch；本阶段新提交将在交接前更新）
+- 最新已推送提交：`72421ab1a6735efaf71cbd7c76fec0f634febb04`（Handle zero output handles in Venus creates）
 - 前两个相关提交：`df51bd21`（ring notify/command-stream execution）、`0116a7f5`（ring protocol state/progress）
 - 开始新工作先执行 `git status --short`；交接时应保持工作树干净。
 
