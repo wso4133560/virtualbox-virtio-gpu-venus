@@ -11,7 +11,7 @@
 - 工作目录：`D:\code\virtualbox-virtio-gpu-venus`
 - 分支：`main`
 - 远端：`git@github.com:wso4133560/virtualbox-virtio-gpu-venus.git`
-- 最新已推送提交：`affc424c217d1a5c2e1d630e601d2ae0ef7fab24`（Venus semaphore lifecycle and submit synchronization）
+- 最新已推送提交：`47152002e02f2d99d2daaf22ef4d99cec3bbd98c`（Venus stress validation and handoff update）
 - 前两个相关提交：`df51bd21`（ring notify/command-stream execution）、`0116a7f5`（ring protocol state/progress）
 - 开始新工作先执行 `git status --short`；交接时应保持工作树干净。
 
