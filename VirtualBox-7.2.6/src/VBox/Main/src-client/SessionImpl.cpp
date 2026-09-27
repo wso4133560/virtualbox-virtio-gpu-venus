@@ -343,7 +343,11 @@ HRESULT Session::assignMachine(const ComPtr<IMachine> &aMachine,
 
     /* query IInternalMachineControl interface */
     mControl = aMachine;
-    AssertReturn(!!mControl, E_FAIL);
+    if (!mControl)
+    {
+        LogRel(("Session::assignMachine: IInternalMachineControl query failed\n"));
+        return setError(E_NOINTERFACE, "Session machine does not expose IInternalMachineControl");
+    }
 
     HRESULT hrc = S_OK;
 #ifndef VBOX_COM_INPROC_API_CLIENT
@@ -383,9 +387,10 @@ HRESULT Session::assignMachine(const ComPtr<IMachine> &aMachine,
 #endif /* VBOX_WITH_GENERIC_SESSION_WATCHER */
         if (!mClientTokenHolder->isReady())
         {
+            LogRel(("Session::assignMachine: client token holder is not ready\n"));
             delete mClientTokenHolder;
             mClientTokenHolder = NULL;
-            hrc = E_FAIL;
+            hrc = setError(E_ACCESSDENIED, "Session client token could not be acquired");
         }
     }
     catch (std::bad_alloc &)
@@ -397,6 +402,9 @@ HRESULT Session::assignMachine(const ComPtr<IMachine> &aMachine,
      *  Reference the VirtualBox object to ensure the server is up
      *  until the session is closed
      */
+    if (FAILED(hrc))
+        LogRel(("Session::assignMachine: Parent query failed with hrc=%08RX\n", hrc));
+
     if (SUCCEEDED(hrc))
        hrc = aMachine->COMGETTER(Parent)(mVirtualBox.asOutParam());
 

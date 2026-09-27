@@ -4,6 +4,7 @@
  */
 #define LOG_GROUP LOG_GROUP_DEV_VIRTIO
 #include <iprt/assert.h>
+#include <iprt/asm.h>
 #include <iprt/errcore.h>
 #include <iprt/string.h>
 #include <iprt/sg.h>
@@ -351,7 +352,9 @@ static bool virtioGpuR3RingLoadU32(PVIRTIOGPU pThis, PVIRTIOGPURING pRing,
     if (!puValue || !virtioGpuR3RingRangeValid(pThis, pRing, off, sizeof(uint32_t)))
         return false;
     PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResource(pThis, pRing->uResourceId);
+    ASMCompilerBarrier();
     memcpy(puValue, pRes->pbPixels + pRing->off + off, sizeof(uint32_t));
+    ASMCompilerBarrier();
     return true;
 }
 
@@ -361,7 +364,9 @@ static bool virtioGpuR3RingStoreU32(PVIRTIOGPU pThis, PVIRTIOGPURING pRing,
     if (!virtioGpuR3RingRangeValid(pThis, pRing, off, sizeof(uint32_t)))
         return false;
     PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResource(pThis, pRing->uResourceId);
+    ASMCompilerBarrier();
     memcpy(pRes->pbPixels + pRing->off + off, &uValue, sizeof(uValue));
+    ASMCompilerBarrier();
     return true;
 }
 
@@ -402,12 +407,24 @@ static bool virtioGpuR3RingWriteReplyType(PVIRTIOGPU pThis, PVIRTIOGPURING pRing
     return virtioGpuR3RingWriteReply(pThis, pRing, off, &uType, sizeof(uType));
 }
 
+static void virtioGpuR3RingPublishAt(PVIRTIOGPU pThis, PVIRTIOGPURING pRing,
+                                     uint32_t uHead, uint32_t uStatus)
+{
+    /* Reply data and status must be visible before the guest observes the
+     * newly consumed head.  The shared words are guest-owned memory, so keep
+     * the ordering explicit around the validated memcpy accessors. */
+    virtioGpuR3RingStoreU32(pThis, pRing, pRing->offStatus, uStatus);
+    ASMCompilerBarrier();
+    virtioGpuR3RingStoreU32(pThis, pRing, pRing->offHead, uHead);
+}
+
 static void virtioGpuR3RingPublish(PVIRTIOGPU pThis, PVIRTIOGPURING pRing, uint32_t uStatus)
 {
     uint32_t uTail = 0;
     if (virtioGpuR3RingLoadU32(pThis, pRing, pRing->offTail, &uTail))
-        virtioGpuR3RingStoreU32(pThis, pRing, pRing->offHead, uTail);
-    virtioGpuR3RingStoreU32(pThis, pRing, pRing->offStatus, uStatus);
+        virtioGpuR3RingPublishAt(pThis, pRing, uTail, uStatus);
+    else
+        virtioGpuR3RingStoreU32(pThis, pRing, pRing->offStatus, uStatus);
 }
 
 static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pcbCommand)
@@ -859,32 +876,43 @@ static void virtioGpuR3ProcessVenusRings(PVIRTIOGPU pThis)
             continue;
         if (cbAvailable > pRing->cbBuffer || cbAvailable > VIRTIOGPU_MAX_SUBMIT_BYTES)
         {
-            virtioGpuR3RingPublish(pThis, pRing, VIRTIOGPU_VK_RING_STATUS_IDLE | VIRTIOGPU_VK_RING_STATUS_ALIVE);
+            virtioGpuR3RingPublishAt(pThis, pRing, uHead,
+                                     VIRTIOGPU_VK_RING_STATUS_FATAL | VIRTIOGPU_VK_RING_STATUS_ALIVE);
             continue;
         }
         uint8_t *pbCommands = (uint8_t *)RTMemAlloc(cbAvailable);
         if (!pbCommands || !virtioGpuR3RingRead(pThis, pRing, uHead, pbCommands, cbAvailable))
         {
             RTMemFree(pbCommands);
+            virtioGpuR3RingPublishAt(pThis, pRing, uHead,
+                                     VIRTIOGPU_VK_RING_STATUS_FATAL | VIRTIOGPU_VK_RING_STATUS_ALIVE);
             continue;
         }
         size_t off = 0;
+        bool fFatal = false;
         while (off < cbAvailable)
         {
             size_t cbCommand = 0;
             if (!virtioGpuR3VenusCommandSize(pbCommands + off, cbAvailable - off, &cbCommand)
                 || !cbCommand || cbCommand > cbAvailable - off)
+            {
+                fFatal = true;
                 break;
+            }
             VIRTIOGPUDISPLAYRESP Resp;
             RT_ZERO(Resp);
-            virtioGpuR3HandleVenusRingCommand(pThis, pbCommands + off, cbCommand, &Resp, pRing);
+            if (!virtioGpuR3HandleVenusRingCommand(pThis, pbCommands + off, cbCommand, &Resp, pRing))
+            {
+                fFatal = true;
+                break;
+            }
             off += cbCommand;
         }
         RTMemFree(pbCommands);
-        /* Unsupported Vulkan packets are retired as a unit.  This keeps the
-         * protocol's progress guarantee while leaving execution to the
-         * command-specific backend implementation. */
-        virtioGpuR3RingPublish(pThis, pRing, VIRTIOGPU_VK_RING_STATUS_IDLE | VIRTIOGPU_VK_RING_STATUS_ALIVE);
+        virtioGpuR3RingPublishAt(pThis, pRing, uHead + (uint32_t)off,
+                                 (fFatal ? VIRTIOGPU_VK_RING_STATUS_FATAL
+                                         : VIRTIOGPU_VK_RING_STATUS_IDLE)
+                                 | VIRTIOGPU_VK_RING_STATUS_ALIVE);
     }
 }
 

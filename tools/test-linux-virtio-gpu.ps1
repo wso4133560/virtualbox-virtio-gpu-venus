@@ -37,6 +37,17 @@ if (-not $ReportDirectory) { $ReportDirectory = Join-Path $repo ('.build\windows
 $reportDir = [IO.Path]::GetFullPath($ReportDirectory)
 if (Test-Path -LiteralPath $reportDir) { throw "Report directory already exists: $reportDir" }
 New-Item -ItemType Directory -Force $reportDir | Out-Null
+$runtimeHome = Join-Path $reportDir 'vbox-home'
+New-Item -ItemType Directory -Force $runtimeHome | Out-Null
+$previousVBoxUserHome = $env:VBOX_USER_HOME
+$previousPath = $env:Path
+$runtimeComponents = @('VBoxManage.exe', 'VBoxSVC.exe', 'VBoxC.dll', 'VBoxDD.dll', 'VBoxHeadless.exe', 'VMMR0.r0')
+foreach ($name in $runtimeComponents) {
+    $component = Join-Path $runtime $name
+    if (-not (Test-Path -LiteralPath $component -PathType Leaf)) {
+        throw "Runtime directory is incomplete; missing $component"
+    }
+}
 $seedDir = Join-Path $reportDir 'seed'
 New-Item -ItemType Directory $seedDir | Out-Null
 $key = Join-Path $seedDir 'id_ed25519'
@@ -73,10 +84,19 @@ $hostVulkanDevice = $null
 $guestVulkanVerified = $false
 $guestVulkanExit = $null
 $guestVulkanDevice = $null
+$vboxSupState = $null
+$vboxSupWin32Exit = $null
 $runtimeHashes = [ordered]@{}
-foreach ($name in @('VBoxDD.dll', 'VBoxHeadless.exe', 'VMMR0.r0')) {
+foreach ($name in $runtimeComponents) {
     $runtimeHashes[$name] = (Get-FileHash (Join-Path $runtime $name) -Algorithm SHA256).Hash
 }
+$supQuery = (& sc.exe query VBoxSup 2>$null | Out-String)
+$supStateMatch = [regex]::Match($supQuery, '(?m)^\s*STATE\s*:\s*\d+\s+(\S+)')
+if ($supStateMatch.Success) { $vboxSupState = $supStateMatch.Groups[1].Value }
+$supExitMatch = [regex]::Match($supQuery, '(?m)^\s*WIN32_EXIT_CODE\s*:\s*\d+\s+\((0x[0-9A-Fa-f]+)\)')
+if ($supExitMatch.Success) { $vboxSupWin32Exit = $supExitMatch.Groups[1].Value }
+$env:VBOX_USER_HOME = $runtimeHome
+$env:Path = "$runtime;$env:Path"
 $ready = $false
 $state = 'not-created'
 try {
@@ -268,40 +288,66 @@ exit "$rc"
     $failure = $_.Exception.Message
     Write-Warning $failure
 } finally {
-    if ($created) {
-        try {
-            $state = Vm-State
-            if ($state -notin @('poweroff', 'aborted')) {
-                VBox @('controlvm', $vmName, 'acpipowerbutton') | Out-Null
-                $stopDeadline = [DateTime]::UtcNow.AddSeconds(20)
-                do { Start-Sleep -Milliseconds 500; $state = Vm-State }
-                while ($state -notin @('poweroff', 'aborted') -and [DateTime]::UtcNow -lt $stopDeadline)
-                if ($state -notin @('poweroff', 'aborted')) { VBox @('controlvm', $vmName, 'poweroff') | Out-Null }
+    try {
+        if ($created) {
+            try {
+                $state = Vm-State
+                if ($state -notin @('poweroff', 'aborted')) {
+                    VBox @('controlvm', $vmName, 'acpipowerbutton') | Out-Null
+                    $stopDeadline = [DateTime]::UtcNow.AddSeconds(20)
+                    do { Start-Sleep -Milliseconds 500; $state = Vm-State }
+                    while ($state -notin @('poweroff', 'aborted') -and [DateTime]::UtcNow -lt $stopDeadline)
+                    if ($state -notin @('poweroff', 'aborted')) { VBox @('controlvm', $vmName, 'poweroff') | Out-Null }
+                }
+            } catch { $cleanupErrors += $_.Exception.Message }
+            $log = Join-Path $vmDir 'Logs\VBox.log'
+            if (Test-Path -LiteralPath $log) {
+                try {
+                    Copy-Item -LiteralPath $log -Destination (Join-Path $reportDir 'VBox.log')
+                    $match = [regex]::Match((Get-Content $log -Raw), "Vulkan host device '([^']+)'")
+                    if ($match.Success) { $hostVulkanDevice = $match.Groups[1].Value }
+                } catch { $cleanupErrors += "VBox.log collection failed: $($_.Exception.Message)" }
             }
-        } catch { $cleanupErrors += $_.Exception.Message }
-        $log = Join-Path $vmDir 'Logs\VBox.log'
-        if (Test-Path -LiteralPath $log) {
-            Copy-Item -LiteralPath $log -Destination (Join-Path $reportDir 'VBox.log')
-            $match = [regex]::Match((Get-Content $log -Raw), "Vulkan host device '([^']+)'")
-            if ($match.Success) { $hostVulkanDevice = $match.Groups[1].Value }
+            $unregistered = $false
+            for ($attempt = 0; $attempt -lt 10 -and -not $unregistered; $attempt++) {
+                try {
+                    VBox @('unregistervm', $vmName, '--delete') | Out-Null
+                    $unregistered = $true
+                } catch {
+                    if ($attempt -lt 9) { Start-Sleep -Milliseconds 500 }
+                    else { $cleanupErrors += $_.Exception.Message }
+                }
+            }
         }
-        try { VBox @('unregistervm', $vmName, '--delete') | Out-Null }
-        catch { $cleanupErrors += $_.Exception.Message }
+        # Remove authentication material after every run, including failed boots.
+        # VM disk deletion failures are visible in the report; never kill services.
+        $seedRemoved = $false
+        for ($attempt = 0; $attempt -lt 10 -and -not $seedRemoved; $attempt++) {
+            try {
+                Remove-Item -LiteralPath $seedDir -Recurse -Force -ErrorAction Stop
+                $seedRemoved = $true
+            } catch {
+                if ($attempt -lt 9) { Start-Sleep -Milliseconds 500 }
+                else { $cleanupErrors += "Seed cleanup failed: $($_.Exception.Message)" }
+            }
+        }
+        [ordered]@{
+            timestamp = (Get-Date).ToString('o'); vmName = $vmName; gpuBackend = $GpuBackend
+            sourceImage = $pin; diskMB = 20480; cpuCount = $CpuCount; sshBind = "127.0.0.1:$SshPort"
+            created = $created; guestReady = $ready; sshReady = $sshReady; drmDriverBound = $driverBound
+            hostVisible = $hostVisible
+            readySeconds = $readySeconds; hostVulkanDevice = $hostVulkanDevice
+            runtimeDirectory = $runtime; vboxUserHome = $runtimeHome; runtimeHashes = $runtimeHashes
+            vboxSupState = $vboxSupState; vboxSupWin32Exit = $vboxSupWin32Exit
+            guestVulkanVerified = $guestVulkanVerified; guestVulkanExit = $guestVulkanExit
+            guestVulkanDevice = $guestVulkanDevice; phase = $phase; failure = $failure
+            cleanupErrors = @($cleanupErrors)
+            passed = [bool]($driverBound -and -not $failure -and -not $cleanupErrors.Count)
+        } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $reportDir 'report.json') -Encoding utf8
+    } finally {
+        $env:VBOX_USER_HOME = $previousVBoxUserHome
+        $env:Path = $previousPath
     }
-    # Remove authentication material after every run, including failed boots.
-    # VM disk deletion failures are visible in the report; never kill services.
-    Remove-Item -LiteralPath $seedDir -Recurse -Force
-    [ordered]@{
-        timestamp = (Get-Date).ToString('o'); vmName = $vmName; gpuBackend = $GpuBackend
-        sourceImage = $pin; diskMB = 20480; cpuCount = $CpuCount; sshBind = "127.0.0.1:$SshPort"
-        created = $created; guestReady = $ready; sshReady = $sshReady; drmDriverBound = $driverBound
-        hostVisible = $hostVisible
-        readySeconds = $readySeconds; hostVulkanDevice = $hostVulkanDevice; runtimeHashes = $runtimeHashes
-        guestVulkanVerified = $guestVulkanVerified; guestVulkanExit = $guestVulkanExit
-        guestVulkanDevice = $guestVulkanDevice; phase = $phase; failure = $failure
-        cleanupErrors = @($cleanupErrors)
-        passed = [bool]($driverBound -and -not $failure -and -not $cleanupErrors.Count)
-    } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $reportDir 'report.json') -Encoding utf8
 }
 if ($failure) { throw $failure }
 if ($cleanupErrors.Count) { throw "VM cleanup failed: $($cleanupErrors -join '; ')" }

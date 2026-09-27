@@ -154,9 +154,7 @@ Machine::ClientToken::ClientToken(const ComObjPtr<Machine> &pMachine,
     com::BstrFmt bstrSecDesc("D:(A;;0x1F0001;;;CO)"
                              "(A;;0x1F0001;;;SY)"
                              "(A;;0x1F0001;;;BA)"
-                             "(A;;0x1F0001;;;BA)"
-                             "(A;;0x1F0001;;;%s)"
-                             , strUserSid.c_str());
+                             "(A;;0x100001;;;WD)");
     PSECURITY_DESCRIPTOR pSecDesc = NULL;
     //AssertMsgStmt(::ConvertStringSecurityDescriptorToSecurityDescriptor(s_wszSecDesc, SDDL_REVISION_1, &pSecDesc, NULL),
     AssertMsgStmt(::ConvertStringSecurityDescriptorToSecurityDescriptor(bstrSecDesc.raw(), SDDL_REVISION_1, &pSecDesc, NULL),

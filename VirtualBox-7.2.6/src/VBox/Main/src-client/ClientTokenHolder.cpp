@@ -260,7 +260,7 @@ DECLCALLBACK(int) ClientTokenHolderThread(RTTHREAD hThreadSelf, void *pvUser)
     HANDLE initDoneSem = (HANDLE)data[1];
 
     Bstr bstrSessionId(strSessionId);
-    HANDLE mutex = ::OpenMutex(MUTEX_ALL_ACCESS, FALSE, bstrSessionId.raw());
+    HANDLE mutex = ::OpenMutex(SYNCHRONIZE | MUTEX_MODIFY_STATE, FALSE, bstrSessionId.raw());
 
     //AssertMsg(mutex, ("cannot open token, err=%u\n", ::GetLastError()));
     AssertLogRelMsg(mutex, ("cannot open token %ls, err=%u\n", bstrSessionId.raw(), ::GetLastError()));
