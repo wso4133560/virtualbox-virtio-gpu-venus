@@ -117,7 +117,9 @@ foreach ($scenario in @('linux-venus-before', 'linux-venus-final', 'linux-softwa
                         'linux-venus-final-dispatcher', 'linux-venus-final-dispatcher-save',
                         'linux-venus-final-dispatcher-repeat-current', 'linux-venus-final-built',
                         'linux-venus-final-object-id', 'linux-venus-final-object-id-save',
-                        'linux-venus-final-object-id-repeat')) {
+                        'linux-venus-final-object-id-repeat', 'linux-venus-cursor-final',
+                        'linux-venus-cursor-final-repeat', 'linux-venus-cursor-final-save',
+                        'linux-venus-cursor-final-reset', 'linux-venus-cursor-final-cpu2-long')) {
     $sourceDir = Join-Path $repoRoot (Join-Path '.build\windows' $scenario)
     if (Test-Path -LiteralPath $sourceDir -PathType Container) {
         $destination = Join-Path $runtimeValidation $scenario
