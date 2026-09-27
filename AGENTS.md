@@ -59,7 +59,7 @@ kmk: Failed to create worker threads
 
 结果：退出码 `0`，报告 `.build\windows\virtio-gpu-validation.json`，共 `43` 个测试组通过，`missingGroups=[]`。已包含 blob resource/Vulkan backing、ring metadata/reply/progress、Vulkan transfer/clear/barrier/blit/fill/update、save/load、以及从构建产物注册 VBoxDD 的检查。
 
-这表示 Windows 用户态传输、设备回调和宿主 Vulkan 路径通过了当前回归边界，不表示 Linux 客体 Vulkan 已成功。
+这表示 Windows 用户态传输、设备回调和宿主 Vulkan 路径通过了当前回归边界。
 
 ### Windows 宿主 Vulkan/GPU
 
@@ -85,10 +85,11 @@ kmk: Failed to create worker threads
 
 当前客体验证边界：
 
-- 旧报告 `.build\windows\linux-venus-final-ring\report.json`：`guestReady=true`、`sshReady=true`、`drmDriverBound=true`、`hostVisible=true`，但 `guestVulkanVerified=false`，`vulkaninfo` 退出码 `134`。
-- 旧日志 `.build\windows\linux-venus-final-ring\guest-vulkan.log`：`MESA-VIRTIO: stuck in ring seqno wait with iter at 4096`，随后 `aborting on expired ring alive status`。
-- 使用当前构建产物的最近一次重试在客体启动前失败：`VBoxManage modifyvm` 在 `LockMachine` 阶段返回 `E_FAIL` / `VBOX_E_VM_ERROR (0x80bb0003)`，因此没有产生新的 `report.json` 或新的 `guest-vulkan.log`。这次失败是 VM session/runtime 锁定问题，不是新的 Venus 协议成功或失败证据。
-- 该重试可能留下 `.build\windows\linux-venus-seek\seed\`；清理前先确认 `VBoxSVC.exe` 和相关 VM 进程已经退出。
+- 最终标准报告 `.build\windows\linux-venus-final-admin46\report.json`：`guestReady=true`、`sshReady=true`、`drmDriverBound=true`、`hostVisible=true`、`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`cleanupErrors=[]`、`passed=true`；`guest-vulkan.log` 中 `vulkaninfo_exit=0`、`VULKANINFO_PASS` 和 `VULKAN_WORKLOAD_PASS` 均存在。
+- saved-state 报告 `.build\windows\linux-venus-save-restore-admin47\report.json`：`saveRestoreVerified=true`、`saveRestoreVulkanExit=0`、`cleanupErrors=[]`、`passed=true`；恢复日志同时包含 `VULKANINFO_PASS` 和 `VULKAN_WORKLOAD_PASS`。
+- 双 vCPU 报告 `.build\windows\linux-venus-cpu2-admin48\report.json`：`cpuCount=2`、`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`cleanupErrors=[]`、`passed=true`；这是一轮启动与 smoke 验证，不替代长时间压力测试。
+- reset 报告 `.build\windows\linux-venus-reset-admin51\report.json`：`resetVerified=true`、`resetVulkanExit=0`、`cleanupErrors=[]`、`passed=true`；该次使用 `-SkipGuestVulkanInfo`，只把 reset 前后的 Vulkan buffer/fill/readback workload 作为重连证据，完整 `vulkaninfo` 由 admin46 报告覆盖。
+- 旧的 `linux-venus-final-ring`、`linux-venus-binding-admin41` 等失败报告保留为历史诊断证据；它们不代表当前 runtime 的最终状态。
 
 客体重试时必须使用同一 runtime 目录下的 `VBoxManage.exe`、`VBoxSVC.exe`、`VBoxC.dll`、`VBoxDD.dll`，并使用独立的 `VBOX_USER_HOME`；不要混用系统安装版 VirtualBox。
 
@@ -105,7 +106,7 @@ kmk: Failed to create worker threads
 9. `vkSetReplyCommandStreamMESA` 保存 reply resource/offset/size，并初始化 reply cursor。
 10. `vkSeekReplyCommandStreamMESA`（命令类型 `179`）校验并更新 reply cursor；reply 控制命令按当前 cursor 写入共享 reply stream。
 11. `vkExecuteCommandStreamsMESA` 从共享 blob 读取 descriptor/command stream，处理嵌套 ring 命令，并执行当前支持的 transfer/clear/barrier/blit/fill/update 子集。
-12. ring reply cursor、reply validity、saved-state version `12` 的 save/load 和一致性检查。
+12. ring reply cursor、reply validity、buffer/memory binding、saved-state version `14` 的 save/load 和一致性检查。
 
 当前宿主侧主要路径：
 
@@ -120,14 +121,12 @@ Mesa vn_*_MESA submit/call
 
 ## 未完成项和验证边界
 
-完整 Venus renderer protocol 仍未完成，当前实现不能宣称 Linux 客体 `vulkaninfo` 正常。下一阶段按以下顺序推进：
+完整 Venus renderer protocol 仍未完成，但当前实现已通过 Linux 客体 `vulkaninfo --summary`、host-visible Vulkan fill/readback workload 和 saved-state restore workload。下一阶段按以下顺序推进：
 
-1. 先解决 `VBOX_E_VM_ERROR` 的 session assignment/runtime home 问题，重新取得一份使用当前 `VBoxDD.dll` 的客体报告。
-2. 客体能启动后，检查新鲜的 `VBox.log`、`serial.log`、`guest-vulkan.log`，定位第一个不支持的 command、reply 类型或 seqno 等待点。
-3. 补齐通用 Venus Vulkan object/query/reply dispatcher，尤其是 `vkCreateInstance`、physical-device/device/query 等初始化路径；当前 command-stream 执行只是有限子集。
-4. 完善多命令 stream framing、reply payload、返回值和错误码。不能只写 `VIRTIOGPU_RESP_OK_NODATA` 或只推进 head/tail/status。
-5. 核对 `vkNotifyRingMESA`、`vkWriteRingExtraMESA`、`vkSubmitVirtqueueSeqnoMESA`、`vkWait*SeqnoMESA` 的 ring/head/tail/status 语义与 Mesa 当前版本，补足异常和边界状态。
-6. 用真实 Venus 命令覆盖 saved-state save/load、ring 重建和快照恢复。
+1. 补齐通用 Venus Vulkan object/query/reply dispatcher，尤其是更多 physical-device/device/query、同步和句柄映射路径；当前实现仍是可验证的有限子集。
+2. 完善多命令 stream framing、reply payload、返回值和错误码，持续避免仅推进 head/tail/status 的 bring-up 语义。
+3. 对 `vkNotifyRingMESA`、`vkWriteRingExtraMESA`、`vkSubmitVirtqueueSeqnoMESA`、`vkWait*SeqnoMESA` 增加更广泛的 Mesa 版本边界和异常测试。
+4. 扩展真实客户机图形 workload、长时间压力、多 vCPU、桌面显示和性能矩阵；当前标准 smoke 与 saved-state restore 已通过。
 
 当前 head/tail/status 推进包含 bring-up 逻辑，可防止宿主立即死等，但不等于命令已经完整在宿主 GPU 上执行。
 

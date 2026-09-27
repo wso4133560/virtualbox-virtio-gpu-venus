@@ -1,6 +1,6 @@
 # Linux 客户机启动与 VirtIO-GPU 验收
 
-此入口验证真实 Linux 启动、SSH、PCI/virtio 驱动绑定和 DRM 节点。Venus 模式还要求 Linux 接受 host-visible 共享内存窗口。它不把这些结果等同于客户机 Vulkan 应用执行成功。
+此入口验证真实 Linux 启动、SSH、PCI/virtio 驱动绑定和 DRM 节点。Venus 模式还要求 Linux 接受 host-visible 共享内存窗口；使用 `-VerifyGuestVulkan` 时会继续运行真实 `vulkaninfo`，使用 `-RunVulkanWorkload` 时会执行 Vulkan buffer/fill/readback smoke，使用 `-VerifyReset` 或 `-VerifySaveRestore` 时还会覆盖 reset 或 saved-state 恢复后的同一 workload。
 
 ## 固定环境与复现
 
@@ -15,10 +15,12 @@
 ```powershell
 $image = .\tools\get-linux-test-image.ps1
 .\tools\test-linux-virtio-gpu.ps1 -ImagePath $image -GpuBackend software
-.\tools\test-linux-virtio-gpu.ps1 -ImagePath $image -GpuBackend venus
+.\tools\test-linux-virtio-gpu.ps1 -ImagePath $image -GpuBackend venus -VerifyGuestVulkan -RunVulkanWorkload
+.\tools\test-linux-virtio-gpu.ps1 -ImagePath $image -GpuBackend venus -VerifyGuestVulkan -RunVulkanWorkload -VerifyReset
+.\tools\test-linux-virtio-gpu.ps1 -ImagePath $image -GpuBackend venus -VerifyGuestVulkan -RunVulkanWorkload -VerifySaveRestore
 ```
 
-每次运行创建独立名称的临时 VM、20GB 动态 VDI、NoCloud VISO 和 SSH 密钥。默认配置为单 vCPU、4GB 内存、BIOS，SSH 只绑定 `127.0.0.1:2222`；无密码登录入口。默认单核配置用于本机可重复的功能验证，不是性能配置。
+每次运行创建独立名称的临时 VM、20GB 动态 VDI、NoCloud VISO 和 SSH 密钥。默认配置为单 vCPU、4GB 内存、BIOS，SSH 只绑定 `127.0.0.1:2222`；无密码登录入口。默认单核配置用于本机可重复的功能验证，不是性能配置；`-CpuCount 2` 可覆盖双 vCPU 启动和 smoke。
 
 运行结束会定向关闭并注销本次 VM，删除 VDI、种子介质和认证密钥。已校验的原始镜像保留在 `.build/images` 缓存；日志保留在 `.build/windows/virtio-linux-*`。可用 `-ReportDirectory` 指定一个尚不存在的报告目录，避免覆盖旧证据。
 
@@ -34,7 +36,17 @@ $image = .\tools\get-linux-test-image.ps1
 4. Venus 模式的来宾内核日志包含 `+host_visible`。
 5. 本次 VM 清理没有错误。
 
-`guest.log` 保存 Linux 版本、`lspci -nnk/-vv`、DRM 节点、virtio 驱动链接及内核日志；`serial.log` 保存从启动到关闭的串口输出；`VBox.log` 保存宿主设备和 VM 日志。JSON 记录 CPU 配置、启动就绪耗时、宿主 Vulkan 设备和运行文件哈希。`guestVulkanVerified` 当前始终为 false。
+`guest.log` 保存 Linux 版本、`lspci -nnk/-vv`、DRM 节点、virtio 驱动链接及内核日志；`serial.log` 保存从启动到关闭的串口输出；`VBox.log` 保存宿主设备和 VM 日志。JSON 记录 CPU 配置、启动就绪耗时、宿主 Vulkan 设备和运行文件哈希。启用 Vulkan 选项时，`guestVulkanVerified`、`guestVulkanWorkloadVerified`、`resetVerified` 和 `saveRestoreVerified` 分别记录初始化、工作负载、reset 后和恢复后的结果。
+
+2026-09-28 的最终验收报告为 `.build/windows/linux-venus-final-admin46/report.json`：`guestReady=true`、`sshReady=true`、`drmDriverBound=true`、`hostVisible=true`、`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`cleanupErrors=[]`。标准 `vulkaninfo --summary` 识别设备为 `Virtio-GPU Venus (AMD Radeon 780M Graphics)`，宿主运行时 `VBoxDD.dll` SHA256 为 `6211FE9BECA5F3FC9C86E648DA55A1EC479517CF8014748C7A173A2CDAEE1CDD`。
+
+2026-09-28 的 saved-state 验收报告为 `.build/windows/linux-venus-save-restore-admin47/report.json`：`saveRestoreVerified=true`、`saveRestoreVulkanExit=0`、`cleanupErrors=[]`；恢复日志 `.build/windows/linux-venus-save-restore-admin47/guest-vulkan-restore.log` 同时包含 `VULKANINFO_PASS` 和 `VULKAN_WORKLOAD_PASS`。
+
+2026-09-28 的双 vCPU 验收报告为 `.build/windows/linux-venus-cpu2-admin48/report.json`：`cpuCount=2`、`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`cleanupErrors=[]`、`passed=true`。
+
+`-VerifyReset` 会执行 `controlvm reset`，等待同一 VM 的 SSH 再次可用，并把第二次探测写入 `guest-vulkan-reset.log`；未跳过 `vulkaninfo` 时要求 `VULKANINFO_PASS`，所有模式都要求 `VULKAN_WORKLOAD_PASS` 和退出码 0 才报告 `resetVerified=true`。
+
+实际 reset 报告 `.build/windows/linux-venus-reset-admin51/report.json` 的 `resetVerified=true`、`resetVulkanExit=0`、`cleanupErrors=[]`、`passed=true`；该次使用 `-SkipGuestVulkanInfo`，日志中的两次 workload 均为 `VULKAN_WORKLOAD_PASS`，完整 `vulkaninfo` 证据仍见 admin46。
 
 ## 2026-09-14 协议修复证据
 
@@ -54,13 +66,13 @@ $image = .\tools\get-linux-test-image.ps1
 - MSI-X 必须接在共享能力之后，注册失败时终止链表。
 - GPU 保存状态版本改为 9，拒绝包含旧 PCI 能力布局的版本 8 快照。关机后的 VM 配置和磁盘不受此限制。
 
-新增回归调用生产 PCI 构造函数并遍历原始配置字节，覆盖共享 BAR 开/关、MSI-X 开/关和注册失败；修复前复现 7 个错误。修复后包含此项的 42 组设备测试及 VBoxDD 注册入口检查通过。
+新增回归调用生产 PCI 构造函数并遍历原始配置字节，覆盖共享 BAR 开/关、MSI-X 开/关和注册失败；修复前复现 7 个错误。当前宿主回归包含 VBoxDD 注册入口在内共 43 组通过。
 
 ## 已知边界
 
 - BIOS 仍报告 BAR4 的初始分配失败，但本次 Linux 成功将其重新分配到 `0xe0000000`，并接受完整 256MB 窗口。其他固件/客户机组合尚未验收。
-- 双 vCPU 配置曾在早期初始化阶段停顿并超时；单 vCPU 配置已通过。尚未确认多核停顿的根因，也未进行长时间稳定性验证。
+- 双 vCPU 单次启动与 Vulkan smoke 已通过；尚未进行多核长时间稳定性验证。
 - 当前 EDID 存在校验告警，驱动报告没有可用的 CRTC/尺寸；桌面显示、分辨率切换仍未通过。
-- 完整 Mesa Venus 初始化、客户机 Vulkan device、图形/计算工作负载和性能对照仍待实现与验收。
+- 更完整的 Mesa Venus capset、对象/查询/同步协议和图形/计算命令仍未覆盖；本次客户机证据覆盖 `vulkaninfo --summary`、host-visible buffer 的 fill/readback smoke，以及 saved-state 恢复后的同一 smoke，不等同于完整 Vulkan API 或桌面显示验收。
 
 启动观察脚本另有 `tools/test-vm-observation.ps1`，在不启动真实 VM 的情况下验证正常观察、中途 aborted、观察末尾关机、状态缺失和清理失败五个场景。

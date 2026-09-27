@@ -1765,7 +1765,7 @@ int main(int argc, char **argv)
     virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     RTTESTI_CHECK(pGpu->aResources[1].fSharedMemory && pGpu->aResources[1].pbPixels == pGpu->pbSharedMemory);
-    struct { uint32_t uResourceId, uPadding; } MapBlob = { 14, 0 };
+    struct { uint32_t uResourceId, uPadding; uint64_t off; } MapBlob = { 14, 0, 0 };
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_MAP_BLOB, &MapBlob,
                    sizeof(MapBlob), sizeof(VIRTIOGPURESPMAPINFO));
@@ -1773,7 +1773,7 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == sizeof(VIRTIOGPURESPMAPINFO));
     VIRTIOGPURESPMAPINFO MapResp;
     memcpy(&MapResp, &g_abRam[0x5000], sizeof(MapResp));
-    RTTESTI_CHECK(MapResp.Hdr.uType == VIRTIOGPU_RESP_OK_MAP_INFO && MapResp.uMapInfo == 0
+    RTTESTI_CHECK(MapResp.Hdr.uType == VIRTIOGPU_RESP_OK_MAP_INFO && MapResp.uMapInfo == 1
                   && pGpu->aResources[1].fMapped);
     *(uint32_t *)pGpu->pbSharedMemory = UINT32_C(0xcafebabe);
     RTTESTI_CHECK_RC(virtioGpuR3VulkanCopyBuffer(pGpu, &pGpu->aResources[1], &pGpu->aResources[0], 0, 0, 4),
@@ -1813,6 +1813,21 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && !pGpu->aResources[1].fMapped);
+    MapBlob.off = 8192;
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_MAP_BLOB, &MapBlob,
+                   sizeof(MapBlob), sizeof(VIRTIOGPURESPMAPINFO));
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == sizeof(VIRTIOGPURESPMAPINFO));
+    memcpy(&MapResp, &g_abRam[0x5000], sizeof(MapResp));
+    RTTESTI_CHECK(MapResp.Hdr.uType == VIRTIOGPU_RESP_OK_MAP_INFO && MapResp.uMapInfo == 1
+                  && MapResp.uPadding == 0 && pGpu->aResources[1].offSharedMemory == 8192
+                  && pGpu->aResources[1].pbPixels == pGpu->pbSharedMemory + 8192
+                  && *(uint32_t *)pGpu->aResources[1].pbPixels == UINT32_C(0xfeedface));
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_UNMAP_BLOB, &MapBlob, 8, 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
     RTTestSub(g_hTest, "Venus ring metadata, reply stream and progress");
     VIRTIOGPURESOURCECREATEBLOB RingBlob = { 15, VIRTIOGPU_BLOB_MEM_HOST3D,
                                              VIRTIOGPU_BLOB_FLAG_USE_MAPPABLE, 0,

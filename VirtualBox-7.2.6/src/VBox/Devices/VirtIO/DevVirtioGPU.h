@@ -113,7 +113,8 @@ typedef struct VIRTIOGPURESOURCEMAPBLOB
 typedef struct VIRTIOGPURESPMAPINFO
 {
     VIRTIOGPUCTRLHDR Hdr;
-    uint64_t uMapInfo;
+    uint32_t uMapInfo;
+    uint32_t uPadding;
 } VIRTIOGPURESPMAPINFO;
 
 typedef struct VIRTIOGPURESOURCEASSIGNUUID

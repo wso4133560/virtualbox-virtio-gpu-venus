@@ -12,6 +12,10 @@ param(
     [ValidateRange(1024, 65536)][int]$MemoryMB = 4096,
     [ValidateSet('ich9', 'piix3')][string]$Chipset = 'ich9',
     [switch]$VerifyGuestVulkan,
+    [switch]$RunVulkanWorkload,
+    [switch]$SkipGuestVulkanInfo,
+    [switch]$VerifyReset,
+    [switch]$VerifySaveRestore,
     [string]$ReportDirectory
 )
 $ErrorActionPreference = 'Stop'
@@ -52,7 +56,9 @@ foreach ($name in $runtimeComponents) {
 }
 $seedDir = Join-Path $reportDir 'seed'
 New-Item -ItemType Directory $seedDir | Out-Null
-$key = Join-Path $seedDir 'id_ed25519'
+$authDir = Join-Path ([IO.Path]::GetTempPath()) ('virtio-linux-auth-' + $vmName)
+New-Item -ItemType Directory $authDir | Out-Null
+$key = Join-Path $authDir 'id_ed25519'
 $serial = Join-Path $reportDir 'serial.log'
 $utf8 = New-Object Text.UTF8Encoding($false)
 
@@ -73,6 +79,20 @@ function Vm-State {
     if ($line -match '^VMState="([^"]+)"') { return $Matches[1] }
     return 'unknown'
 }
+function Stop-TestSshProcesses {
+    $processes = @(Get-Process -Name ssh -ErrorAction SilentlyContinue |
+        Where-Object { $_.Id -notin $sshPidsBefore })
+    foreach ($process in $processes) {
+        try { Wait-Process -Id $process.Id -Timeout 5 -ErrorAction SilentlyContinue } catch { }
+    }
+    $processes = @($processes | Where-Object { -not $_.HasExited })
+    foreach ($process in $processes) {
+        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    }
+    foreach ($process in $processes) {
+        try { Wait-Process -Id $process.Id -Timeout 5 -ErrorAction SilentlyContinue } catch { }
+    }
+}
 
 $created = $false
 $phase = 'prepare'
@@ -87,6 +107,12 @@ $hostVulkanDevice = $null
 $guestVulkanVerified = $false
 $guestVulkanExit = $null
 $guestVulkanDevice = $null
+$guestVulkanWorkloadVerified = $false
+$guestVulkanWorkloadExit = $null
+$saveRestoreVerified = $false
+$saveRestoreVulkanExit = $null
+$resetVerified = $false
+$resetVulkanExit = $null
 $vboxSupState = $null
 $vboxSupWin32Exit = $null
 $runtimeHashes = [ordered]@{}
@@ -259,12 +285,17 @@ echo VIRTIO_GUEST_END
 set -o pipefail
 echo VIRTIO_VULKAN_BEGIN
 sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq mesa-vulkan-drivers vulkan-tools strace
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq __VULKAN_PACKAGES__
 if ! command -v vulkaninfo >/dev/null; then
     echo VULKANINFO_MISSING
     exit 127
 fi
 export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/virtio_icd.json
+if [ "__SKIP_VULKANINFO__" = "1" ]; then
+echo VULKANINFO_SKIPPED
+echo vulkaninfo_exit=0
+rc=0
+else
 VN_DEBUG=all VK_LOADER_DEBUG=all timeout 20s strace -f -tt -e trace=ioctl -o /var/tmp/virtio-vulkaninfo-strace.log vulkaninfo --summary >/var/tmp/virtio-vulkaninfo-summary.log 2>&1 &
 vulkaninfo_pid=$!
 sleep 2
@@ -277,23 +308,320 @@ echo VULKANINFO_IOCTL_TRACE
 cat /var/tmp/virtio-vulkaninfo-strace.log || true
 echo "vulkaninfo_exit=$rc"
 if [ "$rc" = 0 ]; then echo VULKANINFO_PASS; else echo VULKANINFO_FAIL; fi
+fi
+if [ "$rc" = 0 ] && [ "__RUN_VULKAN_WORKLOAD__" = "1" ]; then
+cat >/tmp/virtio-vulkan-smoke.c <<'EOF'
+#include <vulkan/vulkan.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int fail(const char *where, VkResult rc)
+{
+    fprintf(stderr, "VULKAN_WORKLOAD_FAIL %s rc=%d\n", where, (int)rc);
+    return 1;
+}
+
+int main(void)
+{
+    VkInstance instance = VK_NULL_HANDLE;
+    VkPhysicalDevice physical = VK_NULL_HANDLE;
+    VkDevice device = VK_NULL_HANDLE;
+    VkQueue queue = VK_NULL_HANDLE;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VkCommandBuffer command = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    VkResult rc;
+    uint32_t count = 0, family = UINT32_MAX, type = UINT32_MAX;
+    VkPhysicalDeviceMemoryProperties memory_properties;
+    VkMemoryRequirements requirements;
+    VkBool32 coherent = VK_FALSE;
+    void *mapped = NULL;
+
+    VkApplicationInfo app = {
+        .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        .pApplicationName = "virtualbox-virtio-gpu-smoke",
+        .applicationVersion = 1,
+        .pEngineName = "virtualbox-virtio-gpu",
+        .engineVersion = 1,
+        .apiVersion = VK_API_VERSION_1_0,
+    };
+    VkInstanceCreateInfo instance_info = {
+        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .pApplicationInfo = &app,
+    };
+    rc = vkCreateInstance(&instance_info, NULL, &instance);
+    if (rc != VK_SUCCESS) return fail("vkCreateInstance", rc);
+    rc = vkEnumeratePhysicalDevices(instance, &count, NULL);
+    if (rc != VK_SUCCESS || count == 0) return fail("vkEnumeratePhysicalDevices", rc);
+    VkPhysicalDevice *devices = calloc(count, sizeof(*devices));
+    if (!devices) return fail("calloc", VK_ERROR_OUT_OF_HOST_MEMORY);
+    rc = vkEnumeratePhysicalDevices(instance, &count, devices);
+    if (rc != VK_SUCCESS) return fail("vkEnumeratePhysicalDevices.data", rc);
+    physical = devices[0];
+    free(devices);
+
+    vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, NULL);
+    VkQueueFamilyProperties *families = calloc(count, sizeof(*families));
+    if (!families) return fail("calloc.queue", VK_ERROR_OUT_OF_HOST_MEMORY);
+    vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, families);
+    for (uint32_t i = 0; i < count; ++i)
+        if ((families[i].queueFlags & VK_QUEUE_TRANSFER_BIT) && families[i].queueCount) {
+            family = i;
+            break;
+        }
+    if (family == UINT32_MAX)
+        for (uint32_t i = 0; i < count; ++i)
+            if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && families[i].queueCount) {
+                family = i;
+                break;
+            }
+    free(families);
+    if (family == UINT32_MAX) return fail("queue.family", VK_ERROR_INITIALIZATION_FAILED);
+
+    float priority = 1.0f;
+    VkDeviceQueueCreateInfo queue_info = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+        .queueFamilyIndex = family,
+        .queueCount = 1,
+        .pQueuePriorities = &priority,
+    };
+    VkDeviceCreateInfo device_info = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .queueCreateInfoCount = 1,
+        .pQueueCreateInfos = &queue_info,
+    };
+    rc = vkCreateDevice(physical, &device_info, NULL, &device);
+    if (rc != VK_SUCCESS) return fail("vkCreateDevice", rc);
+    vkGetDeviceQueue(device, family, 0, &queue);
+    vkGetPhysicalDeviceMemoryProperties(physical, &memory_properties);
+
+    VkBufferCreateInfo buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = 4096,
+        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    rc = vkCreateBuffer(device, &buffer_info, NULL, &buffer);
+    if (rc != VK_SUCCESS) return fail("vkCreateBuffer", rc);
+    vkGetBufferMemoryRequirements(device, buffer, &requirements);
+    for (uint32_t i = 0; i < memory_properties.memoryTypeCount; ++i) {
+        VkMemoryPropertyFlags flags = memory_properties.memoryTypes[i].propertyFlags;
+        if ((requirements.memoryTypeBits & (UINT32_C(1) << i)) &&
+            (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+            if (type == UINT32_MAX || (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+                type = i;
+                coherent = (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+            }
+        }
+    }
+    if (type == UINT32_MAX) return fail("memory.type", VK_ERROR_MEMORY_MAP_FAILED);
+    VkMemoryAllocateInfo allocate_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = requirements.size,
+        .memoryTypeIndex = type,
+    };
+    rc = vkAllocateMemory(device, &allocate_info, NULL, &memory);
+    if (rc != VK_SUCCESS) return fail("vkAllocateMemory", rc);
+    rc = vkBindBufferMemory(device, buffer, memory, 0);
+    if (rc != VK_SUCCESS) return fail("vkBindBufferMemory", rc);
+    rc = vkMapMemory(device, memory, 0, 4096, 0, &mapped);
+    if (rc != VK_SUCCESS) return fail("vkMapMemory", rc);
+    memset(mapped, 0, 4096);
+    if (!coherent) {
+        VkMappedMemoryRange range = { VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, NULL, memory, 0, 4096 };
+        rc = vkFlushMappedMemoryRanges(device, 1, &range);
+        if (rc != VK_SUCCESS) return fail("vkFlushMappedMemoryRanges", rc);
+    }
+
+    VkCommandPoolCreateInfo pool_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        .queueFamilyIndex = family,
+    };
+    rc = vkCreateCommandPool(device, &pool_info, NULL, &pool);
+    if (rc != VK_SUCCESS) return fail("vkCreateCommandPool", rc);
+    VkCommandBufferAllocateInfo command_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    rc = vkAllocateCommandBuffers(device, &command_info, &command);
+    if (rc != VK_SUCCESS) return fail("vkAllocateCommandBuffers", rc);
+    VkCommandBufferBeginInfo begin_info = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    rc = vkBeginCommandBuffer(command, &begin_info);
+    if (rc != VK_SUCCESS) return fail("vkBeginCommandBuffer", rc);
+    vkCmdFillBuffer(command, buffer, 0, 4096, UINT32_C(0xa5a5a5a5));
+    rc = vkEndCommandBuffer(command);
+    if (rc != VK_SUCCESS) return fail("vkEndCommandBuffer", rc);
+    VkFenceCreateInfo fence_info = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    rc = vkCreateFence(device, &fence_info, NULL, &fence);
+    if (rc != VK_SUCCESS) return fail("vkCreateFence", rc);
+    VkSubmitInfo submit = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &command,
+    };
+    rc = vkQueueSubmit(queue, 1, &submit, fence);
+    if (rc != VK_SUCCESS) return fail("vkQueueSubmit", rc);
+    rc = vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_C(10000000000));
+    if (rc != VK_SUCCESS) return fail("vkWaitForFences", rc);
+    if (!coherent) {
+        VkMappedMemoryRange range = { VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, NULL, memory, 0, 4096 };
+        rc = vkInvalidateMappedMemoryRanges(device, 1, &range);
+        if (rc != VK_SUCCESS) return fail("vkInvalidateMappedMemoryRanges", rc);
+    }
+    uint32_t *words = mapped;
+    for (unsigned i = 0; i < 1024; ++i)
+        if (words[i] != UINT32_C(0xa5a5a5a5)) {
+            fprintf(stderr, "VULKAN_WORKLOAD_FAIL data[%u]=0x%08x\n", i, words[i]);
+            return 1;
+        }
+    printf("VULKAN_WORKLOAD_PASS family=%u memoryType=%u coherent=%u\n", family, type, coherent);
+    vkDestroyFence(device, fence, NULL);
+    vkFreeCommandBuffers(device, pool, 1, &command);
+    vkDestroyCommandPool(device, pool, NULL);
+    vkUnmapMemory(device, memory);
+    vkFreeMemory(device, memory, NULL);
+    vkDestroyBuffer(device, buffer, NULL);
+    vkDestroyDevice(device, NULL);
+    vkDestroyInstance(instance, NULL);
+    return 0;
+}
+EOF
+cc -std=c11 -O2 -Wall -Wextra /tmp/virtio-vulkan-smoke.c -o /tmp/virtio-vulkan-smoke -lvulkan
+timeout 30s /tmp/virtio-vulkan-smoke
+workload_rc=$?
+echo "vulkan_workload_exit=$workload_rc"
+if [ "$workload_rc" = 0 ]; then echo VULKAN_WORKLOAD_PASS; else echo VULKAN_WORKLOAD_FAIL; fi
+else
+workload_rc=0
+fi
 echo VIRTIO_VULKAN_END
-exit "$rc"
+if [ "$rc" != 0 ]; then exit "$rc"; fi
+exit "$workload_rc"
 '@
+        $guestVulkanProbe = $guestVulkanProbe.Replace('__RUN_VULKAN_WORKLOAD__', $(if ($RunVulkanWorkload) { '1' } else { '0' }))
+        $guestVulkanProbe = $guestVulkanProbe.Replace('__SKIP_VULKANINFO__', $(if ($SkipGuestVulkanInfo) { '1' } else { '0' }))
+        $guestVulkanProbe = $guestVulkanProbe.Replace('__VULKAN_PACKAGES__', $(if ($RunVulkanWorkload) { 'mesa-vulkan-drivers vulkan-tools strace build-essential libvulkan-dev' } else { 'mesa-vulkan-drivers vulkan-tools strace' }))
         $guestVulkanPath = Join-Path $reportDir 'guest-vulkan-probe.sh'
         [IO.File]::WriteAllText($guestVulkanPath, $guestVulkanProbe.Replace("`r`n", "`n") + "`n", $utf8)
         $saved = $ErrorActionPreference
         try {
             $ErrorActionPreference = 'Continue'
-            $guestVulkanOutput = Get-Content $guestVulkanPath -Raw | & $ssh @sshArgs "tr -d '\r' | bash -s" 2>&1
+            $guestVulkanCommand = "tr -d '\r' | timeout $TimeoutSeconds bash -s"
+            $guestVulkanOutput = Get-Content $guestVulkanPath -Raw | & $ssh @sshArgs $guestVulkanCommand 2>&1
             $guestVulkanExit = $LASTEXITCODE
         } finally { $ErrorActionPreference = $saved }
         $guestVulkanText = $guestVulkanOutput -join "`n"
         [IO.File]::WriteAllText((Join-Path $reportDir 'guest-vulkan.log'), $guestVulkanText, $utf8)
-        $guestVulkanVerified = $guestVulkanExit -eq 0 -and $guestVulkanText -match '(?m)^VULKANINFO_PASS$'
+        $vulkanInfoExitMatch = [regex]::Match($guestVulkanText, '(?im)^vulkaninfo_exit=(\d+)\s*$')
+        if ($vulkanInfoExitMatch.Success) { $guestVulkanExit = [int]$vulkanInfoExitMatch.Groups[1].Value }
+        $guestVulkanVerified = $guestVulkanExit -eq 0 -and ($SkipGuestVulkanInfo -or $guestVulkanText -match '(?m)^VULKANINFO_PASS$')
+        $guestVulkanWorkloadExit = 0
+        $workloadExitMatch = [regex]::Match($guestVulkanText, '(?im)^vulkan_workload_exit=(\d+)\s*$')
+        if ($workloadExitMatch.Success) { $guestVulkanWorkloadExit = [int]$workloadExitMatch.Groups[1].Value }
+        $guestVulkanWorkloadVerified = -not $RunVulkanWorkload -or ($guestVulkanText -match '(?m)^VULKAN_WORKLOAD_PASS$' -and $guestVulkanWorkloadExit -eq 0)
         $deviceMatch = [regex]::Match($guestVulkanText, '(?im)^\s*deviceName\s*=\s*(.+?)\s*$')
         if ($deviceMatch.Success) { $guestVulkanDevice = $deviceMatch.Groups[1].Value.Trim() }
         if (-not $guestVulkanVerified) { throw "Guest vulkaninfo failed (exit $guestVulkanExit). Inspect guest-vulkan.log." }
+        if (-not $guestVulkanWorkloadVerified) { throw "Guest Vulkan workload failed (exit $guestVulkanWorkloadExit). Inspect guest-vulkan.log." }
+    }
+    if ($VerifySaveRestore)
+    {
+        if (-not $VerifyGuestVulkan -or -not $RunVulkanWorkload)
+        {
+            throw '-VerifySaveRestore requires -VerifyGuestVulkan and -RunVulkanWorkload.'
+        }
+        $phase = 'save-restore'
+        VBox @('controlvm', $vmName, 'savestate') | Out-Null
+        $saveDeadline = [DateTime]::UtcNow.AddSeconds(60)
+        do { Start-Sleep -Milliseconds 500; $state = Vm-State }
+        while ($state -notin @('saved', 'aborted') -and [DateTime]::UtcNow -lt $saveDeadline)
+        if ($state -ne 'saved') { throw "VM save state did not complete (state=$state)." }
+        VBox @('startvm', $vmName, '--type', 'headless') | Out-Null
+        $restoreDeadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+        $restoreReady = $false
+        do {
+            $state = Vm-State
+            if ($state -ne 'running') { Start-Sleep -Seconds 1; continue }
+            $saved = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                $restoreProbe = & $ssh @sshArgs 'test -f /var/tmp/virtio-cloud-ready && echo VIRTIO_SSH_READY' 2>&1
+                $restoreProbeExit = $LASTEXITCODE
+            } finally { $ErrorActionPreference = $saved }
+            if ($restoreProbeExit -eq 0 -and ($restoreProbe -join "`n") -match 'VIRTIO_SSH_READY')
+            {
+                $restoreReady = $true
+                break
+            }
+            Start-Sleep -Seconds 3
+        } while ([DateTime]::UtcNow -lt $restoreDeadline)
+        if (-not $restoreReady) { throw 'SSH did not return after VM saved-state restore.' }
+        $restorePath = Join-Path $reportDir 'guest-vulkan-restore.log'
+        $saved = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $restoreOutput = Get-Content $guestVulkanPath -Raw | & $ssh @sshArgs $guestVulkanCommand 2>&1
+            $restoreCommandExit = $LASTEXITCODE
+        } finally { $ErrorActionPreference = $saved }
+        $restoreText = $restoreOutput -join "`n"
+        [IO.File]::WriteAllText($restorePath, $restoreText, $utf8)
+        $restoreExitMatch = [regex]::Match($restoreText, '(?im)^vulkan_workload_exit=(\d+)\s*$')
+        if ($restoreExitMatch.Success) { $saveRestoreVulkanExit = [int]$restoreExitMatch.Groups[1].Value }
+        elseif ($null -ne $restoreCommandExit) { $saveRestoreVulkanExit = $restoreCommandExit }
+        $saveRestoreVerified = ($SkipGuestVulkanInfo -or $restoreText -match '(?m)^VULKANINFO_PASS$') -and
+            $restoreText -match '(?m)^VULKAN_WORKLOAD_PASS$' -and $saveRestoreVulkanExit -eq 0
+        if (-not $saveRestoreVerified) { throw "Saved-state restore Vulkan workload failed (exit $saveRestoreVulkanExit). Inspect guest-vulkan-restore.log." }
+    }
+    if ($VerifyReset)
+    {
+        if (-not $VerifyGuestVulkan -or -not $RunVulkanWorkload)
+        {
+            throw '-VerifyReset requires -VerifyGuestVulkan and -RunVulkanWorkload.'
+        }
+        $phase = 'reset'
+        Stop-TestSshProcesses
+        VBox @('controlvm', $vmName, 'reset') | Out-Null
+        $resetDeadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+        $resetReady = $false
+        do {
+            $state = Vm-State
+            if ($state -ne 'running') { Start-Sleep -Seconds 1; continue }
+            $saved = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                $resetProbe = & $ssh @sshArgs 'test -f /var/tmp/virtio-cloud-ready && echo VIRTIO_SSH_READY' 2>&1
+                $resetProbeExit = $LASTEXITCODE
+            } finally { $ErrorActionPreference = $saved }
+            if ($resetProbeExit -eq 0 -and ($resetProbe -join "`n") -match 'VIRTIO_SSH_READY')
+            {
+                $resetReady = $true
+                break
+            }
+            Start-Sleep -Seconds 3
+        } while ([DateTime]::UtcNow -lt $resetDeadline)
+        if (-not $resetReady) { throw 'SSH did not return after VM reset.' }
+        $resetPath = Join-Path $reportDir 'guest-vulkan-reset.log'
+        $saved = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $resetOutput = Get-Content $guestVulkanPath -Raw | & $ssh @sshArgs $guestVulkanCommand 2>&1
+            $resetCommandExit = $LASTEXITCODE
+        } finally { $ErrorActionPreference = $saved }
+        $resetText = $resetOutput -join "`n"
+        [IO.File]::WriteAllText($resetPath, $resetText, $utf8)
+        $resetExitMatch = [regex]::Match($resetText, '(?im)^vulkan_workload_exit=(\d+)\s*$')
+        if ($resetExitMatch.Success) { $resetVulkanExit = [int]$resetExitMatch.Groups[1].Value }
+        elseif ($null -ne $resetCommandExit) { $resetVulkanExit = $resetCommandExit }
+        $resetVerified = ($SkipGuestVulkanInfo -or $resetText -match '(?m)^VULKANINFO_PASS$') -and
+            $resetText -match '(?m)^VULKAN_WORKLOAD_PASS$' -and $resetVulkanExit -eq 0
+        if (-not $resetVerified) { throw "VM reset Vulkan workload failed (exit $resetVulkanExit). Inspect guest-vulkan-reset.log." }
     }
     $phase = 'complete'
 } catch {
@@ -304,9 +632,7 @@ exit "$rc"
         # A failed SSH probe or remote shell can outlive the pipeline when the
         # guest is powered off.  Reap only SSH processes created by this run so
         # the private key can be removed below without touching user sessions.
-        Get-Process -Name ssh -ErrorAction SilentlyContinue |
-            Where-Object { $_.Id -notin $sshPidsBefore } |
-            Stop-Process -Force -ErrorAction SilentlyContinue
+        Stop-TestSshProcesses
         if ($created) {
             try {
                 $state = Vm-State
@@ -339,14 +665,29 @@ exit "$rc"
         }
         # Remove authentication material after every run, including failed boots.
         # VM disk deletion failures are visible in the report; never kill services.
-        $seedRemoved = $false
-        for ($attempt = 0; $attempt -lt 10 -and -not $seedRemoved; $attempt++) {
-            try {
-                Remove-Item -LiteralPath $seedDir -Recurse -Force -ErrorAction Stop
-                $seedRemoved = $true
-            } catch {
-                if ($attempt -lt 9) { Start-Sleep -Milliseconds 500 }
-                else { $cleanupErrors += "Seed cleanup failed: $($_.Exception.Message)" }
+        foreach ($temporaryDir in @($authDir, $seedDir)) {
+            $temporaryName = Split-Path -Leaf $temporaryDir
+            $temporaryRemoved = $false
+            for ($attempt = 0; $attempt -lt 10 -and -not $temporaryRemoved; $attempt++) {
+                try {
+                    Stop-TestSshProcesses
+                    Get-ChildItem -LiteralPath $temporaryDir -Force -Recurse -ErrorAction SilentlyContinue |
+                        ForEach-Object { $_.Attributes = [IO.FileAttributes]::Normal }
+                    Remove-Item -LiteralPath $temporaryDir -Recurse -Force -ErrorAction Stop
+                    $temporaryRemoved = $true
+                } catch {
+                    try {
+                        Get-ChildItem -LiteralPath $temporaryDir -Force -File -Recurse -ErrorAction SilentlyContinue |
+                            ForEach-Object { & cmd.exe /d /c ('del /f /q "' + $_.FullName + '"') | Out-Null }
+                        Get-ChildItem -LiteralPath $temporaryDir -Force -Directory -Recurse -ErrorAction SilentlyContinue |
+                            Sort-Object FullName -Descending |
+                            ForEach-Object { & cmd.exe /d /c ('rmdir /q "' + $_.FullName + '"') | Out-Null }
+                        & cmd.exe /d /c ('rmdir /q "' + $temporaryDir + '"') | Out-Null
+                        $temporaryRemoved = -not (Test-Path -LiteralPath $temporaryDir)
+                    } catch { $temporaryRemoved = $false }
+                    if (-not $temporaryRemoved -and $attempt -lt 9) { Start-Sleep -Milliseconds 500 }
+                    elseif (-not $temporaryRemoved) { $cleanupErrors += "$temporaryName cleanup failed: $($_.Exception.Message)" }
+                }
             }
         }
         [ordered]@{
@@ -358,9 +699,14 @@ exit "$rc"
             runtimeDirectory = $runtime; vboxUserHome = $runtimeHome; runtimeHashes = $runtimeHashes
             vboxSupState = $vboxSupState; vboxSupWin32Exit = $vboxSupWin32Exit
             guestVulkanVerified = $guestVulkanVerified; guestVulkanExit = $guestVulkanExit
-            guestVulkanDevice = $guestVulkanDevice; phase = $phase; failure = $failure
+            guestVulkanDevice = $guestVulkanDevice; guestVulkanWorkloadVerified = $guestVulkanWorkloadVerified
+            guestVulkanWorkloadExit = $guestVulkanWorkloadExit; saveRestoreVerified = $saveRestoreVerified
+            saveRestoreVulkanExit = $saveRestoreVulkanExit; resetVerified = $resetVerified
+            resetVulkanExit = $resetVulkanExit; phase = $phase; failure = $failure
             cleanupErrors = @($cleanupErrors)
-            passed = [bool]($driverBound -and -not $failure -and -not $cleanupErrors.Count)
+            passed = [bool]($driverBound -and -not $failure -and -not $cleanupErrors.Count -and
+                (-not $VerifySaveRestore -or $saveRestoreVerified) -and
+                (-not $VerifyReset -or $resetVerified))
         } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $reportDir 'report.json') -Encoding utf8
     } finally {
         $env:VBOX_USER_HOME = $previousVBoxUserHome
