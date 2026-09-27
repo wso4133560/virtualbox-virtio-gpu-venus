@@ -3842,7 +3842,13 @@ static bool virtioGpuR3HandleVenusRingCommand(PVIRTIOGPU pThis, const uint8_t *p
     {
         uint64_t const uReplyPosition = pCurrentRing->fReplyPositionValid
                                        ? pCurrentRing->uReplyPosition : 0;
-        virtioGpuR3RingWriteReplyType(pThis, pCurrentRing, uReplyPosition, uType);
+        if (!pCurrentRing->fReplyValid || !pCurrentRing->fReplyPositionValid
+            || pCurrentRing->cbReply < sizeof(uint32_t)
+            || uReplyPosition > pCurrentRing->cbReply - sizeof(uint32_t)
+            || !virtioGpuR3RingWriteReplyType(pThis, pCurrentRing, uReplyPosition, uType))
+            pResp->Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+        else
+            pCurrentRing->uReplyPosition = uReplyPosition + sizeof(uint32_t);
     }
     return true;
 }
