@@ -11,8 +11,8 @@
 - 工作目录：`D:\code\virtualbox-virtio-gpu-venus`
 - 分支：`main`
 - 远端：`git@github.com:wso4133560/virtualbox-virtio-gpu-venus.git`
-- 最近功能提交：`72421ab1a6735efaf71cbd7c76fec0f634febb04`（Handle zero output handles in Venus creates）；其后的交接元数据提交只更新本文件。
-- 前两个相关提交：`df51bd21`（ring notify/command-stream execution）、`0116a7f5`（ring protocol state/progress）
+- 最近功能提交：`c17858ea0ddd62d859d6da1c8248ae44a0a63fd2`（Advance Venus reply cursor across streams）。
+- 前两个相关提交：`2976c1c5`（ring wrap-around/reply bounds）、`72421ab1`（zero output handles in Venus creates）；更早提交 `df51bd21`（ring notify/command-stream execution）、`0116a7f5`（ring protocol state/progress）。
 - 开始新工作先执行 `git status --short`；交接时应保持工作树干净。
 
 ## Windows 编译环境
@@ -123,8 +123,8 @@ kmk: Failed to create worker threads
 7. ring 元数据、ring/virtqueue seqno 控制命令识别，以及 BO-only submit 的共享 ring head/status 推进。
 8. `vkCreateRingMESA` 的 ring 元数据持久化，`vkDestroyRingMESA`、`vkNotifyRingMESA`、`vkWriteRingExtraMESA`、`vkSubmitVirtqueueSeqnoMESA`、`vkWait*SeqnoMESA` 的当前状态处理。
 9. `vkSetReplyCommandStreamMESA` 保存 reply resource/offset/size，并初始化 reply cursor。
-10. `vkSeekReplyCommandStreamMESA`（命令类型 `179`）校验并更新 reply cursor；reply 控制命令按当前 cursor 写入共享 reply stream。
-11. `vkExecuteCommandStreamsMESA` 从共享 blob 读取 descriptor/command stream，处理嵌套 ring 命令，并执行当前支持的 transfer/clear/barrier/blit/fill/update 子集。
+10. `vkSeekReplyCommandStreamMESA`（命令类型 `179`）校验并更新 reply cursor；reply 控制命令按当前 cursor 写入共享 reply stream 并推进 4-byte reply slot，拒绝无效 stream/cursor。
+11. `vkExecuteCommandStreamsMESA` 从共享 blob 读取 descriptor/command stream，处理多 stream、显式 reply position 和嵌套 ring 命令，并执行当前支持的 transfer/clear/barrier/blit/fill/update 子集。
 12. ring reply cursor、reply validity、buffer/memory binding、有限 command buffer/fence/binary/timeline semaphore 生命周期状态、classic/`vkQueueSubmit2` wait-signal、`vkGetSemaphoreCounterValue`/`vkWaitSemaphores`/`vkSignalSemaphore`、idle 回复，以及 saved-state version `17` 的 save/load 和一致性检查。
 13. image object handle 到已绑定 host-visible resource 的统一解析；环命令与 `SUBMIT_3D` 的 image/buffer transfer、clear、barrier、copy、blit 路径不再强制截断 64 位 Vulkan handle，并保留旧 resource ID 回退。
 14. `vkGetDeviceMemoryCommitment`、`vkGetImageMemoryRequirements`、`vkGetImageMemoryRequirements2`、`vkBindImageMemory`、`vkBindImageMemory2` 的有界 framing/reply 和 binding-table 状态更新。
