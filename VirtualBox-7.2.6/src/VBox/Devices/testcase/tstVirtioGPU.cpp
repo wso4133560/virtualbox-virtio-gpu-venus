@@ -2011,6 +2011,44 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(cbProtocolReply == 24 && uCreateImageReplyType == uCreateImageType
                   && uCreateImageReplyResult == VK_SUCCESS);
 
+    uint8_t abCreateBuffer[92] = { 0 };
+    uint32_t uCreateBufferType = VIRTIOGPU_VK_CMD_CREATE_BUFFER;
+    uint64_t uCreateBufferInfo = 1, uCreateVkBufferSize = 1024, fCreateBufferOutput = 1;
+    uint32_t uCreateBufferSType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    memcpy(abCreateBuffer + 0, &uCreateBufferType, sizeof(uCreateBufferType));
+    memcpy(abCreateBuffer + 8, &uGetQueueDevice, sizeof(uGetQueueDevice));
+    memcpy(abCreateBuffer + 16, &uCreateBufferInfo, sizeof(uCreateBufferInfo));
+    memcpy(abCreateBuffer + 24, &uCreateBufferSType, sizeof(uCreateBufferSType));
+    memcpy(abCreateBuffer + 40, &uCreateVkBufferSize, sizeof(uCreateVkBufferSize));
+    memcpy(abCreateBuffer + 76, &fCreateBufferOutput, sizeof(fCreateBufferOutput));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abCreateBuffer, sizeof(abCreateBuffer), &cbQueueCommand)
+                  && cbQueueCommand == sizeof(abCreateBuffer)
+                  && virtioGpuR3EncodeVenusProtocolReply(pGpu, abCreateBuffer, sizeof(abCreateBuffer),
+                                                          abProtocolReply, sizeof(abProtocolReply),
+                                                          &cbProtocolReply));
+    uint64_t uCreatedBuffer = 0;
+    uint32_t uCreateBufferReplyType = 0, uCreateBufferReplyResult = UINT32_MAX;
+    memcpy(&uCreateBufferReplyType, abProtocolReply + 0, sizeof(uCreateBufferReplyType));
+    memcpy(&uCreateBufferReplyResult, abProtocolReply + 4, sizeof(uCreateBufferReplyResult));
+    memcpy(&uCreatedBuffer, abProtocolReply + 16, sizeof(uCreatedBuffer));
+    RTTESTI_CHECK(cbProtocolReply == 24 && uCreateBufferReplyType == uCreateBufferType
+                  && uCreateBufferReplyResult == VK_SUCCESS && uCreatedBuffer != 0
+                  && virtioGpuR3FindBufferBinding(pGpu, uCreatedBuffer)
+                  && virtioGpuR3FindBufferBinding(pGpu, uCreatedBuffer)->cbBuffer == uCreateVkBufferSize);
+    uint8_t abDestroyBuffer[32] = { 0 };
+    uint32_t uDestroyBufferType = VIRTIOGPU_VK_CMD_DESTROY_BUFFER;
+    uint64_t fDestroyBufferAllocator = 0;
+    memcpy(abDestroyBuffer + 0, &uDestroyBufferType, sizeof(uDestroyBufferType));
+    memcpy(abDestroyBuffer + 8, &uGetQueueDevice, sizeof(uGetQueueDevice));
+    memcpy(abDestroyBuffer + 16, &uCreatedBuffer, sizeof(uCreatedBuffer));
+    memcpy(abDestroyBuffer + 24, &fDestroyBufferAllocator, sizeof(fDestroyBufferAllocator));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abDestroyBuffer, sizeof(abDestroyBuffer), &cbQueueCommand)
+                  && cbQueueCommand == sizeof(abDestroyBuffer)
+                  && virtioGpuR3EncodeVenusProtocolReply(pGpu, abDestroyBuffer, sizeof(abDestroyBuffer),
+                                                          abProtocolReply, sizeof(abProtocolReply),
+                                                          &cbProtocolReply)
+                  && cbProtocolReply == 4 && !virtioGpuR3FindBufferBinding(pGpu, uCreatedBuffer));
+
     uint8_t abGetImageRequirements[32] = { 0 };
     uint32_t uGetImageRequirementsType = VIRTIOGPU_VK_CMD_GET_IMAGE_MEMORY_REQUIREMENTS;
     memcpy(abGetImageRequirements + 0, &uGetImageRequirementsType, sizeof(uGetImageRequirementsType));

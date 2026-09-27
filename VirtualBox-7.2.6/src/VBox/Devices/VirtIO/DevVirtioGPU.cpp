@@ -438,6 +438,48 @@ static PVIRTIOGPUBUFFERBINDING virtioGpuR3GetBufferBinding(PVIRTIOGPU pThis, uin
     return NULL;
 }
 
+static bool virtioGpuR3VenusObjectIdInUse(PVIRTIOGPU pThis, uint64_t uObject)
+{
+    if (!pThis || !uObject)
+        return false;
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aBufferBindings); ++i)
+        if (pThis->aBufferBindings[i].uBuffer == uObject)
+            return true;
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aCommandBuffers); ++i)
+        if (pThis->aCommandBuffers[i].uCommandBuffer == uObject)
+            return true;
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aFences); ++i)
+        if (pThis->aFences[i].uFence == uObject)
+            return true;
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aSemaphores); ++i)
+        if (pThis->aSemaphores[i].uSemaphore == uObject)
+            return true;
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aResources); ++i)
+        if (pThis->aResources[i].uVkMemoryObjectId == uObject
+            || pThis->aResources[i].uVkBufferObjectId == uObject)
+            return true;
+    return false;
+}
+
+/* Mesa initializes output non-dispatchable handles to zero before encoding a
+ * create call.  Allocate from a range disjoint from legacy resource ids and
+ * scan persisted object tables so save/load cannot reuse a live handle. */
+static uint64_t virtioGpuR3AllocVenusObjectId(PVIRTIOGPU pThis)
+{
+    if (!pThis)
+        return 0;
+    uint64_t uCandidate = UINT64_C(0x100000000);
+    for (unsigned i = 0; i < 4096; ++i)
+    {
+        if (!virtioGpuR3VenusObjectIdInUse(pThis, uCandidate))
+            return uCandidate;
+        if (uCandidate == UINT64_MAX)
+            return 0;
+        ++uCandidate;
+    }
+    return 0;
+}
+
 static PVIRTIOGPUCOMMANDBUFFERSTATE virtioGpuR3FindCommandBuffer(PVIRTIOGPU pThis,
                                                                   uint64_t uCommandBuffer)
 {
@@ -2079,6 +2121,12 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                  * null.  Preserve that handle and emit an output reply. */
                 fOutputId = virtioGpuR3ReadU64(pb, cb, cb - sizeof(uint64_t), &uId);
                 fOutput = fOutputId;
+            }
+            if (fOutputId && fOutput && !uId)
+            {
+                uId = virtioGpuR3AllocVenusObjectId(pThis);
+                if (!uId)
+                    return false;
             }
             if (fOutputId && fOutput && uType == VIRTIOGPU_VK_CMD_CREATE_BUFFER)
             {
