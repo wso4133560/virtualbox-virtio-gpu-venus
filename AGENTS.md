@@ -57,7 +57,7 @@ kmk: Failed to create worker threads
 .\tools\test-virtio-gpu.ps1 -TimeoutSeconds 60 -IncludeRegistration
 ```
 
-结果：退出码 `0`，报告 `.build\windows\virtio-gpu-validation.json`，共 `45` 个测试组通过，`missingGroups=[]`。已包含 blob resource/Vulkan backing、ring metadata/reply/progress、Vulkan transfer/clear/barrier/blit/fill/update、semaphore lifecycle/submit2 wait-signal、save/load、以及从构建产物注册 VBoxDD 的检查。
+结果：无压力时退出码 `0`、共 `45` 个测试组通过；本次报告 `.build\windows\virtio-gpu-validation.json` 来自 5 秒压力回归，共 `46` 个测试组通过，`missingGroups=[]`，压力组完成 `451264` 次 fill（约 `90252 fills/s`）。两种结果均包含 blob resource/Vulkan backing、ring metadata/reply/progress、Vulkan transfer/clear/barrier/blit/fill/update、semaphore lifecycle/submit2 wait-signal、save/load、以及从构建产物注册 VBoxDD 的检查。
 
 这表示 Windows 用户态传输、设备回调和宿主 Vulkan 路径通过了当前回归边界。
 
