@@ -1973,6 +1973,84 @@ int main(int argc, char **argv)
         RT_ZERO(*pSubmit2CommandBuffer);
         RT_ZERO(*pSubmit2Fence);
     }
+    RTTestSub(g_hTest, "Venus semaphore lifecycle and submit2 synchronization");
+    uint8_t abCreateSemaphore[64] = { 0 };
+    uint32_t uCreateSemaphoreType = VIRTIOGPU_VK_CMD_CREATE_SEMAPHORE;
+    uint64_t uCreateSemaphoreDevice = UINT64_C(0x1001);
+    uint64_t fCreateSemaphoreInfo = 1, uCreateSemaphoreSType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    uint64_t fCreateSemaphorePNext = 0, fCreateSemaphoreFlags = 0, fCreateSemaphoreAllocator = 0;
+    uint64_t fCreateSemaphoreOut = 1, uSemaphore = UINT64_C(0x5521);
+    memcpy(abCreateSemaphore + 0, &uCreateSemaphoreType, sizeof(uCreateSemaphoreType));
+    memcpy(abCreateSemaphore + 8, &uCreateSemaphoreDevice, sizeof(uCreateSemaphoreDevice));
+    memcpy(abCreateSemaphore + 16, &fCreateSemaphoreInfo, sizeof(fCreateSemaphoreInfo));
+    memcpy(abCreateSemaphore + 24, &uCreateSemaphoreSType, sizeof(uint32_t));
+    memcpy(abCreateSemaphore + 28, &fCreateSemaphorePNext, sizeof(fCreateSemaphorePNext));
+    memcpy(abCreateSemaphore + 36, &fCreateSemaphoreFlags, sizeof(uint32_t));
+    memcpy(abCreateSemaphore + 40, &fCreateSemaphoreAllocator, sizeof(fCreateSemaphoreAllocator));
+    memcpy(abCreateSemaphore + 48, &fCreateSemaphoreOut, sizeof(fCreateSemaphoreOut));
+    memcpy(abCreateSemaphore + 56, &uSemaphore, sizeof(uSemaphore));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abCreateSemaphore,
+                                                       sizeof(abCreateSemaphore), abProtocolReply,
+                                                       sizeof(abProtocolReply), &cbProtocolReply));
+    PVIRTIOGPUSEMAPHORESTATE pSemaphore = virtioGpuR3FindSemaphore(pGpu, uSemaphore);
+    uint32_t uCreateSemaphoreReplyType = 0, uCreateSemaphoreReplyResult = UINT32_MAX;
+    memcpy(&uCreateSemaphoreReplyType, abProtocolReply, sizeof(uCreateSemaphoreReplyType));
+    memcpy(&uCreateSemaphoreReplyResult, abProtocolReply + 4, sizeof(uCreateSemaphoreReplyResult));
+    RTTESTI_CHECK(pSemaphore && !pSemaphore->fSignaled && cbProtocolReply == 24
+                  && uCreateSemaphoreReplyType == uCreateSemaphoreType
+                  && uCreateSemaphoreReplyResult == VK_SUCCESS);
+    if (pSemaphore)
+    {
+        pSemaphore->fSignaled = true;
+        PVIRTIOGPUFENCESTATE pSubmit2SemaphoreFence = virtioGpuR3GetFence(pGpu, uSubmit2Fence);
+        uint8_t abSubmit2Semaphore[168] = { 0 };
+        uint32_t uSubmit2SemaphoreWaitCount = 1, uSubmit2SemaphoreSignalCount = 1;
+        uint64_t uSubmit2SemaphoreWaitEncoded = 1, uSubmit2SemaphoreSignalEncoded = 1;
+        uint32_t uSemaphoreSubmitSType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+        uint64_t uSemaphoreValue = 0, uSemaphoreStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        uint32_t uSemaphoreDeviceIndex = 0;
+        memcpy(abSubmit2Semaphore + 0, &uSubmit2Type, sizeof(uSubmit2Type));
+        memcpy(abSubmit2Semaphore + 8, &uSubmit2Queue, sizeof(uSubmit2Queue));
+        memcpy(abSubmit2Semaphore + 16, &uSubmit2Count, sizeof(uSubmit2Count));
+        memcpy(abSubmit2Semaphore + 20, &uSubmit2Encoded, sizeof(uSubmit2Encoded));
+        memcpy(abSubmit2Semaphore + 28, &uSubmit2SType, sizeof(uSubmit2SType));
+        memcpy(abSubmit2Semaphore + 44, &uSubmit2SemaphoreWaitCount, sizeof(uSubmit2SemaphoreWaitCount));
+        memcpy(abSubmit2Semaphore + 48, &uSubmit2SemaphoreWaitEncoded, sizeof(uSubmit2SemaphoreWaitEncoded));
+        memcpy(abSubmit2Semaphore + 56, &uSemaphoreSubmitSType, sizeof(uSemaphoreSubmitSType));
+        memcpy(abSubmit2Semaphore + 68, &uSemaphore, sizeof(uSemaphore));
+        memcpy(abSubmit2Semaphore + 76, &uSemaphoreValue, sizeof(uSemaphoreValue));
+        memcpy(abSubmit2Semaphore + 84, &uSemaphoreStageMask, sizeof(uSemaphoreStageMask));
+        memcpy(abSubmit2Semaphore + 92, &uSemaphoreDeviceIndex, sizeof(uSemaphoreDeviceIndex));
+        memcpy(abSubmit2Semaphore + 96, &uSubmit2CmdCount, sizeof(uSubmit2CmdCount));
+        uint64_t uSubmit2NoCommands = 0;
+        memcpy(abSubmit2Semaphore + 100, &uSubmit2NoCommands, sizeof(uSubmit2NoCommands));
+        memcpy(abSubmit2Semaphore + 108, &uSubmit2SemaphoreSignalCount, sizeof(uSubmit2SemaphoreSignalCount));
+        memcpy(abSubmit2Semaphore + 112, &uSubmit2SemaphoreSignalEncoded, sizeof(uSubmit2SemaphoreSignalEncoded));
+        memcpy(abSubmit2Semaphore + 120, &uSemaphoreSubmitSType, sizeof(uSemaphoreSubmitSType));
+        memcpy(abSubmit2Semaphore + 132, &uSemaphore, sizeof(uSemaphore));
+        memcpy(abSubmit2Semaphore + 140, &uSemaphoreValue, sizeof(uSemaphoreValue));
+        memcpy(abSubmit2Semaphore + 148, &uSemaphoreStageMask, sizeof(uSemaphoreStageMask));
+        memcpy(abSubmit2Semaphore + 156, &uSemaphoreDeviceIndex, sizeof(uSemaphoreDeviceIndex));
+        memcpy(abSubmit2Semaphore + 160, &uSubmit2Fence, sizeof(uSubmit2Fence));
+        RTTESTI_CHECK(pSubmit2SemaphoreFence
+                      && virtioGpuR3EncodeVenusProtocolReply(pGpu, abSubmit2Semaphore,
+                                                           sizeof(abSubmit2Semaphore), abProtocolReply,
+                                                           sizeof(abProtocolReply), &cbProtocolReply));
+        uint32_t uSubmit2SemaphoreReplyType = 0, uSubmit2SemaphoreReplyResult = UINT32_MAX;
+        memcpy(&uSubmit2SemaphoreReplyType, abProtocolReply, sizeof(uSubmit2SemaphoreReplyType));
+        memcpy(&uSubmit2SemaphoreReplyResult, abProtocolReply + 4, sizeof(uSubmit2SemaphoreReplyResult));
+        RTTESTI_CHECK(cbProtocolReply == 8 && uSubmit2SemaphoreReplyType == uSubmit2Type
+                      && uSubmit2SemaphoreReplyResult == VK_SUCCESS && pSemaphore->fSignaled);
+        uint8_t abDestroySemaphore[32] = { 0 };
+        uint32_t uDestroySemaphoreType = VIRTIOGPU_VK_CMD_DESTROY_SEMAPHORE;
+        memcpy(abDestroySemaphore + 0, &uDestroySemaphoreType, sizeof(uDestroySemaphoreType));
+        memcpy(abDestroySemaphore + 8, &uCreateSemaphoreDevice, sizeof(uCreateSemaphoreDevice));
+        memcpy(abDestroySemaphore + 16, &uSemaphore, sizeof(uSemaphore));
+        RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abDestroySemaphore,
+                                                           sizeof(abDestroySemaphore), abProtocolReply,
+                                                           sizeof(abProtocolReply), &cbProtocolReply)
+                      && cbProtocolReply == 4 && !virtioGpuR3FindSemaphore(pGpu, uSemaphore));
+    }
     uint8_t abIdle[16] = { 0 };
     uint32_t uQueueWaitIdleType = VIRTIOGPU_VK_CMD_QUEUE_WAIT_IDLE;
     memcpy(abIdle, &uQueueWaitIdleType, sizeof(uQueueWaitIdleType));

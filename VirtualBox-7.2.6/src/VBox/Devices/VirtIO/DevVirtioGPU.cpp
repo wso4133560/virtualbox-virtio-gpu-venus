@@ -30,12 +30,13 @@
 # error "VirtIO-GPU currently runs entirely in ring 3."
 #endif
 
-/* Version 15 retains buffer bindings and bounded command/fence state. */
-#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(15)
+/* Version 16 retains buffer bindings and bounded command/fence/semaphore state. */
+#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(16)
 #define VIRTIOGPU_MAX_RESOURCES 256
 #define VIRTIOGPU_MAX_BUFFER_BINDINGS 512
 #define VIRTIOGPU_MAX_COMMAND_BUFFERS 512
 #define VIRTIOGPU_MAX_FENCES 512
+#define VIRTIOGPU_MAX_SEMAPHORES 512
 #define VIRTIOGPU_MAX_CONTEXTS 64
 #define VIRTIOGPU_MAX_CONTEXT_RESOURCES 64
 #define VIRTIOGPU_MAX_SUBMIT_BYTES (UINT32_C(1) * _1M)
@@ -107,6 +108,8 @@
 #define VIRTIOGPU_VK_CMD_BIND_BUFFER_MEMORY2 UINT32_C(138)
 #define VIRTIOGPU_VK_CMD_GET_BUFFER_MEMORY_REQUIREMENTS UINT32_C(30)
 #define VIRTIOGPU_VK_CMD_CREATE_FENCE UINT32_C(35)
+#define VIRTIOGPU_VK_CMD_CREATE_SEMAPHORE UINT32_C(40)
+#define VIRTIOGPU_VK_CMD_DESTROY_SEMAPHORE UINT32_C(41)
 #define VIRTIOGPU_VK_CMD_RESET_FENCES UINT32_C(37)
 #define VIRTIOGPU_VK_CMD_GET_FENCE_STATUS UINT32_C(38)
 #define VIRTIOGPU_VK_CMD_WAIT_FOR_FENCES UINT32_C(39)
@@ -248,6 +251,13 @@ typedef struct VIRTIOGPUFENCESTATE
 } VIRTIOGPUFENCESTATE;
 typedef VIRTIOGPUFENCESTATE *PVIRTIOGPUFENCESTATE;
 
+typedef struct VIRTIOGPUSEMAPHORESTATE
+{
+    uint64_t uSemaphore;
+    bool fSignaled;
+} VIRTIOGPUSEMAPHORESTATE;
+typedef VIRTIOGPUSEMAPHORESTATE *PVIRTIOGPUSEMAPHORESTATE;
+
 typedef struct VIRTIOGPU
 {
     VIRTIOCORE      Virtio;  /* Must stay first for the common transport. */
@@ -258,6 +268,7 @@ typedef struct VIRTIOGPU
     VIRTIOGPUBUFFERBINDING aBufferBindings[VIRTIOGPU_MAX_BUFFER_BINDINGS];
     VIRTIOGPUCOMMANDBUFFERSTATE aCommandBuffers[VIRTIOGPU_MAX_COMMAND_BUFFERS];
     VIRTIOGPUFENCESTATE aFences[VIRTIOGPU_MAX_FENCES];
+    VIRTIOGPUSEMAPHORESTATE aSemaphores[VIRTIOGPU_MAX_SEMAPHORES];
     VIRTIOGPUSCANOUT aScanouts[VIRTIOGPU_MAX_SCANOUTS];
     uint64_t cbAllocated;
     uint8_t *pbSharedMemory;
@@ -461,6 +472,50 @@ static PVIRTIOGPUFENCESTATE virtioGpuR3GetFence(PVIRTIOGPU pThis, uint64_t uFenc
             return &pThis->aFences[i];
         }
     return NULL;
+}
+
+static PVIRTIOGPUSEMAPHORESTATE virtioGpuR3FindSemaphore(PVIRTIOGPU pThis,
+                                                           uint64_t uSemaphore)
+{
+    if (!pThis || !uSemaphore)
+        return NULL;
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aSemaphores); ++i)
+        if (pThis->aSemaphores[i].uSemaphore == uSemaphore)
+            return &pThis->aSemaphores[i];
+    return NULL;
+}
+
+static PVIRTIOGPUSEMAPHORESTATE virtioGpuR3GetSemaphore(PVIRTIOGPU pThis,
+                                                          uint64_t uSemaphore)
+{
+    PVIRTIOGPUSEMAPHORESTATE pState = virtioGpuR3FindSemaphore(pThis, uSemaphore);
+    if (pState || !uSemaphore)
+        return pState;
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aSemaphores); ++i)
+        if (!pThis->aSemaphores[i].uSemaphore)
+        {
+            pThis->aSemaphores[i].uSemaphore = uSemaphore;
+            return &pThis->aSemaphores[i];
+        }
+    return NULL;
+}
+
+static bool virtioGpuR3WaitSemaphore(PVIRTIOGPU pThis, uint64_t uSemaphore)
+{
+    PVIRTIOGPUSEMAPHORESTATE pState = virtioGpuR3FindSemaphore(pThis, uSemaphore);
+    if (!pState || !pState->fSignaled)
+        return false;
+    pState->fSignaled = false;
+    return true;
+}
+
+static bool virtioGpuR3SignalSemaphore(PVIRTIOGPU pThis, uint64_t uSemaphore)
+{
+    PVIRTIOGPUSEMAPHORESTATE pState = virtioGpuR3FindSemaphore(pThis, uSemaphore);
+    if (!pState)
+        return false;
+    pState->fSignaled = true;
+    return true;
 }
 
 static bool virtioGpuR3BindBufferMemory(PVIRTIOGPU pThis, uint64_t uBuffer, uint64_t uMemory, uint64_t offMemory)
@@ -906,6 +961,11 @@ static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pc
              * and output device-memory handle. */
             *pcbCommand = 88;
             return cb >= *pcbCommand;
+        case VIRTIOGPU_VK_CMD_CREATE_SEMAPHORE:
+            /* device, VkSemaphoreCreateInfo (null pNext), allocator marker,
+             * and output semaphore handle. */
+            *pcbCommand = 64;
+            return cb >= *pcbCommand;
         case VIRTIOGPU_VK_CMD_BIND_BUFFER_MEMORY:
             *pcbCommand = 40;
             return cb >= *pcbCommand;
@@ -942,6 +1002,7 @@ static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pc
             return cb >= *pcbCommand;
         case VIRTIOGPU_VK_CMD_DESTROY_BUFFER:
         case VIRTIOGPU_VK_CMD_DESTROY_FENCE:
+        case VIRTIOGPU_VK_CMD_DESTROY_SEMAPHORE:
         case VIRTIOGPU_VK_CMD_FREE_MEMORY:
             *pcbCommand = 32;
             return cb >= *pcbCommand;
@@ -1156,9 +1217,9 @@ static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pc
                 uint64_t cWaitEncoded = 0;
                 if (!virtioGpuR3ReadU64(pb, cb, off, &cWaitEncoded)
                     || cWait > 64 || cWaitEncoded > cWait
-                    || cWaitEncoded > (cb - off - sizeof(uint64_t)) / 32)
+                    || cWaitEncoded > (cb - off - sizeof(uint64_t)) / 40)
                     return false;
-                off += sizeof(uint64_t) + (size_t)cWaitEncoded * 32;
+                off += sizeof(uint64_t) + (size_t)cWaitEncoded * 40;
                 if (off > cb - sizeof(uint32_t) - sizeof(uint64_t)) return false;
                 uint32_t cCmd = 0;
                 memcpy(&cCmd, pb + off, sizeof(cCmd)); off += sizeof(cCmd);
@@ -1174,9 +1235,9 @@ static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pc
                 uint64_t cSignalEncoded = 0;
                 if (!virtioGpuR3ReadU64(pb, cb, off, &cSignalEncoded)
                     || cSignal > 64 || cSignalEncoded > cSignal
-                    || cSignalEncoded > (cb - off - sizeof(uint64_t)) / 32)
+                    || cSignalEncoded > (cb - off - sizeof(uint64_t)) / 40)
                     return false;
-                off += sizeof(uint64_t) + (size_t)cSignalEncoded * 32;
+                off += sizeof(uint64_t) + (size_t)cSignalEncoded * 40;
             }
             if (off > cb - sizeof(uint64_t)) return false;
             *pcbCommand = off + sizeof(uint64_t); /* fence */
@@ -1753,6 +1814,7 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
         case VIRTIOGPU_VK_CMD_CREATE_BUFFER:
         case VIRTIOGPU_VK_CMD_ALLOCATE_MEMORY:
         case VIRTIOGPU_VK_CMD_CREATE_FENCE:
+        case VIRTIOGPU_VK_CMD_CREATE_SEMAPHORE:
         {
             bool fOutput = false;
             bool fOutputId = virtioGpuR3VenusFindOutputId(pb, cb, &fOutput, &uId);
@@ -1798,6 +1860,18 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                 if (!pFence)
                     return false;
                 pFence->fSignaled = !!(fFence & VK_FENCE_CREATE_SIGNALED_BIT);
+            }
+            if (fOutputId && fOutput && uType == VIRTIOGPU_VK_CMD_CREATE_SEMAPHORE)
+            {
+                uint64_t fCreateInfo = 0;
+                if (!virtioGpuR3VenusReadU64(pb, cb, 16, &fCreateInfo) || !fCreateInfo
+                    || !virtioGpuR3VenusReadU64(pb, cb, 28, &fCreateInfo)
+                    || fCreateInfo || cb < 40)
+                    return false;
+                PVIRTIOGPUSEMAPHORESTATE pSemaphore = virtioGpuR3GetSemaphore(pThis, uId);
+                if (!pSemaphore)
+                    return false;
+                pSemaphore->fSignaled = false;
             }
             if (!fOutputId
                 || !virtioGpuR3VenusPutU32(&Enc, uType)
@@ -1963,6 +2037,12 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                 if (!virtioGpuR3VenusReadU64(pb, cb, off, &cWaitEncoded)) return false;
                 off += 8;
                 if (cWaitEncoded > cWait || cWaitEncoded > (cb - off) / 8) return false;
+                for (uint64_t j = 0; j < cWaitEncoded; ++j)
+                {
+                    if (!virtioGpuR3VenusReadU64(pb, cb, off + j * 8, &uId)
+                        || !virtioGpuR3WaitSemaphore(pThis, uId))
+                        return false;
+                }
                 off += (size_t)cWaitEncoded * 8;
                 if (!virtioGpuR3VenusReadU64(pb, cb, off, &cStageEncoded)) return false;
                 off += 8;
@@ -1986,6 +2066,12 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                 if (!virtioGpuR3VenusReadU64(pb, cb, off, &cSignalEncoded)) return false;
                 off += 8;
                 if (cSignalEncoded > cSignal || cSignalEncoded > (cb - off) / 8) return false;
+                for (uint64_t j = 0; j < cSignalEncoded; ++j)
+                {
+                    if (!virtioGpuR3VenusReadU64(pb, cb, off + j * 8, &uId)
+                        || !virtioGpuR3SignalSemaphore(pThis, uId))
+                        return false;
+                }
                 off += (size_t)cSignalEncoded * 8;
             }
             if (off > cb - sizeof(uint64_t)) return false;
@@ -2022,9 +2108,16 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                 uint64_t cWaitEncoded = 0;
                 if (!virtioGpuR3VenusReadU64(pb, cb, off, &cWaitEncoded)
                     || cWait > 64 || cWaitEncoded > cWait
-                    || cWaitEncoded > (cb - off - sizeof(uint64_t)) / 32)
+                    || cWaitEncoded > (cb - off - sizeof(uint64_t)) / 40)
                     return false;
-                off += sizeof(uint64_t) + (size_t)cWaitEncoded * 32;
+                for (uint64_t j = 0; j < cWaitEncoded; ++j)
+                {
+                    if (!virtioGpuR3VenusReadU64(pb, cb, off + sizeof(uint64_t) + j * 40 + 12,
+                                                  &uId)
+                        || !virtioGpuR3WaitSemaphore(pThis, uId))
+                        return false;
+                }
+                off += sizeof(uint64_t) + (size_t)cWaitEncoded * 40;
                 if (off > cb - sizeof(uint32_t) - sizeof(uint64_t)) return false;
                 uint32_t cCmd = 0;
                 memcpy(&cCmd, pb + off, sizeof(cCmd)); off += sizeof(cCmd);
@@ -2051,9 +2144,16 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                 uint64_t cSignalEncoded = 0;
                 if (!virtioGpuR3VenusReadU64(pb, cb, off, &cSignalEncoded)
                     || cSignal > 64 || cSignalEncoded > cSignal
-                    || cSignalEncoded > (cb - off - sizeof(uint64_t)) / 32)
+                    || cSignalEncoded > (cb - off - sizeof(uint64_t)) / 40)
                     return false;
-                off += sizeof(uint64_t) + (size_t)cSignalEncoded * 32;
+                for (uint64_t j = 0; j < cSignalEncoded; ++j)
+                {
+                    if (!virtioGpuR3VenusReadU64(pb, cb, off + sizeof(uint64_t) + j * 40 + 12,
+                                                  &uId)
+                        || !virtioGpuR3SignalSemaphore(pThis, uId))
+                        return false;
+                }
+                off += sizeof(uint64_t) + (size_t)cSignalEncoded * 40;
             }
             if (off > cb - sizeof(uint64_t) || !virtioGpuR3VenusReadU64(pb, cb, off, &uId))
                 return false;
@@ -2203,10 +2303,16 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                 return false;
             break;
         case VIRTIOGPU_VK_CMD_DESTROY_FENCE:
+        case VIRTIOGPU_VK_CMD_DESTROY_SEMAPHORE:
             if (!virtioGpuR3VenusReadU64(pb, cb, 16, &uId))
                 return false;
-            if (PVIRTIOGPUFENCESTATE pFence = virtioGpuR3FindFence(pThis, uId))
-                RT_ZERO(*pFence);
+            if (uType == VIRTIOGPU_VK_CMD_DESTROY_FENCE)
+            {
+                if (PVIRTIOGPUFENCESTATE pFence = virtioGpuR3FindFence(pThis, uId))
+                    RT_ZERO(*pFence);
+            }
+            else if (PVIRTIOGPUSEMAPHORESTATE pSemaphore = virtioGpuR3FindSemaphore(pThis, uId))
+                RT_ZERO(*pSemaphore);
             if (!virtioGpuR3VenusPutU32(&Enc, uType))
                 return false;
             break;
@@ -3392,6 +3498,7 @@ static void virtioGpuR3FreeResources(PVIRTIOGPU pThis)
     RT_ZERO(pThis->aBufferBindings);
     RT_ZERO(pThis->aCommandBuffers);
     RT_ZERO(pThis->aFences);
+    RT_ZERO(pThis->aSemaphores);
     pThis->cbAllocated = 0;
     pThis->offSharedMemoryNext = 0;
 }
@@ -8388,6 +8495,12 @@ static DECLCALLBACK(int) virtioGpuR3SaveExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
         if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU64(pSSM, pFence->uFence);
         if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutBool(pSSM, pFence->fSignaled);
     }
+    for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aSemaphores); ++i)
+    {
+        VIRTIOGPUSEMAPHORESTATE const *pSemaphore = &pThis->aSemaphores[i];
+        if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU64(pSSM, pSemaphore->uSemaphore);
+        if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutBool(pSSM, pSemaphore->fSignaled);
+    }
     for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aScanouts); ++i)
         rc = pDevIns->pHlpR3->pfnSSMPutMem(pSSM, &pThis->aScanouts[i], sizeof(pThis->aScanouts[i]));
     if (RT_SUCCESS(rc))
@@ -8635,6 +8748,19 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
         for (unsigned j = 0; RT_SUCCESS(rc) && fValid && pFence->uFence && j < i; ++j)
             if (pThis->aFences[j].uFence
                 && pThis->aFences[j].uFence == pFence->uFence)
+                fValid = false;
+        if (RT_SUCCESS(rc) && !fValid)
+            rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
+    }
+    for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aSemaphores); ++i)
+    {
+        PVIRTIOGPUSEMAPHORESTATE pSemaphore = &pThis->aSemaphores[i];
+        rc = pDevIns->pHlpR3->pfnSSMGetU64(pSSM, &pSemaphore->uSemaphore);
+        if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetBool(pSSM, &pSemaphore->fSignaled);
+        bool fValid = pSemaphore->uSemaphore != 0 || !pSemaphore->fSignaled;
+        for (unsigned j = 0; RT_SUCCESS(rc) && fValid && pSemaphore->uSemaphore && j < i; ++j)
+            if (pThis->aSemaphores[j].uSemaphore
+                && pThis->aSemaphores[j].uSemaphore == pSemaphore->uSemaphore)
                 fValid = false;
         if (RT_SUCCESS(rc) && !fValid)
             rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
