@@ -2051,6 +2051,127 @@ int main(int argc, char **argv)
                                                            sizeof(abProtocolReply), &cbProtocolReply)
                       && cbProtocolReply == 4 && !virtioGpuR3FindSemaphore(pGpu, uSemaphore));
     }
+    RTTestSub(g_hTest, "Venus timeline semaphore query, signal and wait");
+    uint8_t abCreateTimeline[88] = { 0 };
+    uint64_t uTimelineSemaphore = UINT64_C(0x5522);
+    uint64_t uTimelineInitialValue = 3;
+    uint32_t uTimelineSType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+    uint32_t uTimelineType = VK_SEMAPHORE_TYPE_TIMELINE;
+    memcpy(abCreateTimeline + 0, &uCreateSemaphoreType, sizeof(uCreateSemaphoreType));
+    memcpy(abCreateTimeline + 8, &uCreateSemaphoreDevice, sizeof(uCreateSemaphoreDevice));
+    memcpy(abCreateTimeline + 16, &fCreateSemaphoreInfo, sizeof(fCreateSemaphoreInfo));
+    uint32_t uTimelineCreateSType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    memcpy(abCreateTimeline + 24, &uTimelineCreateSType, sizeof(uTimelineCreateSType));
+    uint64_t fTimelinePNext = 1, fTimelinePNextNext = 0;
+    memcpy(abCreateTimeline + 28, &fTimelinePNext, sizeof(fTimelinePNext));
+    memcpy(abCreateTimeline + 36, &uTimelineSType, sizeof(uTimelineSType));
+    memcpy(abCreateTimeline + 40, &fTimelinePNextNext, sizeof(fTimelinePNextNext));
+    memcpy(abCreateTimeline + 48, &uTimelineType, sizeof(uTimelineType));
+    memcpy(abCreateTimeline + 52, &uTimelineInitialValue, sizeof(uTimelineInitialValue));
+    memcpy(abCreateTimeline + 60, &fCreateSemaphoreFlags, sizeof(uint32_t));
+    memcpy(abCreateTimeline + 64, &fCreateSemaphoreAllocator, sizeof(fCreateSemaphoreAllocator));
+    memcpy(abCreateTimeline + 72, &fCreateSemaphoreOut, sizeof(fCreateSemaphoreOut));
+    memcpy(abCreateTimeline + 80, &uTimelineSemaphore, sizeof(uTimelineSemaphore));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abCreateTimeline,
+                                                       sizeof(abCreateTimeline), abProtocolReply,
+                                                       sizeof(abProtocolReply), &cbProtocolReply));
+    PVIRTIOGPUSEMAPHORESTATE pTimeline = virtioGpuR3FindSemaphore(pGpu, uTimelineSemaphore);
+    RTTESTI_CHECK(pTimeline && pTimeline->fTimeline && pTimeline->uValue == uTimelineInitialValue
+                  && cbProtocolReply == 24);
+    uint8_t abGetTimeline[32] = { 0 };
+    uint32_t uGetTimelineType = VIRTIOGPU_VK_CMD_GET_SEMAPHORE_COUNTER_VALUE;
+    memcpy(abGetTimeline + 0, &uGetTimelineType, sizeof(uGetTimelineType));
+    memcpy(abGetTimeline + 8, &uCreateSemaphoreDevice, sizeof(uCreateSemaphoreDevice));
+    memcpy(abGetTimeline + 16, &uTimelineSemaphore, sizeof(uTimelineSemaphore));
+    memcpy(abGetTimeline + 24, &fCreateSemaphoreOut, sizeof(fCreateSemaphoreOut));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abGetTimeline, sizeof(abGetTimeline),
+                                                       abProtocolReply, sizeof(abProtocolReply),
+                                                       &cbProtocolReply));
+    uint64_t uTimelineReplyValue = 0;
+    memcpy(&uTimelineReplyValue, abProtocolReply + 16, sizeof(uTimelineReplyValue));
+    RTTESTI_CHECK(cbProtocolReply == 24 && uTimelineReplyValue == uTimelineInitialValue);
+    uint8_t abSignalTimeline[52] = { 0 };
+    uint32_t uSignalTimelineType = VIRTIOGPU_VK_CMD_SIGNAL_SEMAPHORE;
+    uint64_t fSignalInfo = 1, fSignalPNext = 0, uTimelineSignalValue = 7;
+    uint32_t uSignalSType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
+    memcpy(abSignalTimeline + 0, &uSignalTimelineType, sizeof(uSignalTimelineType));
+    memcpy(abSignalTimeline + 8, &uCreateSemaphoreDevice, sizeof(uCreateSemaphoreDevice));
+    memcpy(abSignalTimeline + 16, &fSignalInfo, sizeof(fSignalInfo));
+    memcpy(abSignalTimeline + 24, &uSignalSType, sizeof(uSignalSType));
+    memcpy(abSignalTimeline + 28, &fSignalPNext, sizeof(fSignalPNext));
+    memcpy(abSignalTimeline + 36, &uTimelineSemaphore, sizeof(uTimelineSemaphore));
+    memcpy(abSignalTimeline + 44, &uTimelineSignalValue, sizeof(uTimelineSignalValue));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abSignalTimeline,
+                                                       sizeof(abSignalTimeline), abProtocolReply,
+                                                       sizeof(abProtocolReply), &cbProtocolReply));
+    uint32_t uSignalReplyResult = UINT32_MAX;
+    memcpy(&uSignalReplyResult, abProtocolReply + 4, sizeof(uSignalReplyResult));
+    RTTESTI_CHECK(cbProtocolReply == 8 && uSignalReplyResult == VK_SUCCESS
+                  && pTimeline && pTimeline->uValue == uTimelineSignalValue);
+    uint8_t abWaitTimeline[84] = { 0 };
+    uint32_t uWaitTimelineType = VIRTIOGPU_VK_CMD_WAIT_SEMAPHORES;
+    uint32_t uWaitSType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+    uint32_t uWaitFlags = 0, uWaitCount = 1;
+    uint64_t uWaitArrayCount = 1, uWaitTimeout = 0;
+    memcpy(abWaitTimeline + 0, &uWaitTimelineType, sizeof(uWaitTimelineType));
+    memcpy(abWaitTimeline + 8, &uCreateSemaphoreDevice, sizeof(uCreateSemaphoreDevice));
+    memcpy(abWaitTimeline + 16, &fSignalInfo, sizeof(fSignalInfo));
+    memcpy(abWaitTimeline + 24, &uWaitSType, sizeof(uWaitSType));
+    memcpy(abWaitTimeline + 28, &fSignalPNext, sizeof(fSignalPNext));
+    memcpy(abWaitTimeline + 36, &uWaitFlags, sizeof(uWaitFlags));
+    memcpy(abWaitTimeline + 40, &uWaitCount, sizeof(uWaitCount));
+    memcpy(abWaitTimeline + 44, &uWaitArrayCount, sizeof(uWaitArrayCount));
+    memcpy(abWaitTimeline + 52, &uTimelineSemaphore, sizeof(uTimelineSemaphore));
+    memcpy(abWaitTimeline + 60, &uWaitArrayCount, sizeof(uWaitArrayCount));
+    memcpy(abWaitTimeline + 68, &uTimelineSignalValue, sizeof(uTimelineSignalValue));
+    memcpy(abWaitTimeline + 76, &uWaitTimeout, sizeof(uWaitTimeout));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abWaitTimeline,
+                                                       sizeof(abWaitTimeline), abProtocolReply,
+                                                       sizeof(abProtocolReply), &cbProtocolReply));
+    uint32_t uWaitReplyResult = UINT32_MAX;
+    memcpy(&uWaitReplyResult, abProtocolReply + 4, sizeof(uWaitReplyResult));
+    RTTESTI_CHECK(cbProtocolReply == 8 && uWaitReplyResult == VK_SUCCESS);
+    uint64_t uTimelineLowerValue = 6;
+    memcpy(abSignalTimeline + 44, &uTimelineLowerValue, sizeof(uTimelineLowerValue));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abSignalTimeline,
+                                                       sizeof(abSignalTimeline), abProtocolReply,
+                                                       sizeof(abProtocolReply), &cbProtocolReply));
+    memcpy(&uSignalReplyResult, abProtocolReply + 4, sizeof(uSignalReplyResult));
+    RTTESTI_CHECK(cbProtocolReply == 8 && uSignalReplyResult != VK_SUCCESS
+                  && pTimeline && pTimeline->uValue == uTimelineSignalValue);
+    size_t cbTimelineCommand = 0;
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abCreateTimeline, sizeof(abCreateTimeline),
+                                              &cbTimelineCommand)
+                  && cbTimelineCommand == sizeof(abCreateTimeline));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abGetTimeline, sizeof(abGetTimeline),
+                                              &cbTimelineCommand)
+                  && cbTimelineCommand == sizeof(abGetTimeline));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abSignalTimeline, sizeof(abSignalTimeline),
+                                              &cbTimelineCommand)
+                  && cbTimelineCommand == sizeof(abSignalTimeline));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abWaitTimeline, sizeof(abWaitTimeline),
+                                              &cbTimelineCommand)
+                  && cbTimelineCommand == sizeof(abWaitTimeline));
+    static TSTSSM TimelineSsm;
+    RT_ZERO(TimelineSsm);
+    PSSMHANDLE pTimelineSsm = (PSSMHANDLE)&TimelineSsm;
+    RTTESTI_CHECK_RC(virtioGpuR3SaveExec(pDev, pTimelineSsm), VINF_SUCCESS);
+    virtioGpuR3Reset(pDev);
+    TimelineSsm.off = 0;
+    RTTESTI_CHECK_RC(virtioGpuR3LoadExec(pDev, pTimelineSsm, VIRTIOGPU_SAVED_STATE_VERSION,
+                                         SSM_PASS_FINAL), VINF_SUCCESS);
+    pTimeline = virtioGpuR3FindSemaphore(pGpu, uTimelineSemaphore);
+    RTTESTI_CHECK(pTimeline && pTimeline->fTimeline && !pTimeline->fSignaled
+                  && pTimeline->uValue == uTimelineSignalValue);
+    uint8_t abDestroyTimeline[32] = { 0 };
+    uint32_t uDestroyTimelineType = VIRTIOGPU_VK_CMD_DESTROY_SEMAPHORE;
+    memcpy(abDestroyTimeline + 0, &uDestroyTimelineType, sizeof(uDestroyTimelineType));
+    memcpy(abDestroyTimeline + 8, &uCreateSemaphoreDevice, sizeof(uCreateSemaphoreDevice));
+    memcpy(abDestroyTimeline + 16, &uTimelineSemaphore, sizeof(uTimelineSemaphore));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abDestroyTimeline,
+                                                       sizeof(abDestroyTimeline), abProtocolReply,
+                                                       sizeof(abProtocolReply), &cbProtocolReply)
+                  && cbProtocolReply == 4 && !virtioGpuR3FindSemaphore(pGpu, uTimelineSemaphore));
     uint8_t abIdle[16] = { 0 };
     uint32_t uQueueWaitIdleType = VIRTIOGPU_VK_CMD_QUEUE_WAIT_IDLE;
     memcpy(abIdle, &uQueueWaitIdleType, sizeof(uQueueWaitIdleType));
