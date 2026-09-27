@@ -92,6 +92,7 @@ kmk: Failed to create worker threads
 - 当前对象生命周期改动后的标准报告 `.build\windows\linux-venus-object-admin52\report.json`：`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`guestVulkanExit=0`、`cleanupErrors=[]`、`passed=true`。
 - 当前对象生命周期改动后的 saved-state 报告 `.build\windows\linux-venus-object-save-admin53\report.json`：`saveRestoreVerified=true`、`saveRestoreVulkanExit=0`、`cleanupErrors=[]`、`passed=true`；恢复日志包含 `VULKANINFO_PASS` 和 `VULKAN_WORKLOAD_PASS`。
 - 当前对象生命周期改动后的 reset 报告 `.build\windows\linux-venus-object-reset-admin55\report.json`：`resetVerified=true`、`resetVulkanExit=0`、`cleanupErrors=[]`、`passed=true`。
+- 当前 `vkQueueSubmit2`/idle 回复改动后的标准报告 `.build\windows\linux-venus-submit2-admin56\report.json`：`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`guestVulkanExit=0`、`cleanupErrors=[]`、`passed=true`。
 - 旧的 `linux-venus-final-ring`、`linux-venus-binding-admin41` 等失败报告保留为历史诊断证据；它们不代表当前 runtime 的最终状态。
 
 客体重试时必须使用同一 runtime 目录下的 `VBoxManage.exe`、`VBoxSVC.exe`、`VBoxC.dll`、`VBoxDD.dll`，并使用独立的 `VBOX_USER_HOME`；不要混用系统安装版 VirtualBox。
@@ -109,7 +110,7 @@ kmk: Failed to create worker threads
 9. `vkSetReplyCommandStreamMESA` 保存 reply resource/offset/size，并初始化 reply cursor。
 10. `vkSeekReplyCommandStreamMESA`（命令类型 `179`）校验并更新 reply cursor；reply 控制命令按当前 cursor 写入共享 reply stream。
 11. `vkExecuteCommandStreamsMESA` 从共享 blob 读取 descriptor/command stream，处理嵌套 ring 命令，并执行当前支持的 transfer/clear/barrier/blit/fill/update 子集。
-12. ring reply cursor、reply validity、buffer/memory binding、有限 command buffer/fence 生命周期状态，以及 saved-state version `15` 的 save/load 和一致性检查。
+12. ring reply cursor、reply validity、buffer/memory binding、有限 command buffer/fence 生命周期状态、`vkQueueSubmit2`/idle 回复，以及 saved-state version `15` 的 save/load 和一致性检查。
 
 当前宿主侧主要路径：
 

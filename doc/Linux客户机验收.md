@@ -50,6 +50,8 @@ $image = .\tools\get-linux-test-image.ps1
 
 对象生命周期改动后的复验报告为 `.build/windows/linux-venus-object-admin52/report.json`、`.build/windows/linux-venus-object-save-admin53/report.json` 和 `.build/windows/linux-venus-object-reset-admin55/report.json`：标准 Vulkan/workload、saved-state 恢复后的同一 workload、reset 后 workload 均通过，且 `cleanupErrors=[]`。
 
+`vkQueueSubmit2`/idle 回复改动后的标准报告 `.build/windows/linux-venus-submit2-admin56/report.json` 同样满足 `guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`guestVulkanExit=0` 和 `cleanupErrors=[]`。
+
 ## 2026-09-14 协议修复证据
 
 修复前，真实 Linux 报告 `shm cap with bad size ... size: 28`，并显示 `-host_visible`。修复后的单 vCPU Venus VM 能通过 SSH 验收，内核记录 `Host memory window: 0xe0000000 +0x10000000` 和 `+host_visible`。

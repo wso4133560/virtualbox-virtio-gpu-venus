@@ -113,7 +113,7 @@ foreach ($scenario in @('linux-venus-before', 'linux-venus-final', 'linux-softwa
                         'linux-venus-final-admin46', 'linux-venus-save-restore-admin47',
                         'linux-venus-cpu2-admin48', 'linux-venus-reset-admin51',
                         'linux-venus-object-admin52', 'linux-venus-object-save-admin53',
-                        'linux-venus-object-reset-admin55')) {
+                        'linux-venus-object-reset-admin55', 'linux-venus-submit2-admin56')) {
     $sourceDir = Join-Path $repoRoot (Join-Path '.build\windows' $scenario)
     if (Test-Path -LiteralPath $sourceDir -PathType Container) {
         $destination = Join-Path $runtimeValidation $scenario

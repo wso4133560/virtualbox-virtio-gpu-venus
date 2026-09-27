@@ -1931,6 +1931,60 @@ int main(int argc, char **argv)
                   && uPropertiesApiVersion == pGpu->VkProperties.apiVersion
                   && !strncmp(szPropertiesName, pGpu->VkProperties.deviceName,
                               sizeof(szPropertiesName)));
+    RTTestSub(g_hTest, "Venus queue submit2 and idle replies");
+    uint8_t abSubmit2[112] = { 0 };
+    uint32_t uSubmit2Type = VIRTIOGPU_VK_CMD_QUEUE_SUBMIT2;
+    uint64_t uSubmit2Queue = UINT64_C(0x3001), uSubmit2Fence = UINT64_C(0x5511);
+    uint32_t uSubmit2Count = 1, uSubmit2Encoded = 1;
+    uint32_t uSubmit2SType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+    uint32_t uSubmit2WaitCount = 0;
+    uint64_t uSubmit2WaitEncoded = 0;
+    uint32_t uSubmit2CmdCount = 1, uSubmit2CmdEncoded = 1;
+    uint32_t uSubmit2CmdSType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+    uint64_t uSubmit2CommandBuffer = UINT64_C(0x1234);
+    memcpy(abSubmit2 + 0, &uSubmit2Type, sizeof(uSubmit2Type));
+    memcpy(abSubmit2 + 8, &uSubmit2Queue, sizeof(uSubmit2Queue));
+    memcpy(abSubmit2 + 16, &uSubmit2Count, sizeof(uSubmit2Count));
+    memcpy(abSubmit2 + 20, &uSubmit2Encoded, sizeof(uSubmit2Encoded));
+    memcpy(abSubmit2 + 28, &uSubmit2SType, sizeof(uSubmit2SType));
+    memcpy(abSubmit2 + 44, &uSubmit2WaitCount, sizeof(uSubmit2WaitCount));
+    memcpy(abSubmit2 + 48, &uSubmit2WaitEncoded, sizeof(uSubmit2WaitEncoded));
+    memcpy(abSubmit2 + 56, &uSubmit2CmdCount, sizeof(uSubmit2CmdCount));
+    memcpy(abSubmit2 + 60, &uSubmit2CmdEncoded, sizeof(uSubmit2CmdEncoded));
+    memcpy(abSubmit2 + 68, &uSubmit2CmdSType, sizeof(uSubmit2CmdSType));
+    memcpy(abSubmit2 + 80, &uSubmit2CommandBuffer, sizeof(uSubmit2CommandBuffer));
+    memcpy(abSubmit2 + 112 - sizeof(uSubmit2Fence), &uSubmit2Fence, sizeof(uSubmit2Fence));
+    PVIRTIOGPUCOMMANDBUFFERSTATE pSubmit2CommandBuffer = virtioGpuR3GetCommandBuffer(pGpu,
+                                                                                         uSubmit2CommandBuffer);
+    PVIRTIOGPUFENCESTATE pSubmit2Fence = virtioGpuR3GetFence(pGpu, uSubmit2Fence);
+    RTTESTI_CHECK(pSubmit2CommandBuffer && pSubmit2Fence);
+    if (pSubmit2CommandBuffer && pSubmit2Fence)
+    {
+        pSubmit2CommandBuffer->fExecutable = true;
+        pSubmit2Fence->fSignaled = false;
+        RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abSubmit2, sizeof(abSubmit2),
+                                                           abProtocolReply, sizeof(abProtocolReply),
+                                                           &cbProtocolReply));
+        uint32_t uSubmit2ReplyType = 0, uSubmit2ReplyResult = UINT32_MAX;
+        memcpy(&uSubmit2ReplyType, abProtocolReply, sizeof(uSubmit2ReplyType));
+        memcpy(&uSubmit2ReplyResult, abProtocolReply + 4, sizeof(uSubmit2ReplyResult));
+        RTTESTI_CHECK(cbProtocolReply == 8 && uSubmit2ReplyType == uSubmit2Type
+                      && uSubmit2ReplyResult == VK_SUCCESS && pSubmit2Fence->fSignaled);
+        RT_ZERO(*pSubmit2CommandBuffer);
+        RT_ZERO(*pSubmit2Fence);
+    }
+    uint8_t abIdle[16] = { 0 };
+    uint32_t uQueueWaitIdleType = VIRTIOGPU_VK_CMD_QUEUE_WAIT_IDLE;
+    memcpy(abIdle, &uQueueWaitIdleType, sizeof(uQueueWaitIdleType));
+    memcpy(abIdle + 8, &uSubmit2Queue, sizeof(uSubmit2Queue));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abIdle, sizeof(abIdle),
+                                                       abProtocolReply, sizeof(abProtocolReply),
+                                                       &cbProtocolReply));
+    uint32_t uIdleReplyType = 0, uIdleReplyResult = UINT32_MAX;
+    memcpy(&uIdleReplyType, abProtocolReply, sizeof(uIdleReplyType));
+    memcpy(&uIdleReplyResult, abProtocolReply + 4, sizeof(uIdleReplyResult));
+    RTTESTI_CHECK(cbProtocolReply == 8 && uIdleReplyType == uQueueWaitIdleType
+                  && uIdleReplyResult == VK_SUCCESS);
 #endif
     uint8_t abSetReply[36] = { 0 };
     uint32_t uSetReplyType = VIRTIOGPU_VK_CMD_SET_REPLY_STREAM;
