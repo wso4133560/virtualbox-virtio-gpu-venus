@@ -3191,7 +3191,8 @@ static int virtioR3PciTransportInit(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, PVI
         /* MSI-X must follow the shared-memory capability, not overwrite it. */
         pCfg = &pShm->pciCap;
         rc = PDMDevHlpPCIIORegionCreateMmio2(pDevIns, VIRTIO_REGION_PCI_SHARED,
-                                             pPciParams->cbSharedMemory, PCI_ADDRESS_SPACE_MEM_PREFETCH,
+                                             pPciParams->cbSharedMemory,
+                                             (PCIADDRESSSPACE)(PCI_ADDRESS_SPACE_BAR64 | PCI_ADDRESS_SPACE_MEM_PREFETCH),
                                              pcszInstance, pPciParams->ppvSharedMemory, pPciParams->phSharedMemory);
         AssertLogRelRCReturn(rc, PDMDEV_SET_ERROR(pDevIns, rc, N_("virtio: cannot register shared memory BAR")));
     }

@@ -1857,6 +1857,66 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(pTestRing && pTestRing->uResourceId == 15 && pTestRing->offBuffer == 192
                   && pTestRing->cbBuffer == 1024 && pTestRing->offExtra == 1216
                   && pTestRing->cbExtra == 128);
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    uint8_t abProtocolReply[4096];
+    size_t cbProtocolReply = 0;
+    uint8_t abEnumerateVersion[16] = { 0 };
+    uint32_t uEnumerateVersionType = VIRTIOGPU_VK_CMD_ENUMERATE_INSTANCE_VERSION;
+    uint64_t fEnumerateVersionOut = 1;
+    memcpy(abEnumerateVersion, &uEnumerateVersionType, sizeof(uEnumerateVersionType));
+    memcpy(abEnumerateVersion + 8, &fEnumerateVersionOut, sizeof(fEnumerateVersionOut));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abEnumerateVersion,
+                                                       sizeof(abEnumerateVersion), abProtocolReply,
+                                                       sizeof(abProtocolReply), &cbProtocolReply));
+    uint32_t uProtocolReplyType = 0, uProtocolReplyResult = UINT32_MAX, uProtocolReplyVersion = 0;
+    memcpy(&uProtocolReplyType, abProtocolReply, sizeof(uProtocolReplyType));
+    memcpy(&uProtocolReplyResult, abProtocolReply + 4, sizeof(uProtocolReplyResult));
+    memcpy(&uProtocolReplyVersion, abProtocolReply + 16, sizeof(uProtocolReplyVersion));
+    RTTESTI_CHECK(cbProtocolReply == 20 && uProtocolReplyType == uEnumerateVersionType
+                  && uProtocolReplyResult == VK_SUCCESS && uProtocolReplyVersion == pGpu->uVkApiVersion);
+    uint8_t abMemoryProperties[24] = { 0 };
+    uint32_t uMemoryPropertiesType = VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_MEMORY_PROPERTIES;
+    uint64_t uPhysicalDeviceId = UINT64_C(0x1001), fMemoryPropertiesOut = 1;
+    memcpy(abMemoryProperties, &uMemoryPropertiesType, sizeof(uMemoryPropertiesType));
+    memcpy(abMemoryProperties + 8, &uPhysicalDeviceId, sizeof(uPhysicalDeviceId));
+    memcpy(abMemoryProperties + 16, &fMemoryPropertiesOut, sizeof(fMemoryPropertiesOut));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abMemoryProperties,
+                                                       sizeof(abMemoryProperties), abProtocolReply,
+                                                       sizeof(abProtocolReply), &cbProtocolReply));
+    uint64_t uMemoryTypeArrayCount = 0, uMemoryHeapArrayCount = 0;
+    uint32_t uMemoryReplyType = 0, uMemoryTypeCount = 0, uMemoryHeapCount = 0;
+    memcpy(&uMemoryReplyType, abProtocolReply, sizeof(uMemoryReplyType));
+    memcpy(&uMemoryTypeCount, abProtocolReply + 12, sizeof(uMemoryTypeCount));
+    memcpy(&uMemoryTypeArrayCount, abProtocolReply + 16, sizeof(uMemoryTypeArrayCount));
+    memcpy(&uMemoryHeapCount, abProtocolReply + 280, sizeof(uMemoryHeapCount));
+    memcpy(&uMemoryHeapArrayCount, abProtocolReply + 284, sizeof(uMemoryHeapArrayCount));
+    RTTESTI_CHECK(cbProtocolReply == 484 && uMemoryReplyType == uMemoryPropertiesType
+                  && uMemoryTypeArrayCount == VK_MAX_MEMORY_TYPES
+                  && uMemoryHeapArrayCount == VK_MAX_MEMORY_HEAPS
+                  && uMemoryTypeCount == pGpu->VkMemoryProperties.memoryTypeCount
+                  && uMemoryHeapCount == pGpu->VkMemoryProperties.memoryHeapCount);
+    uint8_t abPhysicalProperties[24] = { 0 };
+    uint32_t uPhysicalPropertiesType = VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_PROPERTIES;
+    uint64_t fPhysicalPropertiesOut = 1;
+    memcpy(abPhysicalProperties, &uPhysicalPropertiesType, sizeof(uPhysicalPropertiesType));
+    memcpy(abPhysicalProperties + 8, &uPhysicalDeviceId, sizeof(uPhysicalDeviceId));
+    memcpy(abPhysicalProperties + 16, &fPhysicalPropertiesOut, sizeof(fPhysicalPropertiesOut));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abPhysicalProperties,
+                                                       sizeof(abPhysicalProperties), abProtocolReply,
+                                                       sizeof(abProtocolReply), &cbProtocolReply));
+    uint32_t uPropertiesReplyType = 0, uPropertiesApiVersion = 0;
+    uint64_t uPropertiesReplyPointer = 0;
+    char szPropertiesName[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE] = { 0 };
+    memcpy(&uPropertiesReplyType, abProtocolReply, sizeof(uPropertiesReplyType));
+    memcpy(&uPropertiesReplyPointer, abProtocolReply + 4, sizeof(uPropertiesReplyPointer));
+    memcpy(&uPropertiesApiVersion, abProtocolReply + 12, sizeof(uPropertiesApiVersion));
+    memcpy(szPropertiesName, abProtocolReply + 40, sizeof(szPropertiesName));
+    RTTESTI_CHECK(cbProtocolReply > 600 && uPropertiesReplyType == uPhysicalPropertiesType
+                  && uPropertiesReplyPointer == 1
+                  && uPropertiesApiVersion == pGpu->VkProperties.apiVersion
+                  && !strncmp(szPropertiesName, pGpu->VkProperties.deviceName,
+                              sizeof(szPropertiesName)));
+#endif
     uint8_t abSetReply[36] = { 0 };
     uint32_t uSetReplyType = VIRTIOGPU_VK_CMD_SET_REPLY_STREAM;
     uint64_t fReplyStream = 1;

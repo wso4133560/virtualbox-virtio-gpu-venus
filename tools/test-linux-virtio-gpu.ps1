@@ -9,6 +9,8 @@ param(
     [ValidateRange(60, 1800)][int]$TimeoutSeconds = 600,
     [ValidateRange(1024, 65535)][int]$SshPort = 2222,
     [ValidateRange(1, 16)][int]$CpuCount = 1,
+    [ValidateRange(1024, 65536)][int]$MemoryMB = 4096,
+    [ValidateSet('ich9', 'piix3')][string]$Chipset = 'ich9',
     [switch]$VerifyGuestVulkan,
     [string]$ReportDirectory
 )
@@ -76,6 +78,7 @@ $created = $false
 $phase = 'prepare'
 $failure = $null
 $cleanupErrors = @()
+$sshPidsBefore = @(Get-Process -Name ssh -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
 $sshReady = $false
 $driverBound = $false
 $hostVisible = $null
@@ -162,7 +165,7 @@ runcmd:
     $disk = Join-Path $vmDir 'system.vdi'
     Invoke-Native $QemuImgPath @('convert', '-f', 'qcow2', '-O', 'vdi', $image, $disk) | Out-Null
     VBox @('modifymedium', 'disk', $disk, '--resize', '20480') | Out-Null
-    VBox @('modifyvm', $vmName, '--memory', '4096', '--cpus', "$CpuCount", '--firmware', 'bios',
+    VBox @('modifyvm', $vmName, '--memory', "$MemoryMB", '--cpus', "$CpuCount", '--chipset', $Chipset, '--firmware', 'bios',
            '--graphicscontroller', 'virtio-gpu', '--gpu-backend', $GpuBackend, '--audio-enabled', 'off',
            '--nic1', 'nat', '--natpf1', "ssh,tcp,127.0.0.1,$SshPort,,22", '--boot1', 'disk', '--boot2', 'none',
            '--uart1', '0x3f8', '4', '--uartmode1', 'file', $serial) | Out-Null
@@ -256,13 +259,22 @@ echo VIRTIO_GUEST_END
 set -o pipefail
 echo VIRTIO_VULKAN_BEGIN
 sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq mesa-vulkan-drivers vulkan-tools
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq mesa-vulkan-drivers vulkan-tools strace
 if ! command -v vulkaninfo >/dev/null; then
     echo VULKANINFO_MISSING
     exit 127
 fi
-VN_DEBUG=init VK_LOADER_DEBUG=all vulkaninfo --summary 2>&1 | tee /var/tmp/virtio-vulkaninfo-summary.log
-rc=${PIPESTATUS[0]}
+export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/virtio_icd.json
+VN_DEBUG=all VK_LOADER_DEBUG=all timeout 20s strace -f -tt -e trace=ioctl -o /var/tmp/virtio-vulkaninfo-strace.log vulkaninfo --summary >/var/tmp/virtio-vulkaninfo-summary.log 2>&1 &
+vulkaninfo_pid=$!
+sleep 2
+sudo python3 -c 'import mmap,struct; f=open("/sys/bus/pci/devices/0000:00:02.0/resource4","rb"); m=mmap.mmap(f.fileno(),4096,access=mmap.ACCESS_READ); print("BAR4_HEAD_TAIL_STATUS", [hex(struct.unpack_from("<I",m,o)[0]) for o in (0,64,128)])' || true
+for i in $(seq 1 30); do sudo python3 -c 'import mmap,struct; f=open("/sys/bus/pci/devices/0000:00:02.0/resource4","rb"); m=mmap.mmap(f.fileno(),4096,access=mmap.ACCESS_READ); print([hex(struct.unpack_from("<I",m,o)[0]) for o in (0,64,128)])' || true; sleep 0.1; done
+wait "$vulkaninfo_pid"
+rc=$?
+cat /var/tmp/virtio-vulkaninfo-summary.log
+echo VULKANINFO_IOCTL_TRACE
+cat /var/tmp/virtio-vulkaninfo-strace.log || true
 echo "vulkaninfo_exit=$rc"
 if [ "$rc" = 0 ]; then echo VULKANINFO_PASS; else echo VULKANINFO_FAIL; fi
 echo VIRTIO_VULKAN_END
@@ -289,6 +301,12 @@ exit "$rc"
     Write-Warning $failure
 } finally {
     try {
+        # A failed SSH probe or remote shell can outlive the pipeline when the
+        # guest is powered off.  Reap only SSH processes created by this run so
+        # the private key can be removed below without touching user sessions.
+        Get-Process -Name ssh -ErrorAction SilentlyContinue |
+            Where-Object { $_.Id -notin $sshPidsBefore } |
+            Stop-Process -Force -ErrorAction SilentlyContinue
         if ($created) {
             try {
                 $state = Vm-State
@@ -333,7 +351,7 @@ exit "$rc"
         }
         [ordered]@{
             timestamp = (Get-Date).ToString('o'); vmName = $vmName; gpuBackend = $GpuBackend
-            sourceImage = $pin; diskMB = 20480; cpuCount = $CpuCount; sshBind = "127.0.0.1:$SshPort"
+            sourceImage = $pin; diskMB = 20480; cpuCount = $CpuCount; memoryMB = $MemoryMB; chipset = $Chipset; sshBind = "127.0.0.1:$SshPort"
             created = $created; guestReady = $ready; sshReady = $sshReady; drmDriverBound = $driverBound
             hostVisible = $hostVisible
             readySeconds = $readySeconds; hostVulkanDevice = $hostVulkanDevice
