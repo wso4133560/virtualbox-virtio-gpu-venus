@@ -104,9 +104,13 @@
 #define VIRTIOGPU_VK_CMD_UNMAP_MEMORY UINT32_C(24)
 #define VIRTIOGPU_VK_CMD_FLUSH_MAPPED_MEMORY_RANGES UINT32_C(25)
 #define VIRTIOGPU_VK_CMD_INVALIDATE_MAPPED_MEMORY_RANGES UINT32_C(26)
+#define VIRTIOGPU_VK_CMD_GET_DEVICE_MEMORY_COMMITMENT UINT32_C(27)
 #define VIRTIOGPU_VK_CMD_BIND_BUFFER_MEMORY UINT32_C(28)
 #define VIRTIOGPU_VK_CMD_BIND_BUFFER_MEMORY2 UINT32_C(138)
+#define VIRTIOGPU_VK_CMD_BIND_IMAGE_MEMORY UINT32_C(29)
+#define VIRTIOGPU_VK_CMD_BIND_IMAGE_MEMORY2 UINT32_C(139)
 #define VIRTIOGPU_VK_CMD_GET_BUFFER_MEMORY_REQUIREMENTS UINT32_C(30)
+#define VIRTIOGPU_VK_CMD_GET_IMAGE_MEMORY_REQUIREMENTS UINT32_C(31)
 #define VIRTIOGPU_VK_CMD_CREATE_FENCE UINT32_C(35)
 #define VIRTIOGPU_VK_CMD_CREATE_SEMAPHORE UINT32_C(40)
 #define VIRTIOGPU_VK_CMD_DESTROY_SEMAPHORE UINT32_C(41)
@@ -564,6 +568,18 @@ static PVIRTIOGPURESOURCE virtioGpuR3FindResourceByVkBuffer(PVIRTIOGPU pThis, ui
     return NULL;
 }
 
+/* Resolve a renderer object handle to the host resource selected by its
+ * Venus memory binding.  Handles are opaque 64-bit values and must not be
+ * truncated to legacy virtio-gpu resource ids unless no binding exists. */
+static PVIRTIOGPURESOURCE virtioGpuR3FindResourceByVkObject(PVIRTIOGPU pThis,
+                                                              uint64_t uObject)
+{
+    PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResourceByVkBuffer(pThis, uObject);
+    if (pRes)
+        return pRes;
+    return uObject <= UINT32_MAX ? virtioGpuR3FindResource(pThis, (uint32_t)uObject) : NULL;
+}
+
 /* Some Mesa internal feedback paths create a host-visible blob before the
  * buffer bind reaches the ring.  Resolve that only when the protocol state
  * leaves one unambiguous blob candidate; never select by recency alone. */
@@ -641,6 +657,17 @@ static bool virtioGpuR3ContextHasResource(PVIRTIOGPUCONTEXT pCtx, uint32_t uReso
         if (pCtx->auResourceIds[i] == uResourceId)
             return true;
     return false;
+}
+
+static bool virtioGpuR3ContextHasResourceObject(PVIRTIOGPUCONTEXT pCtx, PVIRTIOGPU pThis,
+                                                 uint64_t uObject)
+{
+    if (!pCtx)
+        return false;
+    if (uObject <= UINT32_MAX && virtioGpuR3ContextHasResource(pCtx, (uint32_t)uObject))
+        return true;
+    PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResourceByVkObject(pThis, uObject);
+    return pRes && virtioGpuR3ContextHasResource(pCtx, pRes->uResourceId);
 }
 
 static PVIRTIOGPURING virtioGpuR3FindRing(PVIRTIOGPU pThis, uint64_t uRingId)
@@ -1166,7 +1193,34 @@ static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pc
             *pcbCommand = 28 + (size_t)cEncoded * 36;
             return cb >= *pcbCommand;
         }
+        case VIRTIOGPU_VK_CMD_BIND_IMAGE_MEMORY2:
+        {
+            if (cb < 28)
+                return false;
+            uint32_t cBindings = 0;
+            uint64_t cEncoded = 0;
+            memcpy(&cBindings, pb + 16, sizeof(cBindings));
+            if (!virtioGpuR3ReadU64(pb, cb, 20, &cEncoded)
+                || cBindings > 256 || cEncoded != cBindings
+                || cb != 28 + (size_t)cEncoded * 36)
+                return false;
+            *pcbCommand = cb;
+            return true;
+        }
         case VIRTIOGPU_VK_CMD_GET_BUFFER_MEMORY_REQUIREMENTS:
+            *pcbCommand = 32;
+            return cb >= *pcbCommand;
+        case VIRTIOGPU_VK_CMD_GET_DEVICE_MEMORY_COMMITMENT:
+            /* device, memory, and an optional output VkDeviceSize pointer. */
+            *pcbCommand = 32;
+            return cb >= *pcbCommand;
+        case VIRTIOGPU_VK_CMD_BIND_IMAGE_MEMORY:
+            /* device, image, memory, and memoryOffset. */
+            *pcbCommand = 40;
+            return cb >= *pcbCommand;
+        case VIRTIOGPU_VK_CMD_GET_IMAGE_MEMORY_REQUIREMENTS:
+            /* The request-side VkMemoryRequirements fields are omitted by the
+             * Venus protocol; only the output pointer marker is encoded. */
             *pcbCommand = 32;
             return cb >= *pcbCommand;
         case VIRTIOGPU_VK_CMD_GET_BUFFER_MEMORY_REQUIREMENTS2:
@@ -1486,6 +1540,14 @@ static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pc
                 return false;
             off += sizeof(fQueue) + (fQueue ? sizeof(uint64_t) : 0);
             *pcbCommand = off;
+            return cb >= *pcbCommand;
+        }
+        case VIRTIOGPU_VK_CMD_GET_DEVICE_QUEUE:
+        {
+            uint64_t fQueue = 0;
+            if (!virtioGpuR3ReadU64(pb, cb, 24, &fQueue) || fQueue > 1)
+                return false;
+            *pcbCommand = fQueue ? 40 : 32;
             return cb >= *pcbCommand;
         }
         case VIRTIOGPU_VK_CMD_ENUMERATE_PHYSICAL_DEVICES:
@@ -2030,6 +2092,34 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                     return false;
                 pBinding->cbBuffer = cbBuffer;
             }
+            if (fOutputId && fOutput && uType == VIRTIOGPU_VK_CMD_CREATE_IMAGE)
+            {
+                /* Keep the image handle in the same bounded binding table as
+                 * buffers.  Venus allocates the backing blob through the
+                 * device-memory handle; binding the image later can therefore
+                 * resolve the host resource without exposing a host pointer. */
+                uint64_t fPnext = 0;
+                uint32_t uWidth32 = 0, uHeight32 = 0, uDepth32 = 0;
+                if (!virtioGpuR3VenusReadU64(pb, cb, 28, &fPnext)
+                    || fPnext || cb < 60)
+                    return false;
+                memcpy(&uWidth32, pb + 48, sizeof(uWidth32));
+                memcpy(&uHeight32, pb + 52, sizeof(uHeight32));
+                memcpy(&uDepth32, pb + 56, sizeof(uDepth32));
+                uint64_t const uWidth = uWidth32;
+                uint64_t const uHeight = uHeight32;
+                uint64_t const uDepth = uDepth32;
+                if (!uWidth || !uHeight || !uDepth
+                    || uWidth > VIRTIOGPU_MAX_RESOURCE_BYTES / uHeight
+                    || uWidth * uHeight > VIRTIOGPU_MAX_RESOURCE_BYTES / uDepth)
+                    return false;
+                PVIRTIOGPUBUFFERBINDING pBinding = virtioGpuR3GetBufferBinding(pThis, uId);
+                uint64_t cbImage = uWidth * uHeight * uDepth;
+                if (!pBinding || pBinding->cbBuffer
+                    || cbImage > VIRTIOGPU_MAX_RESOURCE_BYTES / 4)
+                    return false;
+                pBinding->cbBuffer = RT_ALIGN_64(cbImage * 4, 256);
+            }
             if (fOutputId && fOutput && uType == VIRTIOGPU_VK_CMD_CREATE_FENCE)
             {
                 uint64_t fCreateInfo = 0;
@@ -2124,6 +2214,60 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
             }
             break;
         }
+        case VIRTIOGPU_VK_CMD_GET_DEVICE_MEMORY_COMMITMENT:
+        {
+            uint64_t uMemory = 0, fOutput = 0;
+            if (!virtioGpuR3VenusReadU64(pb, cb, 16, &uMemory)
+                || !virtioGpuR3VenusReadU64(pb, cb, 24, &fOutput) || fOutput > 1
+                || !virtioGpuR3VenusPutU32(&Enc, uType)
+                || !virtioGpuR3VenusPutU64(&Enc, fOutput))
+                return false;
+            if (fOutput)
+            {
+                PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResourceByVkMemory(pThis, uMemory);
+                uint64_t const cbCommitted = pRes ? pRes->cbPixels : 0;
+                if (!virtioGpuR3VenusPutU64(&Enc, cbCommitted))
+                    return false;
+            }
+            break;
+        }
+        case VIRTIOGPU_VK_CMD_GET_IMAGE_MEMORY_REQUIREMENTS:
+        {
+            uint64_t uImage = 0, fOutput = 0;
+            if (!virtioGpuR3VenusReadU64(pb, cb, 16, &uImage)
+                || !virtioGpuR3VenusReadU64(pb, cb, 24, &fOutput) || fOutput > 1
+                || !virtioGpuR3VenusPutU32(&Enc, uType)
+                || !virtioGpuR3VenusPutU64(&Enc, fOutput))
+                return false;
+            if (fOutput)
+            {
+                PVIRTIOGPUBUFFERBINDING pBinding = virtioGpuR3FindBufferBinding(pThis, uImage);
+                uint64_t const cbReq = pBinding && pBinding->cbBuffer
+                                     ? RT_ALIGN_64(pBinding->cbBuffer, 256) : UINT64_C(4096);
+                uint32_t const fTypes = pThis->VkMemoryProperties.memoryTypeCount >= 32
+                                      ? UINT32_MAX
+                                      : pThis->VkMemoryProperties.memoryTypeCount
+                                      ? RT_BIT_32(pThis->VkMemoryProperties.memoryTypeCount) - 1 : 1;
+                if (!virtioGpuR3VenusPutU64(&Enc, cbReq)
+                    || !virtioGpuR3VenusPutU64(&Enc, 256)
+                    || !virtioGpuR3VenusPutU32(&Enc, fTypes))
+                    return false;
+            }
+            break;
+        }
+        case VIRTIOGPU_VK_CMD_BIND_IMAGE_MEMORY:
+        {
+            uint64_t uImage = 0, uMemory = 0, offMemory = 0;
+            if (!virtioGpuR3VenusReadU64(pb, cb, 16, &uImage)
+                || !virtioGpuR3VenusReadU64(pb, cb, 24, &uMemory)
+                || !virtioGpuR3VenusReadU64(pb, cb, 32, &offMemory))
+                return false;
+            bool const fBound = virtioGpuR3BindBufferMemory(pThis, uImage, uMemory, offMemory);
+            if (!virtioGpuR3VenusPutU32(&Enc, uType)
+                || !virtioGpuR3VenusPutResult(&Enc, fBound ? VK_SUCCESS : VK_ERROR_MEMORY_MAP_FAILED))
+                return false;
+            break;
+        }
         case VIRTIOGPU_VK_CMD_BIND_BUFFER_MEMORY:
         {
             uint64_t uBuffer = 0, uMemory = 0, offMemory = 0;
@@ -2156,6 +2300,35 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                     || fPnext)
                     return false;
                 if (!virtioGpuR3BindBufferMemory(pThis, uBuffer, uMemory, offMemory))
+                    return false;
+                off += 36;
+            }
+            return virtioGpuR3VenusPutU32(&Enc, uType)
+                && virtioGpuR3VenusPutResult(&Enc, VK_SUCCESS);
+        }
+        case VIRTIOGPU_VK_CMD_BIND_IMAGE_MEMORY2:
+        {
+            uint32_t cBindings = 0;
+            uint64_t cEncoded = 0;
+            if (cb < 28 || !virtioGpuR3VenusReadU64(pb, cb, 20, &cEncoded))
+                return false;
+            memcpy(&cBindings, pb + 16, sizeof(cBindings));
+            if (cBindings > 256 || cEncoded != cBindings || cb != 28 + cEncoded * 36)
+                return false;
+            size_t off = 28;
+            for (uint32_t i = 0; i < cBindings; ++i)
+            {
+                uint32_t uSType = 0;
+                uint64_t fPnext = 0, uImage = 0, uMemory = 0, offMemory = 0;
+                if (cb - off < sizeof(uint32_t))
+                    return false;
+                memcpy(&uSType, pb + off, sizeof(uSType));
+                if (uSType != VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO
+                    || !virtioGpuR3VenusReadU64(pb, cb, off + 4, &fPnext)
+                    || !virtioGpuR3VenusReadU64(pb, cb, off + 12, &uImage)
+                    || !virtioGpuR3VenusReadU64(pb, cb, off + 20, &uMemory)
+                    || !virtioGpuR3VenusReadU64(pb, cb, off + 28, &offMemory)
+                    || fPnext || !virtioGpuR3BindBufferMemory(pThis, uImage, uMemory, offMemory))
                     return false;
                 off += 36;
             }
@@ -2601,8 +2774,15 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
             break;
         case VIRTIOGPU_VK_CMD_DESTROY_INSTANCE:
         case VIRTIOGPU_VK_CMD_DESTROY_DEVICE:
-        case VIRTIOGPU_VK_CMD_DESTROY_IMAGE:
         case VIRTIOGPU_VK_CMD_DESTROY_COMMAND_POOL:
+            if (!virtioGpuR3VenusPutU32(&Enc, uType))
+                return false;
+            break;
+        case VIRTIOGPU_VK_CMD_DESTROY_IMAGE:
+            if (!virtioGpuR3VenusReadU64(pb, cb, 16, &uId))
+                return false;
+            if (PVIRTIOGPUBUFFERBINDING pBinding = virtioGpuR3FindBufferBinding(pThis, uId))
+                RT_ZERO(*pBinding);
             if (!virtioGpuR3VenusPutU32(&Enc, uType))
                 return false;
             break;
@@ -2912,7 +3092,15 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
         }
         case VIRTIOGPU_VK_CMD_GET_IMAGE_MEMORY_REQUIREMENTS2:
         {
-            uint64_t fOutput = 0, fPnext = 0;
+            uint64_t fInfo = 0, uImage = 0, fOutput = 0, fPnext = 0;
+            if (!virtioGpuR3VenusReadU64(pb, cb, 16, &fInfo) || (fInfo != 0 && fInfo != 1))
+                return false;
+            if (fInfo)
+            {
+                if (cb < 44 || !virtioGpuR3VenusReadU64(pb, cb, 28, &fPnext) || fPnext
+                    || !virtioGpuR3VenusReadU64(pb, cb, 36, &uImage))
+                    return false;
+            }
             if (!virtioGpuR3VenusReadU64(pb, cb, 44, &fOutput) || (fOutput != 0 && fOutput != 1)
                 || !virtioGpuR3VenusReadU64(pb, cb, 56, &fPnext) || (fPnext != 0 && fPnext != 1)
                 || !virtioGpuR3VenusPutU32(&Enc, uType)
@@ -2929,7 +3117,11 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                         || !virtioGpuR3VenusPutU32(&Enc, VK_FALSE)
                         || !virtioGpuR3VenusPutU32(&Enc, VK_FALSE)))
                     return false;
-                if (!virtioGpuR3VenusPutU64(&Enc, pThis->VkMemoryProperties.memoryHeaps[0].size)
+                PVIRTIOGPUBUFFERBINDING pBinding = virtioGpuR3FindBufferBinding(pThis, uImage);
+                uint64_t const cbReq = pBinding && pBinding->cbBuffer
+                                     ? RT_ALIGN_64(pBinding->cbBuffer, 256)
+                                     : pThis->VkMemoryProperties.memoryHeaps[0].size;
+                if (!virtioGpuR3VenusPutU64(&Enc, cbReq)
                     || !virtioGpuR3VenusPutU64(&Enc, 256)
                     || !virtioGpuR3VenusPutU32(&Enc,
                                                pThis->VkMemoryProperties.memoryTypeCount >= 32
@@ -3198,12 +3390,14 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
             break;
         }
         case VIRTIOGPU_VK_CMD_GET_DEVICE_QUEUE:
+        {
             if (!virtioGpuR3VenusReadU64(pb, cb, 24, &uPointer) || (uPointer != 0 && uPointer != 1)
                 || !virtioGpuR3VenusPutU32(&Enc, uType)
                 || !virtioGpuR3VenusPutU64(&Enc, uPointer)
                 || (uPointer && !virtioGpuR3VenusPutU64(&Enc, (uint64_t)(uintptr_t)pThis->hVkQueue)))
                 return false;
             break;
+        }
         case VIRTIOGPU_VK_CMD_GET_DEVICE_QUEUE2:
         {
             bool fOutput = false;
@@ -6842,17 +7036,27 @@ static bool virtioGpuR3ExecuteVenusCommandStream(PVIRTIOGPU pThis, const uint8_t
         RT_ZERO(Cmd);
         uint32_t fCommand = 0;
         if (cb != 44 || !pb)
+        {
+            LogRel2(("virtio-gpu: Venus fill rejected: size=%zu\n", cb));
             return false;
+        }
         memcpy(&fCommand, pb + 4, sizeof(fCommand));
         if (fCommand & ~VIRTIOGPU_VK_CMD_FLAG_GENERATE_REPLY)
+        {
+            LogRel2(("virtio-gpu: Venus fill rejected: flags=%#x\n", fCommand));
             return false;
+        }
         memcpy(&Cmd.uCommandBuffer, pb + 8, sizeof(Cmd.uCommandBuffer));
         memcpy(&Cmd.uBuffer, pb + 16, sizeof(Cmd.uBuffer));
         memcpy(&Cmd.offBuffer, pb + 24, sizeof(Cmd.offBuffer));
         memcpy(&Cmd.cbBuffer, pb + 32, sizeof(Cmd.cbBuffer));
         memcpy(&Cmd.uData, pb + 40, sizeof(Cmd.uData));
         if (!Cmd.uCommandBuffer || !Cmd.uBuffer)
+        {
+            LogRel2(("virtio-gpu: Venus fill rejected: command-buffer=%RX64 buffer=%RX64\n",
+                     Cmd.uCommandBuffer, Cmd.uBuffer));
             return false;
+        }
         PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResourceByVkBuffer(pThis, Cmd.uBuffer);
         PVIRTIOGPUBUFFERBINDING pBinding = virtioGpuR3FindBufferBinding(pThis, Cmd.uBuffer);
         if (!pRes)
@@ -6860,27 +7064,39 @@ static bool virtioGpuR3ExecuteVenusCommandStream(PVIRTIOGPU pThis, const uint8_t
         if (!pRes && Cmd.uBuffer <= UINT32_MAX)
             pRes = virtioGpuR3FindResource(pThis, (uint32_t)Cmd.uBuffer);
         if (!pRes)
+        {
+            LogRel2(("virtio-gpu: Venus fill rejected: buffer=%RX64 has no resource\n", Cmd.uBuffer));
             return false;
+        }
         if (pBinding)
         {
             if (Cmd.offBuffer > pBinding->cbBuffer
                 || (Cmd.cbBuffer != UINT64_MAX && Cmd.cbBuffer > pBinding->cbBuffer - Cmd.offBuffer)
                 || pBinding->offMemory > UINT64_MAX - Cmd.offBuffer)
+            {
+                LogRel2(("virtio-gpu: Venus fill rejected: buffer=%RX64 off=%RX64 size=%RX64 binding-size=%RX64 memory-off=%RX64\n",
+                         Cmd.uBuffer, Cmd.offBuffer, Cmd.cbBuffer, pBinding->cbBuffer, pBinding->offMemory));
                 return false;
+            }
             if (Cmd.cbBuffer == UINT64_MAX)
                 Cmd.cbBuffer = (pBinding->cbBuffer - Cmd.offBuffer) & ~UINT64_C(3);
             Cmd.offBuffer += pBinding->offMemory;
         }
-        return RT_SUCCESS(virtioGpuR3VulkanFillBuffer(pThis, pRes, Cmd.offBuffer,
-                                                       Cmd.cbBuffer, Cmd.uData));
+        int const rcFill = virtioGpuR3VulkanFillBuffer(pThis, pRes, Cmd.offBuffer,
+                                                       Cmd.cbBuffer, Cmd.uData);
+        if (RT_FAILURE(rcFill))
+            LogRel2(("virtio-gpu: Venus fill rejected: buffer=%RX64 rc=%Rrc\n", Cmd.uBuffer, rcFill));
+        return RT_SUCCESS(rcFill);
     }
     if (uType == VIRTIOGPU_VK_CMD_UPDATE_BUFFER)
     {
         VIRTIOGPUUPDATECMD Cmd;
         RT_ZERO(Cmd);
-        if (!virtioGpuR3DecodeUpdateBuffer(pb, cb, &Cmd) || Cmd.uBuffer > UINT32_MAX)
+        if (!virtioGpuR3DecodeUpdateBuffer(pb, cb, &Cmd))
             return false;
-        PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResource(pThis, (uint32_t)Cmd.uBuffer);
+        PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResourceByVkObject(pThis, Cmd.uBuffer);
+        if (!pRes)
+            pRes = virtioGpuR3ResolveUnboundBufferResource(pThis, Cmd.uBuffer);
         return pRes && RT_SUCCESS(virtioGpuR3VulkanUpdateBuffer(pThis, pRes, Cmd.offBuffer,
                                                                  Cmd.pbData, Cmd.cbData));
     }
@@ -6891,19 +7107,23 @@ static bool virtioGpuR3ExecuteVenusCommandStream(PVIRTIOGPU pThis, const uint8_t
         bool const fDecoded = uType == VIRTIOGPU_VK_CMD_COPY_BUFFER2
                             ? virtioGpuR3DecodeCopyBuffer2(pb, cb, &Cmd)
                             : virtioGpuR3DecodeCopyBuffer(pb, cb, &Cmd);
-        if (!fDecoded || Cmd.uSrcBuffer > UINT32_MAX || Cmd.uDstBuffer > UINT32_MAX)
+        if (!fDecoded)
             return false;
-        PVIRTIOGPURESOURCE pSrc = virtioGpuR3FindResource(pThis, (uint32_t)Cmd.uSrcBuffer);
-        PVIRTIOGPURESOURCE pDst = virtioGpuR3FindResource(pThis, (uint32_t)Cmd.uDstBuffer);
+        PVIRTIOGPURESOURCE pSrc = virtioGpuR3FindResourceByVkObject(pThis, Cmd.uSrcBuffer);
+        PVIRTIOGPURESOURCE pDst = virtioGpuR3FindResourceByVkObject(pThis, Cmd.uDstBuffer);
+        if (!pSrc)
+            pSrc = virtioGpuR3ResolveUnboundBufferResource(pThis, Cmd.uSrcBuffer);
+        if (!pDst)
+            pDst = virtioGpuR3ResolveUnboundBufferResource(pThis, Cmd.uDstBuffer);
         return pSrc && pDst && RT_SUCCESS(virtioGpuR3VulkanCopyBufferRegions(pThis, pSrc, pDst, &Cmd));
     }
     if (uType == VIRTIOGPU_VK_CMD_CLEAR_COLOR_IMAGE)
     {
         VIRTIOGPUCLEARCOLORCMD Cmd;
         RT_ZERO(Cmd);
-        if (!virtioGpuR3DecodeClearColorImage(pb, cb, &Cmd) || Cmd.uImage > UINT32_MAX)
+        if (!virtioGpuR3DecodeClearColorImage(pb, cb, &Cmd))
             return false;
-        PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResource(pThis, (uint32_t)Cmd.uImage);
+        PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResourceByVkObject(pThis, Cmd.uImage);
         return pRes && RT_SUCCESS(virtioGpuR3VulkanClearColorImage(pThis, pRes, &Cmd));
     }
     if (uType == VIRTIOGPU_VK_CMD_COPY_BUFFER_TO_IMAGE || uType == VIRTIOGPU_VK_CMD_COPY_BUFFER_TO_IMAGE2)
@@ -6913,10 +7133,12 @@ static bool virtioGpuR3ExecuteVenusCommandStream(PVIRTIOGPU pThis, const uint8_t
         bool const fDecoded = uType == VIRTIOGPU_VK_CMD_COPY_BUFFER_TO_IMAGE2
                             ? virtioGpuR3DecodeCopyBufferToImage2(pb, cb, &Cmd)
                             : virtioGpuR3DecodeCopyBufferToImage(pb, cb, &Cmd);
-        if (!fDecoded || Cmd.uSrcBuffer > UINT32_MAX || Cmd.uDstImage > UINT32_MAX)
+        if (!fDecoded)
             return false;
-        PVIRTIOGPURESOURCE pSrc = virtioGpuR3FindResource(pThis, (uint32_t)Cmd.uSrcBuffer);
-        PVIRTIOGPURESOURCE pDst = virtioGpuR3FindResource(pThis, (uint32_t)Cmd.uDstImage);
+        PVIRTIOGPURESOURCE pSrc = virtioGpuR3FindResourceByVkObject(pThis, Cmd.uSrcBuffer);
+        PVIRTIOGPURESOURCE pDst = virtioGpuR3FindResourceByVkObject(pThis, Cmd.uDstImage);
+        if (!pSrc)
+            pSrc = virtioGpuR3ResolveUnboundBufferResource(pThis, Cmd.uSrcBuffer);
         return pSrc && pDst && RT_SUCCESS(virtioGpuR3VulkanCopyBufferToImage(pThis, pSrc, pDst, &Cmd));
     }
     if (uType == VIRTIOGPU_VK_CMD_COPY_IMAGE_TO_BUFFER || uType == VIRTIOGPU_VK_CMD_COPY_IMAGE_TO_BUFFER2)
@@ -6926,10 +7148,12 @@ static bool virtioGpuR3ExecuteVenusCommandStream(PVIRTIOGPU pThis, const uint8_t
         bool const fDecoded = uType == VIRTIOGPU_VK_CMD_COPY_IMAGE_TO_BUFFER2
                             ? virtioGpuR3DecodeCopyImageToBuffer2(pb, cb, &Cmd)
                             : virtioGpuR3DecodeCopyImageToBuffer(pb, cb, &Cmd);
-        if (!fDecoded || Cmd.uSrcImage > UINT32_MAX || Cmd.uDstBuffer > UINT32_MAX)
+        if (!fDecoded)
             return false;
-        PVIRTIOGPURESOURCE pSrc = virtioGpuR3FindResource(pThis, (uint32_t)Cmd.uSrcImage);
-        PVIRTIOGPURESOURCE pDst = virtioGpuR3FindResource(pThis, (uint32_t)Cmd.uDstBuffer);
+        PVIRTIOGPURESOURCE pSrc = virtioGpuR3FindResourceByVkObject(pThis, Cmd.uSrcImage);
+        PVIRTIOGPURESOURCE pDst = virtioGpuR3FindResourceByVkObject(pThis, Cmd.uDstBuffer);
+        if (!pDst)
+            pDst = virtioGpuR3ResolveUnboundBufferResource(pThis, Cmd.uDstBuffer);
         return pSrc && pDst && RT_SUCCESS(virtioGpuR3VulkanCopyImageToBuffer(pThis, pSrc, pDst, &Cmd));
     }
     if (uType == VIRTIOGPU_VK_CMD_PIPELINE_BARRIER || uType == VIRTIOGPU_VK_CMD_PIPELINE_BARRIER2)
@@ -6948,9 +7172,7 @@ static bool virtioGpuR3ExecuteVenusCommandStream(PVIRTIOGPU pThis, const uint8_t
         }
         uint64_t uImage = 0;
         memcpy(&uImage, Cmd.pbImageBarrier + (Cmd.fModern ? 60 : 36), sizeof(uImage));
-        if (uImage > UINT32_MAX)
-            return false;
-        PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResource(pThis, (uint32_t)uImage);
+        PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResourceByVkObject(pThis, uImage);
         return pRes && RT_SUCCESS(virtioGpuR3VulkanPipelineBarrier(pThis, pRes, &Cmd));
     }
     if (uType == VIRTIOGPU_VK_CMD_COPY_IMAGE || uType == VIRTIOGPU_VK_CMD_COPY_IMAGE2)
@@ -6960,10 +7182,10 @@ static bool virtioGpuR3ExecuteVenusCommandStream(PVIRTIOGPU pThis, const uint8_t
         bool const fDecoded = uType == VIRTIOGPU_VK_CMD_COPY_IMAGE2
                             ? virtioGpuR3DecodeCopyImage2(pb, cb, &Cmd)
                             : virtioGpuR3DecodeCopyImage(pb, cb, &Cmd);
-        if (!fDecoded || Cmd.uSrcImage > UINT32_MAX || Cmd.uDstImage > UINT32_MAX)
+        if (!fDecoded)
             return false;
-        PVIRTIOGPURESOURCE pSrc = virtioGpuR3FindResource(pThis, (uint32_t)Cmd.uSrcImage);
-        PVIRTIOGPURESOURCE pDst = virtioGpuR3FindResource(pThis, (uint32_t)Cmd.uDstImage);
+        PVIRTIOGPURESOURCE pSrc = virtioGpuR3FindResourceByVkObject(pThis, Cmd.uSrcImage);
+        PVIRTIOGPURESOURCE pDst = virtioGpuR3FindResourceByVkObject(pThis, Cmd.uDstImage);
         return pSrc && pDst && RT_SUCCESS(virtioGpuR3VulkanCopyImage(pThis, pSrc, pDst, &Cmd));
     }
     if (uType == VIRTIOGPU_VK_CMD_BLIT_IMAGE || uType == VIRTIOGPU_VK_CMD_BLIT_IMAGE2)
@@ -6973,10 +7195,10 @@ static bool virtioGpuR3ExecuteVenusCommandStream(PVIRTIOGPU pThis, const uint8_t
         bool const fDecoded = uType == VIRTIOGPU_VK_CMD_BLIT_IMAGE2
                             ? virtioGpuR3DecodeBlitImage2(pb, cb, &Cmd)
                             : virtioGpuR3DecodeBlitImage(pb, cb, &Cmd);
-        if (!fDecoded || Cmd.uSrcImage > UINT32_MAX || Cmd.uDstImage > UINT32_MAX)
+        if (!fDecoded)
             return false;
-        PVIRTIOGPURESOURCE pSrc = virtioGpuR3FindResource(pThis, (uint32_t)Cmd.uSrcImage);
-        PVIRTIOGPURESOURCE pDst = virtioGpuR3FindResource(pThis, (uint32_t)Cmd.uDstImage);
+        PVIRTIOGPURESOURCE pSrc = virtioGpuR3FindResourceByVkObject(pThis, Cmd.uSrcImage);
+        PVIRTIOGPURESOURCE pDst = virtioGpuR3FindResourceByVkObject(pThis, Cmd.uDstImage);
         return pSrc && pDst && RT_SUCCESS(virtioGpuR3VulkanBlitImage(pThis, pSrc, pDst, &Cmd));
     }
     return false;
@@ -7652,11 +7874,11 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                             if (!cbOne || cbOne > cbRemaining
                                 || !virtioGpuR3DecodeUpdateBuffer(pbCommand + offUpdateBatch, cbOne,
                                                                    &aUpdate[cUpdateBatch])
-                                || aUpdate[cUpdateBatch].uBuffer > UINT32_MAX
-                                || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)aUpdate[cUpdateBatch].uBuffer))
+                                || !virtioGpuR3ContextHasResourceObject(pCtx, pThis,
+                                                                         aUpdate[cUpdateBatch].uBuffer))
                                 break;
                             PVIRTIOGPURESOURCE const pCurRes =
-                                virtioGpuR3FindResource(pThis, (uint32_t)aUpdate[cUpdateBatch].uBuffer);
+                                virtioGpuR3FindResourceByVkObject(pThis, aUpdate[cUpdateBatch].uBuffer);
                             if (!pCurRes || (pUpdateBatchRes && pUpdateBatchRes != pCurRes))
                                 break;
                             pUpdateBatchRes = pCurRes;
@@ -7674,9 +7896,8 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                         else
                         if (virtioGpuR3DecodeUpdateBuffer(pbCommand, Cmd.cbCommand, &Update))
                         {
-                            if (Update.uBuffer > UINT32_MAX
-                                || !(pUpdateRes = virtioGpuR3FindResource(pThis, (uint32_t)Update.uBuffer))
-                                || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)Update.uBuffer))
+                            if (!(pUpdateRes = virtioGpuR3FindResourceByVkObject(pThis, Update.uBuffer))
+                                || !virtioGpuR3ContextHasResourceObject(pCtx, pThis, Update.uBuffer))
                                 Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
                             else
                             {
@@ -7702,9 +7923,10 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                                                                                     &aClearBatch[i]);
                             if (fClearBatchValid)
                             {
-                                if (aClearBatch[0].uImage > UINT32_MAX
-                                    || !(pImageRes = virtioGpuR3FindResource(pThis, (uint32_t)aClearBatch[0].uImage))
-                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)aClearBatch[0].uImage))
+                                if (!(pImageRes = virtioGpuR3FindResourceByVkObject(pThis,
+                                                                                     aClearBatch[0].uImage))
+                                    || !virtioGpuR3ContextHasResourceObject(pCtx, pThis,
+                                                                             aClearBatch[0].uImage))
                                     fClearBatchValid = false;
                                 for (uint32_t i = 1; fClearBatchValid && i < cClear; ++i)
                                     if (aClearBatch[i].uImage != aClearBatch[0].uImage)
@@ -7720,9 +7942,8 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                         else if (virtioGpuR3DecodeClearColorImage(pbCommand, Cmd.cbCommand, &Clear))
                         {
                             PVIRTIOGPURESOURCE pImageRes = NULL;
-                            if (Clear.uImage > UINT32_MAX
-                                || !(pImageRes = virtioGpuR3FindResource(pThis, (uint32_t)Clear.uImage))
-                                || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)Clear.uImage))
+                            if (!(pImageRes = virtioGpuR3FindResourceByVkObject(pThis, Clear.uImage))
+                                || !virtioGpuR3ContextHasResourceObject(pCtx, pThis, Clear.uImage))
                                 Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
                             else
                             {
@@ -7754,12 +7975,14 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                                                                                    &aCopyBufferToImageBatch[i]);
                             if (fBatchValid)
                             {
-                                if (aCopyBufferToImageBatch[0].uSrcBuffer > UINT32_MAX
-                                    || aCopyBufferToImageBatch[0].uDstImage > UINT32_MAX
-                                    || !(pSrcRes = virtioGpuR3FindResource(pThis, (uint32_t)aCopyBufferToImageBatch[0].uSrcBuffer))
-                                    || !(pDstRes = virtioGpuR3FindResource(pThis, (uint32_t)aCopyBufferToImageBatch[0].uDstImage))
-                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)aCopyBufferToImageBatch[0].uSrcBuffer)
-                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)aCopyBufferToImageBatch[0].uDstImage))
+                                if (!(pSrcRes = virtioGpuR3FindResourceByVkObject(pThis,
+                                                                                  aCopyBufferToImageBatch[0].uSrcBuffer))
+                                    || !(pDstRes = virtioGpuR3FindResourceByVkObject(pThis,
+                                                                                      aCopyBufferToImageBatch[0].uDstImage))
+                                    || !virtioGpuR3ContextHasResourceObject(pCtx, pThis,
+                                                                             aCopyBufferToImageBatch[0].uSrcBuffer)
+                                    || !virtioGpuR3ContextHasResourceObject(pCtx, pThis,
+                                                                             aCopyBufferToImageBatch[0].uDstImage))
                                     fBatchValid = false;
                                 for (uint32_t i = 1; fBatchValid && i < cCopy; ++i)
                                     if (aCopyBufferToImageBatch[i].uSrcBuffer != aCopyBufferToImageBatch[0].uSrcBuffer
@@ -7781,11 +8004,14 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                             VIRTIOGPUCOPYBUFFERTOIMAGECMD const *pCopyBufferToImage = CopyBufferToImage2.cbRegionStride
                                                                                        ? &CopyBufferToImage2
                                                                                        : &CopyBufferToImage;
-                            if (pCopyBufferToImage->uSrcBuffer > UINT32_MAX || pCopyBufferToImage->uDstImage > UINT32_MAX
-                                || !(pSrcRes = virtioGpuR3FindResource(pThis, (uint32_t)pCopyBufferToImage->uSrcBuffer))
-                                || !(pDstRes = virtioGpuR3FindResource(pThis, (uint32_t)pCopyBufferToImage->uDstImage))
-                                || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)pCopyBufferToImage->uSrcBuffer)
-                                || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)pCopyBufferToImage->uDstImage))
+                            if (!(pSrcRes = virtioGpuR3FindResourceByVkObject(pThis,
+                                                                              pCopyBufferToImage->uSrcBuffer))
+                                || !(pDstRes = virtioGpuR3FindResourceByVkObject(pThis,
+                                                                                  pCopyBufferToImage->uDstImage))
+                                || !virtioGpuR3ContextHasResourceObject(pCtx, pThis,
+                                                                         pCopyBufferToImage->uSrcBuffer)
+                                || !virtioGpuR3ContextHasResourceObject(pCtx, pThis,
+                                                                         pCopyBufferToImage->uDstImage))
                                 Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
                             else
                             {
@@ -7818,12 +8044,14 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                                                                                    &aCopyImageToBufferBatch[i]);
                             if (fBatchValid)
                             {
-                                if (aCopyImageToBufferBatch[0].uSrcImage > UINT32_MAX
-                                    || aCopyImageToBufferBatch[0].uDstBuffer > UINT32_MAX
-                                    || !(pSrcRes = virtioGpuR3FindResource(pThis, (uint32_t)aCopyImageToBufferBatch[0].uSrcImage))
-                                    || !(pDstRes = virtioGpuR3FindResource(pThis, (uint32_t)aCopyImageToBufferBatch[0].uDstBuffer))
-                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)aCopyImageToBufferBatch[0].uSrcImage)
-                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)aCopyImageToBufferBatch[0].uDstBuffer))
+                                if (!(pSrcRes = virtioGpuR3FindResourceByVkObject(pThis,
+                                                                                  aCopyImageToBufferBatch[0].uSrcImage))
+                                    || !(pDstRes = virtioGpuR3FindResourceByVkObject(pThis,
+                                                                                      aCopyImageToBufferBatch[0].uDstBuffer))
+                                    || !virtioGpuR3ContextHasResourceObject(pCtx, pThis,
+                                                                             aCopyImageToBufferBatch[0].uSrcImage)
+                                    || !virtioGpuR3ContextHasResourceObject(pCtx, pThis,
+                                                                             aCopyImageToBufferBatch[0].uDstBuffer))
                                     fBatchValid = false;
                                 for (uint32_t i = 1; fBatchValid && i < cCopy; ++i)
                                     if (aCopyImageToBufferBatch[i].uSrcImage != aCopyImageToBufferBatch[0].uSrcImage
@@ -7845,11 +8073,14 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                             VIRTIOGPUCOPYIMAGETOBUFFERCMD const *pCopyImageToBuffer = CopyImageToBuffer2.cbRegionStride
                                                                                        ? &CopyImageToBuffer2
                                                                                        : &CopyImageToBuffer;
-                            if (pCopyImageToBuffer->uSrcImage > UINT32_MAX || pCopyImageToBuffer->uDstBuffer > UINT32_MAX
-                                || !(pSrcRes = virtioGpuR3FindResource(pThis, (uint32_t)pCopyImageToBuffer->uSrcImage))
-                                || !(pDstRes = virtioGpuR3FindResource(pThis, (uint32_t)pCopyImageToBuffer->uDstBuffer))
-                                || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)pCopyImageToBuffer->uSrcImage)
-                                || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)pCopyImageToBuffer->uDstBuffer))
+                            if (!(pSrcRes = virtioGpuR3FindResourceByVkObject(pThis,
+                                                                              pCopyImageToBuffer->uSrcImage))
+                                || !(pDstRes = virtioGpuR3FindResourceByVkObject(pThis,
+                                                                                  pCopyImageToBuffer->uDstBuffer))
+                                || !virtioGpuR3ContextHasResourceObject(pCtx, pThis,
+                                                                         pCopyImageToBuffer->uSrcImage)
+                                || !virtioGpuR3ContextHasResourceObject(pCtx, pThis,
+                                                                         pCopyImageToBuffer->uDstBuffer))
                                 Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
                             else
                             {
@@ -7886,9 +8117,8 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                             {
                                 memcpy(&uImage, aPipelineBarrierBatch[0].pbImageBarrier
                                        + (fModernBarrier ? 60 : 36), sizeof(uImage));
-                                if (uImage > UINT32_MAX
-                                    || !(pImageRes = virtioGpuR3FindResource(pThis, (uint32_t)uImage))
-                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)uImage))
+                                if (!(pImageRes = virtioGpuR3FindResourceByVkObject(pThis, uImage))
+                                    || !virtioGpuR3ContextHasResourceObject(pCtx, pThis, uImage))
                                     fBatchValid = false;
                                 for (uint32_t i = 1; fBatchValid && i < cBarrier; ++i)
                                 {
@@ -7916,9 +8146,8 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                                                                                    ? &PipelineBarrier2 : &PipelineBarrier;
                             memcpy(&uImage, pPipelineBarrier->pbImageBarrier + (pPipelineBarrier->fModern ? 60 : 36),
                                    sizeof(uImage));
-                            if (uImage > UINT32_MAX
-                                || !(pImageRes = virtioGpuR3FindResource(pThis, (uint32_t)uImage))
-                                || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)uImage))
+                            if (!(pImageRes = virtioGpuR3FindResourceByVkObject(pThis, uImage))
+                                || !virtioGpuR3ContextHasResourceObject(pCtx, pThis, uImage))
                                 Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
                             else
                             {
@@ -7950,11 +8179,14 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                                                                                   cbOneCopyImage, &aCopyImageBatch[i]);
                             if (fCopyImageBatchValid)
                             {
-                                if (aCopyImageBatch[0].uSrcImage > UINT32_MAX || aCopyImageBatch[0].uDstImage > UINT32_MAX
-                                    || !(pSrcRes = virtioGpuR3FindResource(pThis, (uint32_t)aCopyImageBatch[0].uSrcImage))
-                                    || !(pDstRes = virtioGpuR3FindResource(pThis, (uint32_t)aCopyImageBatch[0].uDstImage))
-                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)aCopyImageBatch[0].uSrcImage)
-                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)aCopyImageBatch[0].uDstImage))
+                                if (!(pSrcRes = virtioGpuR3FindResourceByVkObject(pThis,
+                                                                                  aCopyImageBatch[0].uSrcImage))
+                                    || !(pDstRes = virtioGpuR3FindResourceByVkObject(pThis,
+                                                                                      aCopyImageBatch[0].uDstImage))
+                                    || !virtioGpuR3ContextHasResourceObject(pCtx, pThis,
+                                                                             aCopyImageBatch[0].uSrcImage)
+                                    || !virtioGpuR3ContextHasResourceObject(pCtx, pThis,
+                                                                             aCopyImageBatch[0].uDstImage))
                                     fCopyImageBatchValid = false;
                                 for (uint32_t i = 1; fCopyImageBatchValid && i < cCopyImage; ++i)
                                     if (aCopyImageBatch[i].uSrcImage != aCopyImageBatch[0].uSrcImage
@@ -7975,11 +8207,10 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                             PVIRTIOGPURESOURCE pDstRes = NULL;
                             VIRTIOGPUCOPYIMAGECMD const *pCopyImage = CopyImage2.cbRegionStride
                                                                     ? &CopyImage2 : &CopyImage;
-                            if (pCopyImage->uSrcImage > UINT32_MAX || pCopyImage->uDstImage > UINT32_MAX
-                                || !(pSrcRes = virtioGpuR3FindResource(pThis, (uint32_t)pCopyImage->uSrcImage))
-                                || !(pDstRes = virtioGpuR3FindResource(pThis, (uint32_t)pCopyImage->uDstImage))
-                                || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)pCopyImage->uSrcImage)
-                                || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)pCopyImage->uDstImage))
+                            if (!(pSrcRes = virtioGpuR3FindResourceByVkObject(pThis, pCopyImage->uSrcImage))
+                                || !(pDstRes = virtioGpuR3FindResourceByVkObject(pThis, pCopyImage->uDstImage))
+                                || !virtioGpuR3ContextHasResourceObject(pCtx, pThis, pCopyImage->uSrcImage)
+                                || !virtioGpuR3ContextHasResourceObject(pCtx, pThis, pCopyImage->uDstImage))
                                 Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
                             else
                             {
@@ -8004,11 +8235,14 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                                                                               &aBlitBatch[i]);
                             if (fBlitBatchValid)
                             {
-                                if (aBlitBatch[0].uSrcImage > UINT32_MAX || aBlitBatch[0].uDstImage > UINT32_MAX
-                                    || !(pSrcRes = virtioGpuR3FindResource(pThis, (uint32_t)aBlitBatch[0].uSrcImage))
-                                    || !(pDstRes = virtioGpuR3FindResource(pThis, (uint32_t)aBlitBatch[0].uDstImage))
-                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)aBlitBatch[0].uSrcImage)
-                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)aBlitBatch[0].uDstImage))
+                                if (!(pSrcRes = virtioGpuR3FindResourceByVkObject(pThis,
+                                                                                  aBlitBatch[0].uSrcImage))
+                                    || !(pDstRes = virtioGpuR3FindResourceByVkObject(pThis,
+                                                                                      aBlitBatch[0].uDstImage))
+                                    || !virtioGpuR3ContextHasResourceObject(pCtx, pThis,
+                                                                             aBlitBatch[0].uSrcImage)
+                                    || !virtioGpuR3ContextHasResourceObject(pCtx, pThis,
+                                                                             aBlitBatch[0].uDstImage))
                                     fBlitBatchValid = false;
                                 for (uint32_t i = 1; fBlitBatchValid && i < cBlit; ++i)
                                     if (aBlitBatch[i].uSrcImage != aBlitBatch[0].uSrcImage
@@ -8029,11 +8263,10 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                             PVIRTIOGPURESOURCE pDstRes = NULL;
                             VIRTIOGPUBLITIMAGECMD const *pBlit = BlitImage2.cbRegionStride
                                                                   ? &BlitImage2 : &BlitImage;
-                            if (pBlit->uSrcImage > UINT32_MAX || pBlit->uDstImage > UINT32_MAX
-                                || !(pSrcRes = virtioGpuR3FindResource(pThis, (uint32_t)pBlit->uSrcImage))
-                                || !(pDstRes = virtioGpuR3FindResource(pThis, (uint32_t)pBlit->uDstImage))
-                                || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)pBlit->uSrcImage)
-                                || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)pBlit->uDstImage))
+                            if (!(pSrcRes = virtioGpuR3FindResourceByVkObject(pThis, pBlit->uSrcImage))
+                                || !(pDstRes = virtioGpuR3FindResourceByVkObject(pThis, pBlit->uDstImage))
+                                || !virtioGpuR3ContextHasResourceObject(pCtx, pThis, pBlit->uSrcImage)
+                                || !virtioGpuR3ContextHasResourceObject(pCtx, pThis, pBlit->uDstImage))
                                 Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
                             else
                             {
@@ -8056,13 +8289,12 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                             for (uint32_t i = 0; i < cFill; ++i)
                             {
                                 if (!virtioGpuR3DecodeFillBuffer(pbCommand + i * 44, 44, &aFill[i])
-                                    || aFill[i].uBuffer > UINT32_MAX
-                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)aFill[i].uBuffer))
+                                    || !virtioGpuR3ContextHasResourceObject(pCtx, pThis, aFill[i].uBuffer))
                                 {
                                     fBatchValid = false;
                                     break;
                                 }
-                                PVIRTIOGPURESOURCE pCurRes = virtioGpuR3FindResource(pThis, (uint32_t)aFill[i].uBuffer);
+                                PVIRTIOGPURESOURCE pCurRes = virtioGpuR3FindResourceByVkObject(pThis, aFill[i].uBuffer);
                                 if (!pCurRes || (pBatchRes && pBatchRes != pCurRes))
                                 {
                                     fBatchValid = false;
@@ -8088,9 +8320,8 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                             PVIRTIOGPURESOURCE pRes = NULL;
                             if (virtioGpuR3DecodeFillBuffer(pbCommand, Cmd.cbCommand, &Fill))
                             {
-                                if (Fill.uBuffer > UINT32_MAX
-                                    || !(pRes = virtioGpuR3FindResource(pThis, (uint32_t)Fill.uBuffer))
-                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)Fill.uBuffer))
+                                if (!(pRes = virtioGpuR3FindResourceByVkObject(pThis, Fill.uBuffer))
+                                    || !virtioGpuR3ContextHasResourceObject(pCtx, pThis, Fill.uBuffer))
                                     Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
                                 else
                                 {
@@ -8148,11 +8379,14 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                                                 aCopyBatch[i].cbCopy = cbCopy;
                                                 if (i == 0)
                                                 {
-                                                    if (CopyOne.uSrcBuffer > UINT32_MAX || CopyOne.uDstBuffer > UINT32_MAX
-                                                        || !(pBatchSrc = virtioGpuR3FindResource(pThis, (uint32_t)CopyOne.uSrcBuffer))
-                                                        || !(pBatchDst = virtioGpuR3FindResource(pThis, (uint32_t)CopyOne.uDstBuffer))
-                                                        || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)CopyOne.uSrcBuffer)
-                                                        || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)CopyOne.uDstBuffer))
+                                                    if (!(pBatchSrc = virtioGpuR3FindResourceByVkObject(pThis,
+                                                                                                         CopyOne.uSrcBuffer))
+                                                        || !(pBatchDst = virtioGpuR3FindResourceByVkObject(pThis,
+                                                                                                         CopyOne.uDstBuffer))
+                                                        || !virtioGpuR3ContextHasResourceObject(pCtx, pThis,
+                                                                                                 CopyOne.uSrcBuffer)
+                                                        || !virtioGpuR3ContextHasResourceObject(pCtx, pThis,
+                                                                                                 CopyOne.uDstBuffer))
                                                         fBatchValid = false;
                                                 }
                                                 else if (CopyOne.uSrcBuffer != aCopyBatch[0].uSrcBuffer
@@ -8184,11 +8418,10 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                                 bool const fDecoded = fCopy2
                                     || virtioGpuR3DecodeCopyBuffer(pbCommand, Cmd.cbCommand, &Copy);
                                 if (!fDecoded
-                                    || pCopy->uSrcBuffer > UINT32_MAX || pCopy->uDstBuffer > UINT32_MAX
-                                    || !(pSrc = virtioGpuR3FindResource(pThis, (uint32_t)pCopy->uSrcBuffer))
-                                    || !(pDst = virtioGpuR3FindResource(pThis, (uint32_t)pCopy->uDstBuffer))
-                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)pCopy->uSrcBuffer)
-                                    || !virtioGpuR3ContextHasResource(pCtx, (uint32_t)pCopy->uDstBuffer))
+                                    || !(pSrc = virtioGpuR3FindResourceByVkObject(pThis, pCopy->uSrcBuffer))
+                                    || !(pDst = virtioGpuR3FindResourceByVkObject(pThis, pCopy->uDstBuffer))
+                                    || !virtioGpuR3ContextHasResourceObject(pCtx, pThis, pCopy->uSrcBuffer)
+                                    || !virtioGpuR3ContextHasResourceObject(pCtx, pThis, pCopy->uDstBuffer))
                                     Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
                                 else
                                 {

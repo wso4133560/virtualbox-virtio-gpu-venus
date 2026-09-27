@@ -635,7 +635,22 @@ exit "$workload_rc"
         Stop-TestSshProcesses
         if ($created) {
             try {
-                $state = Vm-State
+                $state = 'unknown'
+                for ($stateAttempt = 0; $stateAttempt -lt 20; $stateAttempt++) {
+                    try { $state = Vm-State; break }
+                    catch {
+                        # VBoxSVC can invalidate the direct session while
+                        # VBoxHeadless is shutting down.  Give that process a
+                        # short window to exit before treating the VM as
+                        # stopped; a persistent live process remains an error.
+                        if (-not (Get-Process -Name VBoxHeadless -ErrorAction SilentlyContinue)) {
+                            $state = 'aborted'
+                            break
+                        }
+                        if ($stateAttempt -eq 19) { throw }
+                        Start-Sleep -Milliseconds 500
+                    }
+                }
                 if ($state -notin @('poweroff', 'aborted')) {
                     VBox @('controlvm', $vmName, 'acpipowerbutton') | Out-Null
                     $stopDeadline = [DateTime]::UtcNow.AddSeconds(20)
