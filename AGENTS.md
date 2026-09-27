@@ -1,6 +1,6 @@
 # AGENTS.md - virtualbox-virtio-gpu-venus handoff
 
-更新日期：2026-09-27
+更新日期：2026-09-28
 
 ## 项目目标
 
@@ -11,7 +11,7 @@
 - 工作目录：`D:\code\virtualbox-virtio-gpu-venus`
 - 分支：`main`
 - 远端：`git@github.com:wso4133560/virtualbox-virtio-gpu-venus.git`
-- 最新已推送提交：`bda46159e6471daa8dc8f6bb61d21fc22512fdf6`（Venus reply stream seek state）
+- 最新已推送提交：`bb8d4bfc93f8bf70ccc972c06d93ee7fb8281261`（Venus guest Vulkan validation path）
 - 前两个相关提交：`df51bd21`（ring notify/command-stream execution）、`0116a7f5`（ring protocol state/progress）
 - 开始新工作先执行 `git status --short`；交接时应保持工作树干净。
 
