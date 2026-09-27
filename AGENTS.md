@@ -57,7 +57,7 @@ kmk: Failed to create worker threads
 .\tools\test-virtio-gpu.ps1 -TimeoutSeconds 60 -IncludeRegistration
 ```
 
-结果：无压力时退出码 `0`、共 `46` 个测试组通过；本次报告 `.build\windows\virtio-gpu-validation.json` 来自 5 秒压力回归，共 `47` 个测试组通过，`missingGroups=[]`，压力组完成 `456184` 次 fill（约 `91236 fills/s`）。两种结果均包含 blob resource/Vulkan backing、ring metadata/reply/progress、Vulkan transfer/clear/barrier/blit/fill/update、binary/timeline semaphore query/signal/wait、classic/submit2 wait-signal、save/load、以及从构建产物注册 VBoxDD 的检查。
+结果：最近一次无压力回归退出码 `0`、共 `48` 个测试组通过；本次报告 `.build\windows\virtio-gpu-validation.json` 来自 5 秒压力回归，共 `47` 个测试组通过，`missingGroups=[]`，压力组完成 `456184` 次 fill（约 `91236 fills/s`）。回归包含 blob resource/Vulkan backing、ring metadata/reply/progress、ring 尾部 wrap-around 与 reply 越界、Vulkan transfer/clear/barrier/blit/fill/update、binary/timeline semaphore query/signal/wait、classic/submit2 wait-signal、save/load、以及从构建产物注册 VBoxDD 的检查。
 
 这表示 Windows 用户态传输、设备回调和宿主 Vulkan 路径通过了当前回归边界。
 
@@ -98,11 +98,11 @@ kmk: Failed to create worker threads
 - 当前 timeline semaphore 改动后的标准报告 `.build\windows\linux-venus-timeline\report.json`：`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`guestVulkanExit=0`、`guestVulkanWorkloadExit=0`、`vboxSupState=RUNNING`、`cleanupErrors=[]`、`passed=true`；runtime hash 指向当前构建的 `VBoxDD.dll`。
 - 最终边界修复后的标准报告 `.build\windows\linux-venus-timeline-final\report.json`：`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`guestVulkanExit=0`、`guestVulkanWorkloadExit=0`、`vboxSupState=RUNNING`、`cleanupErrors=[]`、`passed=true`；`VBoxDD.dll` SHA256 为 `D0DCB3ECE55F71B861371B58A6BB29A8FC1C81C9CCCA8847CFAB499BA24178BC`。
 - 当前 timeline semaphore 改动后的 saved-state 报告 `.build\windows\linux-venus-timeline-save\report.json`：`saveRestoreVerified=true`、`saveRestoreVulkanExit=0`、`cleanupErrors=[]`、`passed=true`；恢复日志同时包含 `VULKANINFO_PASS`、`VULKAN_WORKLOAD_PASS` 和退出码 0。
-- 当前 image object/binding dispatcher 改动后的宿主回归 `.build\windows\virtio-gpu-validation.json`：47 组通过，包含 `vkGetDeviceQueue`、`vkGetDeviceMemoryCommitment`、`vkCreateImage`、`vkGetImageMemoryRequirements`、`vkBindImageMemory`、`vkBindImageMemory2` 和 image binding 释放检查。
+- 当前 image object/binding dispatcher 与 ring wrap-around 改动后的宿主回归 `.build\windows\virtio-gpu-validation.json`：最新无压力回归 48 组通过，包含 `vkGetDeviceQueue`、`vkGetDeviceMemoryCommitment`、`vkCreateImage`、`vkGetImageMemoryRequirements`、`vkBindImageMemory`、`vkBindImageMemory2`、image binding 释放、跨 ring 尾部命令读取和 reply seek 边界检查。
 - 当前对象 ID dispatcher 改动后的客体标准报告 `.build\windows\linux-venus-final-object-id\report.json`：`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`guestVulkanExit=0`、`guestVulkanWorkloadExit=0`、`vboxSupState=RUNNING`、`cleanupErrors=[]`、`passed=true`；运行时 `VBoxDD.dll` SHA256 为 `E0FF994AC0AFCFB2BAD4B74DA4790CEFB03A716714D37F219BF63AA45F24A157`，日志无 `ring command rejected`。
 - 当前对象 ID dispatcher 改动后的客体重复启动报告 `.build\windows\linux-venus-final-object-id-repeat\report.json`：`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`guestVulkanExit=0`、`guestVulkanWorkloadExit=0`、`cleanupErrors=[]`、`passed=true`；运行时 `VBoxDD.dll` SHA256 同为 `E0FF994AC0AFCFB2BAD4B74DA4790CEFB03A716714D37F219BF63AA45F24A157`。
 - 当前构建的客体 saved-state 报告 `.build\windows\linux-venus-final-object-id-save\report.json`：`saveRestoreVerified=true`、`saveRestoreVulkanExit=0`、`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`cleanupErrors=[]`、`passed=true`；第一次和恢复后的日志均包含 `VULKANINFO_PASS`、`VULKAN_WORKLOAD_PASS`，且无 ring rejection。
-- 当前最终运行时包 `.build\windows\virtualbox-virtio-gpu-venus-final.zip`：162 个文件，SHA256 为 `A753366ED9AD358BEFB48B471D12A3804E24FEFCFD98A113696CFB271BE84922`；manifest、VBoxManage 版本、VirtIO-GPU/Venus 回归、PE/VMMR0 加载验收均通过。
+- 当前最终运行时包 `.build\windows\virtualbox-virtio-gpu-venus-final.zip`：162 个文件，SHA256 为 `B4CAD2951BB61FBD6CC943E4DFF4EC3B1A66620ED5B15C8150CA293619243C22`；manifest、VBoxManage 版本、VirtIO-GPU/Venus 回归、PE/VMMR0 加载验收均通过。
 - `tools\test-linux-virtio-gpu.ps1` 的清理路径现在会在 VBoxHeadless 退出期间短暂重试失效 direct-session 查询；若 runtime 进程已退出则按停止处理，仍保留对存活进程和真实注销失败的报错。
 - 当前 timeline semaphore 改动后的独立 reset 报告 `.build\windows\linux-venus-timeline-reset2\report.json`：`resetVerified=true`、`resetVulkanExit=0`、`cleanupErrors=[]`、`passed=true`；reset workload 日志包含 `VULKAN_WORKLOAD_PASS`。
 - 旧的 `linux-venus-final-ring`、`linux-venus-binding-admin41` 等失败报告保留为历史诊断证据；它们不代表当前 runtime 的最终状态。

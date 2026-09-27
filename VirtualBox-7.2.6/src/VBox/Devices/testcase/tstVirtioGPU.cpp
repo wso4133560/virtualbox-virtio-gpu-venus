@@ -2490,6 +2490,39 @@ int main(int argc, char **argv)
     memcpy(&uObserved, pRingRes->pbPixels + uCreateHead, sizeof(uObserved));
     RTTESTI_CHECK(uObserved == uFillTail);
     RTTESTI_CHECK(*(uint32_t *)pGpu->aResources[0].pbPixels == uFillData);
+    RTTestSub(g_hTest, "Venus ring wrap-around and reply bounds");
+    uSeekReplyPosition = uReplySize + 1;
+    memcpy(abSeekReply + 8, &uSeekReplyPosition, sizeof(uSeekReplyPosition));
+    RT_ZERO(RingResp);
+    RTTESTI_CHECK(virtioGpuR3HandleVenusRingCommand(pGpu, abSeekReply, sizeof(abSeekReply),
+                                                    &RingResp, pTestRing)
+                  && RingResp.Hdr.uType == VIRTIOGPU_RESP_ERR_INVALID_PARAMETER);
+    uSeekReplyPosition = uReplySize;
+    memcpy(abSeekReply + 8, &uSeekReplyPosition, sizeof(uSeekReplyPosition));
+    RT_ZERO(RingResp);
+    RTTESTI_CHECK(virtioGpuR3HandleVenusRingCommand(pGpu, abSeekReply, sizeof(abSeekReply),
+                                                    &RingResp, pTestRing)
+                  && RingResp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
+    uint8_t abWrapCommand[sizeof(abWriteExtra)] = { 0 };
+    uint32_t uWrapValue = UINT32_C(0xdecafbad);
+    uint32_t uWrapHead = 1000, uWrapTail = 1028;
+    memcpy(abWrapCommand, abWriteExtra, sizeof(abWrapCommand));
+    memcpy(abWrapCommand + 24, &uWrapValue, sizeof(uWrapValue));
+    memcpy(pRingRes->pbPixels + uCreateHead, &uWrapHead, sizeof(uWrapHead));
+    memcpy(pRingRes->pbPixels + uCreateTail, &uWrapTail, sizeof(uWrapTail));
+    memcpy(pRingRes->pbPixels + uCreateBuffer + uWrapHead, abWrapCommand, 24);
+    memcpy(pRingRes->pbPixels + uCreateBuffer, abWrapCommand + 24, 4);
+    uNotifySeqno = 4;
+    memcpy(abNotifyRing + 16, &uNotifySeqno, sizeof(uint32_t));
+    RT_ZERO(RingResp);
+    RTTESTI_CHECK(virtioGpuR3HandleVenusRingCommand(pGpu, abNotifyRing, sizeof(abNotifyRing),
+                                                    &RingResp, NULL));
+    memcpy(&uObserved, pRingRes->pbPixels + uCreateHead, sizeof(uObserved));
+    RTTESTI_CHECK(uObserved == uWrapTail);
+    memcpy(&uObserved, pRingRes->pbPixels + uCreateExtra + uWriteExtraOffset, sizeof(uObserved));
+    RTTESTI_CHECK(uObserved == uWrapValue);
+    memcpy(&uObserved, pRingRes->pbPixels + uCreateStatus, sizeof(uObserved));
+    RTTESTI_CHECK(uObserved == (VIRTIOGPU_VK_RING_STATUS_IDLE | VIRTIOGPU_VK_RING_STATUS_ALIVE));
     uSeekReplyPosition = 12;
     memcpy(abSeekReply + 8, &uSeekReplyPosition, sizeof(uSeekReplyPosition));
     RT_ZERO(RingResp);
@@ -2515,7 +2548,7 @@ int main(int argc, char **argv)
     memcpy(&uObserved, pRingRes->pbPixels + uCreateStatus, sizeof(uObserved));
     RTTESTI_CHECK(uObserved == (VIRTIOGPU_VK_RING_STATUS_IDLE | VIRTIOGPU_VK_RING_STATUS_ALIVE));
     memcpy(&uObserved, pRingRes->pbPixels + uCreateExtra + uWriteExtraOffset, sizeof(uObserved));
-    RTTESTI_CHECK(uObserved == uNestedValue);
+    RTTESTI_CHECK(uObserved == uWrapValue);
     memcpy(&uObserved, pRingRes->pbPixels + uReplyOffset, sizeof(uObserved));
     RTTESTI_CHECK(uObserved == uWriteExtraType);
     uint8_t abDestroyRing[16] = { 0 };
