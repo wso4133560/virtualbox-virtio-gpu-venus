@@ -218,4 +218,12 @@ git ls-remote origin refs/heads/main
 - 客体 reset 报告 `.build\\windows\\linux-venus-image-reset3\\report.json`：`resetVerified=true`、reset Vulkan exit 0、`passed=true`；reset 前增加 `vkDeviceWaitIdle` 后不再出现 `VBoxHeadless` 访问冲突。
 - 最终开发包 `.build\\windows\\virtualbox-virtio-gpu-venus-image-final.zip`：257 个文件，ZIP SHA256 `463CEF63F24CDBDC4C7EB8D5139E226E2B25F14102D04C00E2CB6958280E88F1`；包内外 `VBoxDD.dll` SHA256 `1D564863030A408124E348457F23708D5D9F9DD1081502755C24B625D6F523C6`，包校验通过。
 
+## 2026-09-28 image-view 追加验收
+
+- `DevVirtioGPU.cpp` 新增 host-backed `vkCreateImageView`/`vkDestroyImageView`（命令 57/58），校验 `VkImageViewCreateInfo` 的 pNext、allocator、subresource range 和 image 依赖；析构时先释放 image view 再释放 image。
+- saved-state opaque object 校验与重建顺序已包含 image -> image view -> pipeline layout；宿主回归新增 `Venus image view lifecycle`，共 56 组通过，包含注册检查。
+- 客体报告 `.build\\windows\\linux-venus-image-view-final\\report.json`：标准 `vulkaninfo`、15 秒 workload（10220 次）和 saved-state restore 均通过，`vboxSupState=RUNNING`、`cleanupErrors=[]`；同一报告的 save 后紧接 reset 因 SSH 未恢复而记录 `resetVerified=false`，不能作为 reset 通过证据。
+- 独立 fresh-VM reset 报告 `.build\\windows\\linux-venus-image-view-reset\\report.json`：`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`resetVerified=true`、`resetVulkanExit=0`、`passed=true`。
+- 当前开发包 `.build\\windows\\virtualbox-virtio-gpu-venus-image-view-final.zip`：257 个文件，ZIP SHA256 `42162B323B86EB28D2D8335623CCB569A4A9BB5BC820C72AF9F993A0B2B92468`；包内外 `VBoxDD.dll` SHA256 `7BF5A6D6E3B223775DE7BBD1658F6760A61EE5BBB6CC975B06C1257CD3E96C51`，manifest、版本、VirtIO-GPU/Venus、PE/VMMR0 四项校验通过。
+
 只提交本阶段相关文件，保留测试报告在 `.build` 下，不要提交临时 VM 密钥、磁盘或 core dump。

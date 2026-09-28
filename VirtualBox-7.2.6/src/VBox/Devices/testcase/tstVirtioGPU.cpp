@@ -2255,6 +2255,58 @@ int main(int argc, char **argv)
     memcpy(&uImageLayoutRowPitch, abProtocolReply + 28, sizeof(uImageLayoutRowPitch));
     RTTESTI_CHECK(cbProtocolReply == 52 && uImageLayoutSize != 0 && uImageLayoutRowPitch != 0);
 
+    RTTestSub(g_hTest, "Venus image view lifecycle");
+    uint8_t abCreateImageView[116] = { 0 };
+    uint32_t uCreateImageViewType = VIRTIOGPU_VK_CMD_CREATE_IMAGE_VIEW;
+    uint64_t uImageView = UINT64_C(0x6002), fCreateImageViewInfo = 1;
+    uint32_t uImageViewSType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    uint32_t uImageViewFlags = 0, uImageViewType = VK_IMAGE_VIEW_TYPE_2D;
+    uint32_t uImageViewFormat = VK_FORMAT_R8G8B8A8_UNORM;
+    uint32_t uImageViewAspect = VK_IMAGE_ASPECT_COLOR_BIT, uImageViewLevelCount = 1;
+    uint32_t uImageViewLayerCount = 1;
+    uint64_t fImageViewAllocator = 0, fImageViewOutput = 1;
+    memcpy(abCreateImageView + 0, &uCreateImageViewType, sizeof(uCreateImageViewType));
+    memcpy(abCreateImageView + 8, &uGetQueueDevice, sizeof(uGetQueueDevice));
+    memcpy(abCreateImageView + 16, &fCreateImageViewInfo, sizeof(fCreateImageViewInfo));
+    memcpy(abCreateImageView + 24, &uImageViewSType, sizeof(uImageViewSType));
+    memcpy(abCreateImageView + 36, &uImageViewFlags, sizeof(uImageViewFlags));
+    memcpy(abCreateImageView + 40, &uImage, sizeof(uImage));
+    memcpy(abCreateImageView + 48, &uImageViewType, sizeof(uImageViewType));
+    memcpy(abCreateImageView + 52, &uImageViewFormat, sizeof(uImageViewFormat));
+    memcpy(abCreateImageView + 72, &uImageViewAspect, sizeof(uImageViewAspect));
+    memcpy(abCreateImageView + 80, &uImageViewLevelCount, sizeof(uImageViewLevelCount));
+    memcpy(abCreateImageView + 88, &uImageViewLayerCount, sizeof(uImageViewLayerCount));
+    memcpy(abCreateImageView + 92, &fImageViewAllocator, sizeof(fImageViewAllocator));
+    memcpy(abCreateImageView + 100, &fImageViewOutput, sizeof(fImageViewOutput));
+    memcpy(abCreateImageView + 108, &uImageView, sizeof(uImageView));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abCreateImageView, sizeof(abCreateImageView), &cbQueueCommand)
+                  && cbQueueCommand == sizeof(abCreateImageView)
+                  && virtioGpuR3EncodeVenusProtocolReply(pGpu, abCreateImageView,
+                                                          sizeof(abCreateImageView), abProtocolReply,
+                                                          sizeof(abProtocolReply), &cbProtocolReply));
+    uint64_t uCreatedImageView = 0;
+    uint32_t uCreateImageViewReplyType = 0, uCreateImageViewReplyResult = UINT32_MAX;
+    memcpy(&uCreateImageViewReplyType, abProtocolReply + 0, sizeof(uCreateImageViewReplyType));
+    memcpy(&uCreateImageViewReplyResult, abProtocolReply + 4, sizeof(uCreateImageViewReplyResult));
+    memcpy(&uCreatedImageView, abProtocolReply + 16, sizeof(uCreatedImageView));
+    PVIRTIOGPUOPAQUEOBJECT pImageView = virtioGpuR3FindOpaqueObject(pGpu, uCreatedImageView);
+    RTTESTI_CHECK(cbProtocolReply == 24 && uCreateImageViewReplyType == uCreateImageViewType
+                  && uCreateImageViewReplyResult == VK_SUCCESS && uCreatedImageView == uImageView
+                  && pImageView && pImageView->uType == VIRTIOGPU_VK_CMD_CREATE_IMAGE_VIEW
+                  && pImageView->hImageView != VK_NULL_HANDLE);
+    uint8_t abDestroyImageView[32] = { 0 };
+    uint32_t uDestroyImageViewType = VIRTIOGPU_VK_CMD_DESTROY_IMAGE_VIEW;
+    memcpy(abDestroyImageView + 0, &uDestroyImageViewType, sizeof(uDestroyImageViewType));
+    memcpy(abDestroyImageView + 8, &uGetQueueDevice, sizeof(uGetQueueDevice));
+    memcpy(abDestroyImageView + 16, &uCreatedImageView, sizeof(uCreatedImageView));
+    memcpy(abDestroyImageView + 24, &fImageViewAllocator, sizeof(fImageViewAllocator));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abDestroyImageView, sizeof(abDestroyImageView), &cbQueueCommand)
+                  && cbQueueCommand == sizeof(abDestroyImageView)
+                  && virtioGpuR3EncodeVenusProtocolReply(pGpu, abDestroyImageView,
+                                                          sizeof(abDestroyImageView), abProtocolReply,
+                                                          sizeof(abProtocolReply), &cbProtocolReply)
+                  && cbProtocolReply == 4 && !virtioGpuR3FindOpaqueObject(pGpu, uCreatedImageView));
+
     uint8_t abBindImage[40] = { 0 };
     uint32_t uBindImageType = VIRTIOGPU_VK_CMD_BIND_IMAGE_MEMORY;
     uint64_t uImageOffset = 0;
