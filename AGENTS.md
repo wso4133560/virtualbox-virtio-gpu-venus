@@ -11,7 +11,7 @@
 - 工作目录：`D:\code\virtualbox-virtio-gpu-venus`
 - 分支：`main`
 - 远端：`git@github.com:wso4133560/virtualbox-virtio-gpu-venus.git`
-- 本轮源码验证基于工作树最终 DLL `FE0A10401151BA094A6D78877134D9D204E00B7FFC2190DE7B011D4711DFF7BD`；提交哈希以 `git HEAD` 和远端分支为准。
+- 本轮源码验证基于工作树最终 DLL `A5AA4FE295935E384A4569CED70167088878F77715605D10C066D33BAC298095`；提交哈希以 `git HEAD` 和远端分支为准。
 - 前两个相关提交：`e239d8c9`（Replay recorded Venus command buffers on submit）、`81dc9bf9`（Package current Venus guest evidence）；更早提交 `2976c1c5`（ring wrap-around/reply bounds）、`72421ab1`（zero output handles in Venus creates）。
 - 开始新工作先执行 `git status --short`；交接时应保持工作树干净。
 
@@ -225,5 +225,12 @@ git ls-remote origin refs/heads/main
 - 客体报告 `.build\\windows\\linux-venus-image-view-final\\report.json`：标准 `vulkaninfo`、15 秒 workload（10220 次）和 saved-state restore 均通过，`vboxSupState=RUNNING`、`cleanupErrors=[]`；同一报告的 save 后紧接 reset 因 SSH 未恢复而记录 `resetVerified=false`，不能作为 reset 通过证据。
 - 独立 fresh-VM reset 报告 `.build\\windows\\linux-venus-image-view-reset\\report.json`：`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`resetVerified=true`、`resetVulkanExit=0`、`passed=true`。
 - 当前开发包 `.build\\windows\\virtualbox-virtio-gpu-venus-image-view-final.zip`：257 个文件，ZIP SHA256 `42162B323B86EB28D2D8335623CCB569A4A9BB5BC820C72AF9F993A0B2B92468`；包内外 `VBoxDD.dll` SHA256 `7BF5A6D6E3B223775DE7BBD1658F6760A61EE5BBB6CC975B06C1257CD3E96C51`，manifest、版本、VirtIO-GPU/Venus、PE/VMMR0 四项校验通过。
+
+## 2026-09-28 cleanup 与 buffer 回归边界
+
+- `tools/test-linux-virtio-gpu.ps1` 的清理轮询现在把 direct-session 已失效的 `VBOX_E_INVALID_OBJECT_STATE`/`VBOX_E_VM_ERROR` 视为 VM 已停止，避免 VBoxHeadless 已退出但 `showvminfo` 短暂锁定导致的假失败；真实存活进程和其它注销错误仍会失败。
+- 宿主回归 `.build\\windows\\virtio-gpu-validation.json` 使用当前 runtime 通过 56 组，`-IncludeRegistration` 成功；当前 `VBoxDD.dll` SHA256 为 `A5AA4FE295935E384A4569CED70167088878F77715605D10C066D33BAC298095`。
+- 客体报告 `.build\\windows\\linux-venus-cleanup-final10\\report.json`：`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、6844 次迭代、`cleanupErrors=[]`、`passed=true`，宿主 AMD Radeon 780M / Vulkan 1.4.349，`VBoxSup` 为 `RUNNING`。
+- 额外实验表明，单独为 `vkCreateBuffer` 创建未绑定的 host `VkBuffer` 会在约 1024 次 guest queue submit 后触发 fence/ring fatal；上一版 runtime 同一 workload 通过。该路径已撤回，当前 buffer 继续使用已有 blob/resource-backed host `VkBuffer`，不把未绑定的重复对象宣称为完成能力。
 
 只提交本阶段相关文件，保留测试报告在 `.build` 下，不要提交临时 VM 密钥、磁盘或 core dump。

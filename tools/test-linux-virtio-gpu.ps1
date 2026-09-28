@@ -674,6 +674,13 @@ exit "$workload_rc"
                         # VBoxHeadless is shutting down.  Give that process a
                         # short window to exit before treating the VM as
                         # stopped; a persistent live process remains an error.
+                        # A direct-session invalidation is the terminal state
+                        # we need for cleanup, even if VBoxHeadless has not
+                        # disappeared from the process table yet.
+                        if ($_.Exception.Message -match 'VBOX_E_INVALID_OBJECT_STATE|VBOX_E_VM_ERROR') {
+                            $state = 'aborted'
+                            break
+                        }
                         if (-not (Get-Process -Name VBoxHeadless -ErrorAction SilentlyContinue)) {
                             $state = 'aborted'
                             break
@@ -685,7 +692,17 @@ exit "$workload_rc"
                 if ($state -notin @('poweroff', 'aborted')) {
                     VBox @('controlvm', $vmName, 'acpipowerbutton') | Out-Null
                     $stopDeadline = [DateTime]::UtcNow.AddSeconds(20)
-                    do { Start-Sleep -Milliseconds 500; $state = Vm-State }
+                    do {
+                        Start-Sleep -Milliseconds 500
+                        try { $state = Vm-State }
+                        catch {
+                            if ($_.Exception.Message -match 'VBOX_E_INVALID_OBJECT_STATE|VBOX_E_VM_ERROR') {
+                                $state = 'aborted'
+                                break
+                            }
+                            throw
+                        }
+                    }
                     while ($state -notin @('poweroff', 'aborted') -and [DateTime]::UtcNow -lt $stopDeadline)
                     if ($state -notin @('poweroff', 'aborted')) { VBox @('controlvm', $vmName, 'poweroff') | Out-Null }
                 }
