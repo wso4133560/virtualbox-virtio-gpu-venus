@@ -1039,6 +1039,39 @@ int main(int argc, char **argv)
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && !memcmp(pGpu->aResources[0].pbPixels, abPixels, sizeof(abPixels)));
 
+    RTTestSub(g_hTest, "2D backing with more than 64 segments");
+    struct
+    {
+        uint32_t id;
+        uint32_t count;
+        VIRTIOGPUMEMENTRY aEntries[65];
+    } AttachMany;
+    AttachMany.id = 7;
+    AttachMany.count = RT_ELEMENTS(AttachMany.aEntries);
+    for (uint32_t i = 0; i < AttachMany.count; ++i)
+    {
+        AttachMany.aEntries[i].GCPhys = UINT64_C(0x6800) + i * 16;
+        AttachMany.aEntries[i].cb = 16;
+        AttachMany.aEntries[i].uPadding = 0;
+    }
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_RESOURCE_ATTACH_BACKING,
+                   &AttachMany, sizeof(AttachMany), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA
+                  && pGpu->aResources[0].cBacking == AttachMany.count);
+    memcpy(&g_abRam[0x6800], abPixels, sizeof(abPixels));
+    uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_TRANSFER_TO_HOST_2D,
+                   &Transfer, sizeof(Transfer), 24);
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBefore) == 24);
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA
+                  && !memcmp(pGpu->aResources[0].pbPixels, abPixels, sizeof(abPixels)));
+
     struct { uint32_t x, y, w, h, scanout, id; } Scanout = { 0, 0, 2, 2, 0, 7 };
     uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SET_SCANOUT, &Scanout, sizeof(Scanout), 24);

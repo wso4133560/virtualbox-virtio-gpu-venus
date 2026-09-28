@@ -30,8 +30,8 @@
 # error "VirtIO-GPU currently runs entirely in ring 3."
 #endif
 
-/* Version 24 also preserves descriptor update command streams. */
-#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(24)
+/* Version 25 also records the expanded guest backing segment table. */
+#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(25)
 #define VIRTIOGPU_MAX_RESOURCES 256
 #define VIRTIOGPU_MAX_BUFFER_BINDINGS 512
 #define VIRTIOGPU_MAX_COMMAND_BUFFERS 512
@@ -177,7 +177,10 @@
 #define VIRTIOGPU_VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO UINT32_C(1000207004)
 #define VIRTIOGPU_VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO UINT32_C(1000207005)
 #define VIRTIOGPU_VK_SEMAPHORE_TYPE_TIMELINE UINT32_C(1)
-#define VIRTIOGPU_MAX_BACKING_ENTRIES 64
+/* Linux may split a scanout backing into more than 64 scatter-gather
+ * segments.  Keep the bound finite for saved-state and command validation,
+ * while covering the page/segment counts used by real guest framebuffers. */
+#define VIRTIOGPU_MAX_BACKING_ENTRIES 256
 #define VIRTIOGPU_MAX_RESOURCE_BYTES (UINT64_C(256) * _1M)
 #define VIRTIOGPU_SHARED_MEMORY_BYTES (UINT64_C(256) * _1M)
 
@@ -11161,7 +11164,8 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                         uint64_t cbBacking=0;
                         for (uint32_t i=0; RT_SUCCESS(rcReq) && i<Cmd.count; ++i)
                             if (aEntries[i].GCPhys > UINT64_MAX-aEntries[i].cb || cbBacking > UINT64_MAX-aEntries[i].cb) rcReq=VERR_OUT_OF_RANGE; else cbBacking+=aEntries[i].cb;
-                        if (RT_FAILURE(rcReq) || cbBacking < pRes->cbPixels) Resp.Hdr.uType=VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
+                        if (RT_FAILURE(rcReq) || cbBacking < pRes->cbPixels)
+                            Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
                         else { memcpy(pRes->aBacking,aEntries,Cmd.count*sizeof(*aEntries)); pRes->cBacking=Cmd.count; Resp.Hdr.uType=VIRTIOGPU_RESP_OK_NODATA; }
                     }
                 }
