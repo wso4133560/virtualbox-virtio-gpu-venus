@@ -320,6 +320,8 @@ git ls-remote origin refs/heads/main
 - 当前宿主回归 `.build\\windows\\virtio-gpu-validation.json` 通过 60 组，`missingGroups=[]`，注册检查通过；当前 `VBoxDD.dll` SHA256 为 `28B757E1BC010308CC1FF035AE0D3B0C151C78B13ADA5665035449DD0204C666`。
 - `.build\\windows\\linux-venus-transfer-fixed3\\report.json` 使用同一 runtime 通过客体 DRM/VirtIO-GPU 启动与 1024x768 模式枚举；该报告未运行 Vulkan。
 - `.build\\windows\\linux-venus-transfer-fixed5c\\report.json` 使用同一 runtime 通过 `vulkaninfo`、5 秒 workload（3539 次）和清理；日志不再出现 `0x105`/`0x106`，但仍记录独立的 legacy `SUBMIT_3D` `0x1205`（命令 `0x207`），该路径仍需后续协议补齐。
+- `.build\\windows\\linux-venus-backing-save25-once\\report.json` 使用 saved-state version 25 完成客体 `vulkaninfo`、单次 workload 与 restore，`saveRestoreVerified=true`、`saveRestoreVulkanExit=0`、`cleanupErrors=[]`。
+- `.build\\windows\\virtualbox-virtio-gpu-venus-backing-v25.zip` 包含 257 个文件，ZIP SHA256 为 `A45F4AE27CB57C67D10634152BC5D83BD7B333635E9033B5113FC0C31090EF6E`；包校验的 manifest、版本、VirtIO-GPU/Venus 回归和 PE/VMMR0 加载均通过。
 - 一次 workload 重试曾因 Venus ring 的 `QUEUE_SUBMIT` 解析在第 1024 次附近触发 fatal；同一修订后的复验通过，不能把单次失败扩大为稳定性结论。
 
 只提交本阶段相关文件，保留测试报告在 `.build` 下，不要提交临时 VM 密钥、磁盘或 core dump。
