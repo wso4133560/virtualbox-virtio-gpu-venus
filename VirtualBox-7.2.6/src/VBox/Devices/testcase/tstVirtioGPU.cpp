@@ -790,6 +790,8 @@ int main(int argc, char **argv)
                   == (VIRTIOGPU_F_VIRGL | VIRTIOGPU_F_RESOURCE_UUID));
 #endif
     pGpu->Config.cScanouts = 1;
+    pGpu->aScanouts[0].uWidth = 1024;
+    pGpu->aScanouts[0].uHeight = 768;
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     pGpu->enmActiveBackend = VIRTIOGPU_BACKEND_VENUS;
     pGpu->Config.cCapsets = 1;
@@ -842,7 +844,8 @@ int main(int argc, char **argv)
     memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp));
     RTTESTI_CHECK(Resp.Hdr.uType == 0x1101 && Resp.Hdr.uFlags == 1);
     RTTESTI_CHECK(Resp.Hdr.uFenceId == UINT64_C(0xabcdef0123456789) && Resp.Hdr.uCtxId == 73);
-    RTTESTI_CHECK(Resp.Hdr.uPadding == 0 && Resp.aScanouts[0].fEnabled == 0);
+    RTTESTI_CHECK(Resp.Hdr.uPadding == 0 && Resp.aScanouts[0].fEnabled == 1
+                  && Resp.aScanouts[0].uWidth == 1024 && Resp.aScanouts[0].uHeight == 768);
     RTTESTI_CHECK(g_abRam[0x5000 + 408] == 0xa5);
     RTTESTI_CHECK(g_cIrqs > 0);
 

@@ -302,4 +302,14 @@ git ls-remote origin refs/heads/main
 - 当前开发包为 `.build\windows\virtualbox-virtio-gpu-venus-descriptor-update-v24-write-copy-final.zip`，共 257 个文件，ZIP SHA256 `FD6DA60092A2416DDF3885AD2D8AEBD7950BC3987105A1373BF74CD91CB629E8`；包内 `VBoxDD.dll` SHA256 为 `7CEF43BE69538014B4565304F85FBC57E5B47608C742A3FA907D999887227CB7`，manifest、版本、VirtIO-GPU/Venus 回归和 PE/VMMR0 加载均通过。
 - 宿主 `tstVirtioGPU` 已构造真实 sampler descriptor layout/pool/两个 set，验证非空 `vkUpdateDescriptorSets` 的 write 与 copy payload，并验证 save/reset/load 后两个宿主句柄恢复及 update 重放；`.build\windows\virtio-gpu-validation.json` 为 59 组通过、`missingGroups=[]`、注册检查通过。当前 guest workload 仍未单独覆盖非空 descriptor payload。完整 Venus renderer protocol、真实桌面显示/分辨率/cursor 端到端验收、8 小时压力、完整性能矩阵和正式 Windows 安装器仍未完成。
 
+## 2026-09-29 EDID、默认显示模式与 scanout saved-state
+
+- 修正 `GET_EDID` 的标准 base-block header 和 1024x768@60 DTD；scanout 0 在设备构造和资源清理后默认保留 1024x768，`GET_DISPLAY_INFO` 不再被通用响应清零，并在有默认尺寸时报告 enabled。
+- 修正 saved-state resource 校验：普通 2D resource 可以在 `cBacking=0` 时保存宿主像素存储；只有存在 backing 条目时才要求 backing 容量覆盖 resource 数据。这样客体的无 backing scanout resource 可以正常恢复。
+- 最终宿主回归 `.build\windows\virtio-gpu-validation.json` 通过 59 组，`missingGroups=[]`，`-IncludeRegistration` 通过；最终 `VBoxDD.dll` SHA256 为 `D32B2CBCB4EEB9AB79C7DD1E12686E8B2949BBA869F885A6E19CBDF3571EEC1B`。
+- 使用最终开发包的客体报告 `.build\windows\linux-venus-display-edid-ssm-save-final\report.json`：`guestReady=true`、`sshReady=true`、`drmDriverBound=true`、`displayModeVerified=true`，客体实际报告 `1024x768`/`640x480`，`guestVulkanVerified=true`、15 秒 workload `10217` 次、`saveRestoreVerified=true`、`saveRestoreVulkanExit=0`、`vboxSupState=RUNNING`、`cleanupErrors=[]`、`passed=true`。
+- 同一最终开发包的 reset 报告 `.build\windows\linux-venus-display-edid-ssm-reset-final\report.json`：`displayModeVerified=true`、`guestVulkanVerified=true`、10 秒 workload `7147` 次、`resetVerified=true`、`resetVulkanExit=0`、`cleanupErrors=[]`、`passed=true`。
+- 当前开发包 `.build\windows\virtualbox-virtio-gpu-venus-display-edid-ssm-final.zip` 共 257 个文件，ZIP SHA256 `E8B18D8502205A18D52772BB86196F1CDF4E023C32E1C295EAA4C320087FF3CE`；包内 `VBoxDD.dll` SHA256 为 `D32B2CBCB4EEB9AB79C7DD1E12686E8B2949BBA869F885A6E19CBDF3571EEC1B`，manifest、版本、VirtIO-GPU/Venus 回归和 PE/VMMR0 加载均通过。
+- 客体串口仍记录 `response 0x1205` 对命令 `0x105`/`0x106`（resource backing/2D transfer）错误；当前证据证明 DRM 模式枚举、Vulkan、workload 和 saved-state restore，不证明完整桌面 framebuffer 内容、cursor 或任意分辨率切换已经端到端完成。完整 Venus renderer protocol、8 小时压力、完整性能矩阵和正式 Windows 安装器仍未完成。
+
 只提交本阶段相关文件，保留测试报告在 `.build` 下，不要提交临时 VM 密钥、磁盘或 core dump。

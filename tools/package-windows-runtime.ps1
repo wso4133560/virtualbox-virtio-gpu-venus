@@ -76,6 +76,16 @@ foreach ($name in $required) {
             }
         }
     }
+    if ($name -eq 'VBoxDD.dll') {
+        $candidate = Join-Path $repoRoot 'VirtualBox-7.2.6\out\win.amd64\release\obj\VBoxDD\VBoxDD.dll'
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            $installed = Get-Item -LiteralPath $sourcePath
+            $built = Get-Item -LiteralPath $candidate
+            if ($built.LastWriteTimeUtc -gt $installed.LastWriteTimeUtc -and $built.Length -gt 0) {
+                $sourcePath = $candidate
+            }
+        }
+    }
     Copy-Item -LiteralPath $sourcePath -Destination (Join-Path $runtimeBin $name)
 }
 New-Item -ItemType Directory -Force (Join-Path $runtimeBin 'testcase') | Out-Null

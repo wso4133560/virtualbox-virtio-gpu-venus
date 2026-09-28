@@ -6335,6 +6335,16 @@ static void virtioGpuR3AdvanceSubmittedShared(PVIRTIOGPU pThis,
     }
 }
 
+static void virtioGpuR3ResetScanouts(PVIRTIOGPU pThis)
+{
+    RT_ZERO(pThis->aScanouts);
+    if (pThis->Config.cScanouts)
+    {
+        pThis->aScanouts[0].uWidth = 1024;
+        pThis->aScanouts[0].uHeight = 768;
+    }
+}
+
 static void virtioGpuR3FreeResources(PVIRTIOGPU pThis)
 {
     for (unsigned i = 0; i < RT_ELEMENTS(pThis->aResources); ++i)
@@ -6346,8 +6356,7 @@ static void virtioGpuR3FreeResources(PVIRTIOGPU pThis)
             RTMemFree(pThis->aResources[i].pbPixels);
         RT_ZERO(pThis->aResources[i]);
     }
-    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aScanouts); ++i)
-        RT_ZERO(pThis->aScanouts[i]);
+    virtioGpuR3ResetScanouts(pThis);
     RT_ZERO(pThis->aContexts);
     RT_ZERO(pThis->aRings);
     RT_ZERO(pThis->aBufferBindings);
@@ -9539,7 +9548,7 @@ static void virtioGpuR3FillVenusCapset(VIRTIOGPUCAPSETVENUS *pCapset)
 static void virtioGpuR3FillEdid(uint8_t *pbEdid)
 {
     memset(pbEdid, 0, 128);
-    static const uint8_t s_abHeader[] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00,
+    static const uint8_t s_abHeader[] = { 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00,
                                           0x58, 0x0f, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00,
                                           0x01, 0x23, 0x01, 0x04 };
     memcpy(pbEdid, s_abHeader, sizeof(s_abHeader));
@@ -9555,9 +9564,9 @@ static void virtioGpuR3FillEdid(uint8_t *pbEdid)
     pbEdid[40] = 0x61;
     pbEdid[41] = 0x40;
     /* Detailed timing descriptor for 1024x768@60 (65 MHz). */
-    static const uint8_t s_abTiming[] = { 0x64, 0x19, 0x00, 0x40, 0x41, 0x50, 0x18, 0x88,
-                                          0x36, 0x00, 0x58, 0x2c, 0x11, 0x00, 0x00, 0x1e,
-                                          0x00, 0x00 };
+    static const uint8_t s_abTiming[] = { 0x64, 0x19, 0x00, 0x40, 0x41, 0x00, 0x26, 0x30,
+                                          0x18, 0x88, 0x36, 0x00, 0x58, 0x2c, 0x11, 0x00,
+                                          0x00, 0x1e };
     memcpy(&pbEdid[54], s_abTiming, sizeof(s_abTiming));
     pbEdid[72] = 0x00; pbEdid[73] = 0x00; pbEdid[74] = 0x00; pbEdid[75] = 0xfc; pbEdid[76] = 0x00;
     static const uint8_t s_abName[] = { 'V','i','r','t','I','O',' ','G','P','U','\n',' ',' ',' ',' ',' ',' ',' ',' ' };
@@ -9924,9 +9933,12 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                         Resp.aScanouts[i].uY = pThis->aScanouts[i].uY;
                         Resp.aScanouts[i].uWidth = pThis->aScanouts[i].uWidth;
                         Resp.aScanouts[i].uHeight = pThis->aScanouts[i].uHeight;
-                        Resp.aScanouts[i].fEnabled = pThis->aScanouts[i].uResourceId != 0;
+                        Resp.aScanouts[i].fEnabled = pThis->aScanouts[i].uResourceId != 0
+                                                  || (pThis->aScanouts[i].uWidth != 0
+                                                      && pThis->aScanouts[i].uHeight != 0);
                     }
                     cbResp = sizeof(Resp);
+                    fPreserveResponse = true;
                 }
                 else
                     Resp.Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
@@ -11819,7 +11831,7 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
                     }
                     cbBacking += pRes->aBacking[j].cb;
                 }
-                if (RT_SUCCESS(rc) && (!pRes->fBlob || pRes->cBacking)
+                if (RT_SUCCESS(rc) && pRes->cBacking
                     && cbBacking < (pRes->fBlob ? cbSavedPixels
                                                 : (uint64_t)pRes->uWidth * pRes->uHeight * 4))
                     rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
@@ -12229,6 +12241,7 @@ static DECLCALLBACK(int) virtioGpuR3Construct(PPDMDEVINS pDevIns, int iInstance,
                                 N_("virtio-gpu: Venus backend is not included in this build"));
 #endif
     pThis->Config.cScanouts = 1;
+    virtioGpuR3ResetScanouts(pThis);
     pThis->enmActiveBackend = VIRTIOGPU_BACKEND_SOFTWARE;
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     if (pThis->enmBackend != VIRTIOGPU_BACKEND_SOFTWARE)

@@ -102,6 +102,7 @@ $cleanupErrors = @()
 $sshPidsBefore = @(Get-Process -Name ssh -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
 $sshReady = $false
 $driverBound = $false
+$displayModeVerified = $false
 $hostVisible = $null
 $readySeconds = $null
 $hostVulkanDevice = $null
@@ -262,6 +263,14 @@ sudo dmesg | tail -n 220
 echo VIRTIO_GPU_KERNEL_LOG
 sudo dmesg | grep -Ei 'virtio|\[drm\]|BAR 4' || true
 if [ "$found" = 1 ]; then echo VIRTIO_DRM_BOUND; else echo VIRTIO_DRM_MISSING; fi
+display_mode_found=0
+for mode_file in /sys/class/drm/card*-*/modes; do
+    [ -f "$mode_file" ] || continue
+    echo "drm_modes=$mode_file"
+    cat "$mode_file"
+    if grep -qx '1024x768' "$mode_file"; then display_mode_found=1; fi
+done
+if [ "$display_mode_found" = 1 ]; then echo VIRTIO_DISPLAY_MODE_PASS; else echo VIRTIO_DISPLAY_MODE_MISSING; fi
 echo VIRTIO_GUEST_END
 '@
     $guestProbePath = Join-Path $reportDir 'guest-probe.sh'
@@ -277,8 +286,10 @@ echo VIRTIO_GUEST_END
     $guestText = $guestOutput -join "`n"
     [IO.File]::WriteAllText((Join-Path $reportDir 'guest.log'), $guestText, $utf8)
     $driverBound = $guestExit -eq 0 -and $guestText -match '(?m)^VIRTIO_DRM_BOUND$' -and $guestText -match '(?m)^VIRTIO_GUEST_END$'
+    $displayModeVerified = $guestExit -eq 0 -and $guestText -match '(?m)^VIRTIO_DISPLAY_MODE_PASS$'
     $hostVisible = $guestText -match '\[drm\] features:.*\+host_visible'
     if (-not $driverBound) { throw 'Linux reached SSH, but VirtIO-GPU DRM binding failed. Inspect guest.log.' }
+    if (-not $displayModeVerified) { throw 'Linux VirtIO-GPU DRM binding succeeded, but no 1024x768 mode was reported. Inspect guest.log.' }
     if ($GpuBackend -eq 'venus' -and -not $hostVisible) { throw 'Linux rejected the Venus host-visible shared-memory region. Inspect guest.log.' }
     if ($VerifyGuestVulkan)
     {
@@ -757,7 +768,7 @@ exit "$workload_rc"
             timestamp = (Get-Date).ToString('o'); vmName = $vmName; gpuBackend = $GpuBackend
             sourceImage = $pin; diskMB = 20480; cpuCount = $CpuCount; memoryMB = $MemoryMB; chipset = $Chipset; sshBind = "127.0.0.1:$SshPort"
             created = $created; guestReady = $ready; sshReady = $sshReady; drmDriverBound = $driverBound
-            hostVisible = $hostVisible
+            displayModeVerified = $displayModeVerified; hostVisible = $hostVisible
             readySeconds = $readySeconds; hostVulkanDevice = $hostVulkanDevice
             runtimeDirectory = $runtime; vboxUserHome = $runtimeHome; runtimeHashes = $runtimeHashes
             vboxSupState = $vboxSupState; vboxSupWin32Exit = $vboxSupWin32Exit
@@ -768,7 +779,7 @@ exit "$workload_rc"
             saveRestoreVulkanExit = $saveRestoreVulkanExit; resetVerified = $resetVerified
             resetVulkanExit = $resetVulkanExit; phase = $phase; failure = $failure
             cleanupErrors = @($cleanupErrors)
-            passed = [bool]($driverBound -and -not $failure -and -not $cleanupErrors.Count -and
+            passed = [bool]($driverBound -and $displayModeVerified -and -not $failure -and -not $cleanupErrors.Count -and
                 (-not $VerifySaveRestore -or $saveRestoreVerified) -and
                 (-not $VerifyReset -or $resetVerified))
         } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $reportDir 'report.json') -Encoding utf8
