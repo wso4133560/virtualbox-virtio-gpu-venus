@@ -234,6 +234,7 @@ git ls-remote origin refs/heads/main
 - 当前 runtime 的 60 秒压力报告 `.build\\windows\\linux-venus-cleanup-stress60\\report.json`：`guestVulkanWorkloadVerified=true`、42923 次迭代、`cleanupErrors=[]`、`passed=true`；日志无 `stuck`、`expired ring` 或 `ring command rejected`。
 - 当前 runtime 的保存恢复报告 `.build\\windows\\linux-venus-cleanup-save5\\report.json`：`saveRestoreVerified=true`、恢复 Vulkan exit 0、初始 workload 3303 次、`cleanupErrors=[]`、`passed=true`。
 - 当前 runtime 的重置报告 `.build\\windows\\linux-venus-cleanup-reset5\\report.json`：`resetVerified=true`、reset Vulkan exit 0、初始 workload 3366 次、`cleanupErrors=[]`、`passed=true`。
+- 当前 runtime 的双 vCPU 报告 `.build\\windows\\linux-venus-cleanup-cpu2-30\\report.json`：`cpuCount=2`、30 秒 workload 17307 次、`guestVulkanVerified=true`、`cleanupErrors=[]`、`passed=true`；日志无 ring fatal。
 - 当前开发包 `.build\\windows\\virtualbox-virtio-gpu-venus-cleanup-final.zip`：257 个文件，ZIP SHA256 `B8123797E6DA7F119CF1083512D6CA0CB270421D73A39F1802E1409A3B030C0A`；包验收的 manifest、版本、VirtIO-GPU/Venus 回归和 PE/VMMR0 加载均通过。
 - 额外实验表明，单独为 `vkCreateBuffer` 创建未绑定的 host `VkBuffer` 会在约 1024 次 guest queue submit 后触发 fence/ring fatal；上一版 runtime 同一 workload 通过。该路径已撤回，当前 buffer 继续使用已有 blob/resource-backed host `VkBuffer`，不把未绑定的重复对象宣称为完成能力。
 
