@@ -1252,6 +1252,25 @@ static bool virtioGpuR3QueryImageMemoryRequirements(PVIRTIOGPU pThis, uint64_t u
     return true;
 }
 
+/* Query requirements from the host buffer that backs a blob resource.  The
+ * guest VkBuffer handle is only a protocol identity; its memory is represented
+ * by the resource binding table and the host-visible resource VkBuffer. */
+static bool virtioGpuR3QueryBufferMemoryRequirements(PVIRTIOGPU pThis, uint64_t uBuffer,
+                                                     VkMemoryRequirements *pRequirements)
+{
+    if (!pThis || !pRequirements)
+        return false;
+    PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResourceByVkBuffer(pThis, uBuffer);
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr = virtioGpuR3GetVenusDeviceProcAddr(pThis);
+    PFN_vkGetBufferMemoryRequirements pfnGet = pfnGetDeviceProcAddr
+        ? (PFN_vkGetBufferMemoryRequirements)pfnGetDeviceProcAddr(pThis->hVkDevice,
+                                                                  "vkGetBufferMemoryRequirements") : NULL;
+    if (!pRes || !pRes->fVulkanBuffer || pRes->hVkBuffer == VK_NULL_HANDLE || !pfnGet)
+        return false;
+    pfnGet(pThis->hVkDevice, pRes->hVkBuffer, pRequirements);
+    return true;
+}
+
 static void virtioGpuR3DestroyOpaqueHostObject(PVIRTIOGPU pThis,
                                                 PVIRTIOGPUOPAQUEOBJECT pObject)
 {
@@ -3303,14 +3322,20 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
             {
                 PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResourceByVkBuffer(pThis, uBuffer);
                 PVIRTIOGPUBUFFERBINDING pBinding = virtioGpuR3FindBufferBinding(pThis, uBuffer);
-                uint64_t cbReq = pBinding && pBinding->cbBuffer ? RT_ALIGN_64(pBinding->cbBuffer, 256)
+                VkMemoryRequirements Requirements = {};
+                bool const fHostRequirements = virtioGpuR3QueryBufferMemoryRequirements(
+                    pThis, uBuffer, &Requirements);
+                uint64_t cbReq = fHostRequirements ? Requirements.size
+                               : pBinding && pBinding->cbBuffer ? RT_ALIGN_64(pBinding->cbBuffer, 256)
                                : pRes ? pRes->cbPixels : UINT64_C(4096);
-                uint32_t fTypes = pThis->VkMemoryProperties.memoryTypeCount >= 32
-                                ? UINT32_MAX
-                                : pThis->VkMemoryProperties.memoryTypeCount
-                                ? RT_BIT_32(pThis->VkMemoryProperties.memoryTypeCount) - 1 : 1;
+                uint64_t const uAlignment = fHostRequirements ? Requirements.alignment : 256;
+                uint32_t const fTypes = fHostRequirements ? Requirements.memoryTypeBits
+                                      : pThis->VkMemoryProperties.memoryTypeCount >= 32
+                                      ? UINT32_MAX
+                                      : pThis->VkMemoryProperties.memoryTypeCount
+                                      ? RT_BIT_32(pThis->VkMemoryProperties.memoryTypeCount) - 1 : 1;
                 if (!virtioGpuR3VenusPutU64(&Enc, cbReq)
-                    || !virtioGpuR3VenusPutU64(&Enc, 256)
+                    || !virtioGpuR3VenusPutU64(&Enc, uAlignment)
                     || !virtioGpuR3VenusPutU32(&Enc, fTypes))
                     return false;
             }
@@ -3331,16 +3356,22 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
             {
                 PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResourceByVkBuffer(pThis, uBuffer);
                 PVIRTIOGPUBUFFERBINDING pBinding = virtioGpuR3FindBufferBinding(pThis, uBuffer);
-                uint64_t cbReq = pBinding && pBinding->cbBuffer ? RT_ALIGN_64(pBinding->cbBuffer, 256)
+                VkMemoryRequirements Requirements = {};
+                bool const fHostRequirements = virtioGpuR3QueryBufferMemoryRequirements(
+                    pThis, uBuffer, &Requirements);
+                uint64_t cbReq = fHostRequirements ? Requirements.size
+                               : pBinding && pBinding->cbBuffer ? RT_ALIGN_64(pBinding->cbBuffer, 256)
                                : pRes ? pRes->cbPixels : UINT64_C(4096);
-                uint32_t fTypes = pThis->VkMemoryProperties.memoryTypeCount >= 32
-                                ? UINT32_MAX
-                                : pThis->VkMemoryProperties.memoryTypeCount
-                                ? RT_BIT_32(pThis->VkMemoryProperties.memoryTypeCount) - 1 : 1;
+                uint64_t const uAlignment = fHostRequirements ? Requirements.alignment : 256;
+                uint32_t const fTypes = fHostRequirements ? Requirements.memoryTypeBits
+                                      : pThis->VkMemoryProperties.memoryTypeCount >= 32
+                                      ? UINT32_MAX
+                                      : pThis->VkMemoryProperties.memoryTypeCount
+                                      ? RT_BIT_32(pThis->VkMemoryProperties.memoryTypeCount) - 1 : 1;
                 if (!virtioGpuR3VenusPutU32(&Enc, VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2)
                     || !virtioGpuR3VenusPutU64(&Enc, 0)
                     || !virtioGpuR3VenusPutU64(&Enc, cbReq)
-                    || !virtioGpuR3VenusPutU64(&Enc, 256)
+                    || !virtioGpuR3VenusPutU64(&Enc, uAlignment)
                     || !virtioGpuR3VenusPutU32(&Enc, fTypes))
                     return false;
             }

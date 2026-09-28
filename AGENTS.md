@@ -238,4 +238,11 @@ git ls-remote origin refs/heads/main
 - 当前开发包 `.build\\windows\\virtualbox-virtio-gpu-venus-cleanup-final.zip`：257 个文件，ZIP SHA256 `B8123797E6DA7F119CF1083512D6CA0CB270421D73A39F1802E1409A3B030C0A`；包验收的 manifest、版本、VirtIO-GPU/Venus 回归和 PE/VMMR0 加载均通过。
 - 额外实验表明，单独为 `vkCreateBuffer` 创建未绑定的 host `VkBuffer` 会在约 1024 次 guest queue submit 后触发 fence/ring fatal；上一版 runtime 同一 workload 通过。该路径已撤回，当前 buffer 继续使用已有 blob/resource-backed host `VkBuffer`，不把未绑定的重复对象宣称为完成能力。
 
+## 2026-09-28 buffer memory requirements 语义
+
+- `GET_BUFFER_MEMORY_REQUIREMENTS`（命令 30）和 `GET_BUFFER_MEMORY_REQUIREMENTS2`（命令 145）现在优先查询 blob/resource-backed host `VkBuffer` 的真实 `VkMemoryRequirements`，返回宿主驱动给出的 size、alignment 和 memory type bits；没有已绑定 host buffer 的协议身份仍使用原有有界回退值。
+- 宿主回归 `.build\\windows\\virtio-gpu-validation.json` 使用该实现通过 56 组，新增 buffer requirements 查询的非零 size/alignment/type 检查，`-IncludeRegistration` 通过；当前 `VBoxDD.dll` SHA256 为 `F49C3DD98DCD5155AF0A2CA15692225BBE9AF9F509C09B5FBD55E9CAC544511D`。
+- 客体报告 `.build\\windows\\linux-venus-buffer-query10\\report.json` 使用同一 runtime 通过 `vulkaninfo` 和 10 秒 host-visible fill/readback workload（7218 次迭代），`guestVulkanExit=0`、`guestVulkanWorkloadExit=0`、`vboxSupState=RUNNING`、`cleanupErrors=[]`、`passed=true`；日志无 `stuck`、`expired ring` 或 `ring command rejected`。
+- 当前开发包 `.build\\windows\\virtualbox-virtio-gpu-venus-buffer-query-final.zip` 共 257 个文件，ZIP SHA256 `F328580C8A1235E1120525FA580D2A8D1D4BCEC30739773BDE2015B65E7959A2`；包内 `VBoxDD.dll` SHA256 为 `F49C3DD98DCD5155AF0A2CA15692225BBE9AF9F509C09B5FBD55E9CAC544511D`，manifest、版本、VirtIO-GPU/Venus 回归和 PE/VMMR0 加载均通过。
+
 只提交本阶段相关文件，保留测试报告在 `.build` 下，不要提交临时 VM 密钥、磁盘或 core dump。
