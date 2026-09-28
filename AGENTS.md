@@ -11,7 +11,7 @@
 - 工作目录：`D:\code\virtualbox-virtio-gpu-venus`
 - 分支：`main`
 - 远端：`git@github.com:wso4133560/virtualbox-virtio-gpu-venus.git`
-- 本轮源码验证基于工作树最终 DLL `6479C99D37AC656CE7E61A9A58D0B3C5E6855157DDADB0238DFCD88297C871AF`；提交哈希以 `git HEAD` 和远端分支为准。
+- 本轮源码验证基于工作树最终 DLL `B56CA6211B7C6DC5D602C6F4D1558BC33CCF8065B73976EFA95DA061B3CE9DE7`；提交哈希以 `git HEAD` 和远端分支为准。
 - 前两个相关提交：`e239d8c9`（Replay recorded Venus command buffers on submit）、`81dc9bf9`（Package current Venus guest evidence）；更早提交 `2976c1c5`（ring wrap-around/reply bounds）、`72421ab1`（zero output handles in Venus creates）。
 - 开始新工作先执行 `git status --short`；交接时应保持工作树干净。
 
@@ -57,7 +57,7 @@ kmk: Failed to create worker threads
 .\tools\test-virtio-gpu.ps1 -TimeoutSeconds 60 -IncludeRegistration
 ```
 
-结果：最近一次无压力回归退出码 `0`、共 `49` 个测试组通过；本次报告 `.build\windows\virtio-gpu-validation.json` 来自当前 DLL 的 5 秒压力回归，共 `50` 个测试组通过，`missingGroups=[]`，压力组完成 `453568` 次 fill（约 `90713 fills/s`）。回归包含 blob resource/Vulkan backing、ring metadata/reply/progress、multi-stream framing/reply cursor、ring 尾部 wrap-around 与 reply 越界、Vulkan transfer/clear/barrier/blit/fill/update、binary/timeline semaphore query/signal/wait、classic/submit2 wait-signal、save/load、以及从构建产物注册 VBoxDD 的检查。
+结果：当前报告 `.build\windows\virtio-gpu-validation.json` 退出码 `0`，51 个测试组通过、`missingGroups=[]`。回归包含 blob resource/Vulkan backing、ring metadata/reply/progress、multi-stream framing/reply cursor、ring 尾部 wrap-around 与 reply 越界、Vulkan transfer/clear/barrier/blit/fill/update、binary/timeline semaphore query/signal/wait、classic/submit2 wait-signal、对象依赖顺序 save/load，以及从构建产物注册 VBoxDD 的检查。
 
 这表示 Windows 用户态传输、设备回调和宿主 Vulkan 路径通过了当前回归边界。
 
@@ -105,6 +105,10 @@ kmk: Failed to create worker threads
 - 最终边界修复后的标准报告 `.build\windows\linux-venus-timeline-final\report.json`：`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`guestVulkanExit=0`、`guestVulkanWorkloadExit=0`、`vboxSupState=RUNNING`、`cleanupErrors=[]`、`passed=true`；`VBoxDD.dll` SHA256 为 `D0DCB3ECE55F71B861371B58A6BB29A8FC1C81C9CCCA8847CFAB499BA24178BC`。
 - 当前 timeline semaphore 改动后的 saved-state 报告 `.build\windows\linux-venus-timeline-save\report.json`：`saveRestoreVerified=true`、`saveRestoreVulkanExit=0`、`cleanupErrors=[]`、`passed=true`；恢复日志同时包含 `VULKANINFO_PASS`、`VULKAN_WORKLOAD_PASS` 和退出码 0。
 - 当前对象分发和录制语义改动后的宿主回归 `.build\windows\virtio-gpu-validation.json`：最新无压力回归 51 组通过，包含 shader/pipeline layout/sampler/descriptor set layout/descriptor pool opaque object 生命周期、录制阶段延迟执行、多 stream descriptor/reply position、跨 ring 尾部命令读取和 reply seek 边界检查。
+- 当前 host Vulkan object 依赖顺序修复后的客体标准报告 `.build\windows\linux-venus-host-objects7\report.json`：`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`guestVulkanWorkloadIterations=3268`、`guestVulkanWorkloadExit=0`、`cleanupErrors=[]`、`passed=true`；运行时 `VBoxDD.dll` SHA256 为 `B56CA6211B7C6DC5D602C6F4D1558BC33CCF8065B73976EFA95DA061B3CE9DE7`。
+- 当前 host Vulkan object 依赖顺序修复后的 30 秒客体压力报告 `.build\windows\linux-venus-host-objects30-7\report.json`：`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`guestVulkanWorkloadIterations=21195`、`guestVulkanWorkloadExit=0`、`cleanupErrors=[]`、`passed=true`；日志无 `ring command rejected`、`stuck` 或 `expired ring`。
+- 当前 host Vulkan object 依赖顺序修复后的独立 saved-state 报告 `.build\windows\linux-venus-host-objects-save7\report.json`：`saveRestoreVerified=true`、`saveRestoreVulkanExit=0`、`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`cleanupErrors=[]`、`passed=true`；首次/恢复 workload 分别 2924/3073 次，两个日志均包含 `VULKANINFO_PASS` 与 `VULKAN_WORKLOAD_PASS`。
+- 当前 host Vulkan object 依赖顺序修复后的独立 reset 报告 `.build\windows\linux-venus-host-objects-reset7\report.json`：`resetVerified=true`、`resetVulkanExit=0`、`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`cleanupErrors=[]`、`passed=true`；首次/reset workload 分别 3087/3407 次，两个日志均包含 `VULKANINFO_PASS` 与 `VULKAN_WORKLOAD_PASS`。
 - 当前对象 ID dispatcher 改动后的客体标准报告 `.build\windows\linux-venus-final-object-id\report.json`：`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`guestVulkanExit=0`、`guestVulkanWorkloadExit=0`、`vboxSupState=RUNNING`、`cleanupErrors=[]`、`passed=true`；运行时 `VBoxDD.dll` SHA256 为 `E0FF994AC0AFCFB2BAD4B74DA4790CEFB03A716714D37F219BF63AA45F24A157`，日志无 `ring command rejected`。
 - 当前对象 ID dispatcher 改动后的客体重复启动报告 `.build\windows\linux-venus-final-object-id-repeat\report.json`：`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`guestVulkanExit=0`、`guestVulkanWorkloadExit=0`、`cleanupErrors=[]`、`passed=true`；运行时 `VBoxDD.dll` SHA256 同为 `E0FF994AC0AFCFB2BAD4B74DA4790CEFB03A716714D37F219BF63AA45F24A157`。
 - 当前构建的客体 saved-state 报告 `.build\windows\linux-venus-final-object-id-save\report.json`：`saveRestoreVerified=true`、`saveRestoreVulkanExit=0`、`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`cleanupErrors=[]`、`passed=true`；第一次和恢复后的日志均包含 `VULKANINFO_PASS`、`VULKAN_WORKLOAD_PASS`，且无 ring rejection。
@@ -112,7 +116,7 @@ kmk: Failed to create worker threads
 - 当前 reply cursor/multi-stream 修复后的客体重复启动报告 `.build\windows\linux-venus-cursor-final-repeat\report.json`：`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`guestVulkanExit=0`、`guestVulkanWorkloadExit=0`、`cleanupErrors=[]`、`passed=true`；运行时 `VBoxDD.dll` SHA256 同为 `3CA41E3DEB841CA85B04B62B8FD272777C62365253410F660532E1B00BFAB411`。
 - 当前 reply cursor/multi-stream 修复后的客体 saved-state 报告 `.build\windows\linux-venus-cursor-final-save\report.json`：`saveRestoreVerified=true`、`saveRestoreVulkanExit=0`、`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`cleanupErrors=[]`、`passed=true`；首次和恢复日志均包含 `VULKANINFO_PASS`、`VULKAN_WORKLOAD_PASS`，且无 ring rejection。
 - 当前 reply cursor/multi-stream 修复后的客体 reset 报告 `.build\windows\linux-venus-cursor-final-reset\report.json`：`resetVerified=true`、`resetVulkanExit=0`、`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`cleanupErrors=[]`、`passed=true`；运行时 `VBoxDD.dll` SHA256 同为 `3CA41E3DEB841CA85B04B62B8FD272777C62365253410F660532E1B00BFAB411`。
-- 当前最终运行时包 `.build\windows\virtualbox-virtio-gpu-venus-final.zip`：213 个文件，SHA256 为 `F4443594FF6CF8BA729625077380DE6310C5354720F09E9C47E6E164509DB4A6`；包内包含本阶段源码文档、宿主 51 组回归、对象分发、录制阶段延迟执行、30 秒压力、saved-state、reset 和最终 DLL 客体报告。manifest、VBoxManage 版本、VirtIO-GPU/Venus 回归、PE/VMMR0 加载验收均通过。
+- 当前最终运行时包 `.build\windows\virtualbox-virtio-gpu-venus-final.zip`：235 个文件，外部 ZIP SHA256 为 `049A8BB211F42482CB42B5149A7894DABD2523CF3C4CDA94769B03A95231A440`；包内包含本阶段源码文档、宿主 51 组回归、对象分发、30 秒压力、标准 workload、saved-state、reset 和最终 DLL 客体报告。manifest、VBoxManage 版本、VirtIO-GPU/Venus 回归、PE/VMM0 加载验收均通过。
 - 当前命令缓冲区重放修复后的客体压力报告 `.build\windows\linux-venus-command-buffer-replay30\report.json`：`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`guestVulkanWorkloadIterations=21266`、`workloadSeconds=30`、`cleanupErrors=[]`、`passed=true`。该报告的 `VBoxDD.dll` SHA256 为 `BBA10F4168EAB68C616DD61F3BA81650BB3248F39946C84E15744B92BE1A7EF1`。
 - 当前最终 DLL 的客体报告 `.build\windows\linux-venus-final-current5\report.json`：`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`guestVulkanWorkloadIterations=3001`、`workloadSeconds=5`、`vboxSupState=RUNNING`、`cleanupErrors=[]`、`passed=true`；`VBoxDD.dll` SHA256 为 `4A785BEA01F06DA03CEB8BDD84FDB963E881E25F072E8B73F881DF4F3F419040`。
 - 同一命令缓冲区重放实现的 saved-state 与 reset 报告分别为 `.build\windows\linux-venus-command-buffer-replay-save5\report.json`（`saveRestoreVerified=true`、恢复后 Vulkan exit 0）和 `.build\windows\linux-venus-command-buffer-replay-reset5\report.json`（`resetVerified=true`、reset 后 Vulkan exit 0），两者均 `cleanupErrors=[]`、`passed=true`。这两份报告对应的中间 DLL SHA256 为 `BBA10F4168EAB68C616DD61F3BA81650BB3248F39946C84E15744B92BE1A7EF1`；最终 DLL 已用 `linux-venus-final-current5` 复验。
@@ -135,11 +139,11 @@ kmk: Failed to create worker threads
 9. `vkSetReplyCommandStreamMESA` 保存 reply resource/offset/size，并初始化 reply cursor。
 10. `vkSeekReplyCommandStreamMESA`（命令类型 `179`）校验并更新 reply cursor；reply 控制命令按当前 cursor 写入共享 reply stream 并推进 4-byte reply slot，拒绝无效 stream/cursor。
 11. `vkExecuteCommandStreamsMESA` 从共享 blob 读取 descriptor/command stream，处理多 stream、显式 reply position 和嵌套 ring 命令，并执行当前支持的 transfer/clear/barrier/blit/fill/update 子集。
-12. ring reply cursor、reply validity、buffer/memory binding、有限 command buffer/fence/binary/timeline semaphore 生命周期状态、classic/`vkQueueSubmit2` wait-signal、`vkGetSemaphoreCounterValue`/`vkWaitSemaphores`/`vkSignalSemaphore`、idle 回复，以及 saved-state version `19` 的 save/load 和一致性检查。
+12. ring reply cursor、reply validity、buffer/memory binding、有限 command buffer/fence/binary/timeline semaphore 生命周期状态、classic/`vkQueueSubmit2` wait-signal、`vkGetSemaphoreCounterValue`/`vkWaitSemaphores`/`vkSignalSemaphore`、idle 回复，以及 saved-state version `20` 的 save/load 和一致性检查。
 13. 对已支持的 transfer/barrier command stream 保存有界命令字节，在 `vkQueueSubmit`/`vkQueueSubmit2` 中按 command-buffer 顺序重放；Begin/Reset/Free 清理旧记录，saved-state 持久化命令流，修复 Mesa fence feedback slot 在 reset 后未被重新写入的问题。
 14. image object handle 到已绑定 host-visible resource 的统一解析；环命令与 `SUBMIT_3D` 的 image/buffer transfer、clear、barrier、copy、blit 路径不再强制截断 64 位 Vulkan handle，并保留旧 resource ID 回退。
 15. `vkGetDeviceMemoryCommitment`、`vkGetImageMemoryRequirements`、`vkGetImageMemoryRequirements2`、`vkBindImageMemory`、`vkBindImageMemory2` 的有界 framing/reply 和 binding-table 状态更新。
-16. 有界 opaque Vulkan object table 已覆盖 `vkCreate/DestroyShaderModule`、`vkCreate/DestroyPipelineLayout`、`vkCreate/DestroySampler`、`vkCreate/DestroyDescriptorSetLayout` 和 `vkCreate/DestroyDescriptorPool`；创建参数、动态数组、句柄输出、销毁类型匹配和 saved-state 类型校验均已接入。
+16. 有界 opaque Vulkan object table 已覆盖 `vkCreate/DestroyShaderModule`、`vkCreate/DestroyPipelineLayout`、`vkCreate/DestroySampler`、`vkCreate/DestroyDescriptorSetLayout` 和 `vkCreate/DestroyDescriptorPool`；后四类已实际创建/销毁宿主 Vulkan 对象，create wire 有界保存并在 saved-state 恢复时重建，创建参数、动态数组、句柄输出、销毁类型匹配和 saved-state 类型校验均已接入。
 17. command buffer 录制阶段只保存已校验的 transfer/barrier/fill 命令，资源执行延迟到 queue submit/replay；这避免异步 memory bind 尚未可见时把合法录制命令误报为 ring fatal。
 
 当前宿主侧主要路径：

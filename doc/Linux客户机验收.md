@@ -50,6 +50,8 @@ $image = .\tools\get-linux-test-image.ps1
 
 对象生命周期改动后的复验报告为 `.build/windows/linux-venus-object-admin52/report.json`、`.build/windows/linux-venus-object-save-admin53/report.json` 和 `.build/windows/linux-venus-object-reset-admin55/report.json`：标准 Vulkan/workload、saved-state 恢复后的同一 workload、reset 后 workload 均通过，且 `cleanupErrors=[]`。
 
+当前 host Vulkan object 依赖顺序修复后的复验报告为 `.build/windows/linux-venus-host-objects7/report.json`、`.build/windows/linux-venus-host-objects30-7/report.json`、`.build/windows/linux-venus-host-objects-save7/report.json` 和 `.build/windows/linux-venus-host-objects-reset7/report.json`：标准 5 秒 workload 3268 次、30 秒 workload 21195 次，saved-state 初始/恢复 workload 2924/3073 次，reset 初始/恢复 workload 3087/3407 次；四份报告均 `passed=true`、`cleanupErrors=[]`，对应日志均包含 `VULKANINFO_PASS` 和 `VULKAN_WORKLOAD_PASS`。
+
 `vkQueueSubmit2`/idle 回复改动后的标准报告 `.build/windows/linux-venus-submit2-admin56/report.json` 同样满足 `guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`guestVulkanExit=0` 和 `cleanupErrors=[]`。
 
 ## 2026-09-14 协议修复证据

@@ -2117,6 +2117,7 @@ int main(int argc, char **argv)
                                                           &cbProtocolReply)
                   && cbProtocolReply == 4 && !virtioGpuR3FindBufferBinding(pGpu, uImage));
     RTTestSub(g_hTest, "Venus opaque shader and pipeline layout objects");
+    bool const fHostOpaqueObjects = pGpu->hVkDevice != VK_NULL_HANDLE;
     uint8_t abCreateShader[84] = { 0 };
     uint32_t uCreateShaderType = VIRTIOGPU_VK_CMD_CREATE_SHADER_MODULE;
     uint64_t fCreateShaderInfo = 1, fShaderPNext = 0, cbShaderCode = 4, cShaderWords = 1;
@@ -2193,6 +2194,11 @@ int main(int argc, char **argv)
                   && uCreatePipelineReplyResult == VK_SUCCESS && uPipelineLayoutObject != 0
                   && virtioGpuR3FindOpaqueObject(pGpu, uPipelineLayoutObject)
                   && virtioGpuR3FindOpaqueObject(pGpu, uPipelineLayoutObject)->uType == uCreatePipelineLayoutType);
+    if (fHostOpaqueObjects)
+    {
+        PVIRTIOGPUOPAQUEOBJECT pPipeline = virtioGpuR3FindOpaqueObject(pGpu, uPipelineLayoutObject);
+        RTTESTI_CHECK(pPipeline && pPipeline->hPipelineLayout != VK_NULL_HANDLE);
+    }
     uint8_t abDestroyPipelineLayout[32] = { 0 };
     uint32_t uDestroyPipelineLayoutType = VIRTIOGPU_VK_CMD_DESTROY_PIPELINE_LAYOUT;
     memcpy(abDestroyPipelineLayout + 0, &uDestroyPipelineLayoutType, sizeof(uDestroyPipelineLayoutType));
@@ -2229,6 +2235,11 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(cbProtocolReply == 24 && uSamplerObject
                   && virtioGpuR3FindOpaqueObject(pGpu, uSamplerObject)
                   && virtioGpuR3FindOpaqueObject(pGpu, uSamplerObject)->uType == uCreateSamplerType);
+    if (fHostOpaqueObjects)
+    {
+        PVIRTIOGPUOPAQUEOBJECT pSampler = virtioGpuR3FindOpaqueObject(pGpu, uSamplerObject);
+        RTTESTI_CHECK(pSampler && pSampler->hSampler != VK_NULL_HANDLE);
+    }
     uint8_t abDestroyOpaque[32] = { 0 };
     uint32_t uDestroySamplerType = VIRTIOGPU_VK_CMD_DESTROY_SAMPLER;
     memcpy(abDestroyOpaque + 0, &uDestroySamplerType, sizeof(uDestroySamplerType));
@@ -2268,6 +2279,11 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(cbProtocolReply == 24 && uDescriptorLayoutObject
                   && virtioGpuR3FindOpaqueObject(pGpu, uDescriptorLayoutObject)
                   && virtioGpuR3FindOpaqueObject(pGpu, uDescriptorLayoutObject)->uType == uCreateDescriptorLayoutType);
+    if (fHostOpaqueObjects)
+    {
+        PVIRTIOGPUOPAQUEOBJECT pLayout = virtioGpuR3FindOpaqueObject(pGpu, uDescriptorLayoutObject);
+        RTTESTI_CHECK(pLayout && pLayout->hDescriptorSetLayout != VK_NULL_HANDLE);
+    }
     uint32_t uDestroyDescriptorLayoutType = VIRTIOGPU_VK_CMD_DESTROY_DESCRIPTOR_SET_LAYOUT;
     memcpy(abDestroyOpaque + 0, &uDestroyDescriptorLayoutType, sizeof(uDestroyDescriptorLayoutType));
     memcpy(abDestroyOpaque + 16, &uDescriptorLayoutObject, sizeof(uDescriptorLayoutObject));
@@ -2304,6 +2320,11 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(cbProtocolReply == 24 && uDescriptorPoolObject
                   && virtioGpuR3FindOpaqueObject(pGpu, uDescriptorPoolObject)
                   && virtioGpuR3FindOpaqueObject(pGpu, uDescriptorPoolObject)->uType == uCreateDescriptorPoolType);
+    if (fHostOpaqueObjects)
+    {
+        PVIRTIOGPUOPAQUEOBJECT pPool = virtioGpuR3FindOpaqueObject(pGpu, uDescriptorPoolObject);
+        RTTESTI_CHECK(pPool && pPool->hDescriptorPool != VK_NULL_HANDLE);
+    }
     uint32_t uDestroyDescriptorPoolType = VIRTIOGPU_VK_CMD_DESTROY_DESCRIPTOR_POOL;
     memcpy(abDestroyOpaque + 0, &uDestroyDescriptorPoolType, sizeof(uDestroyDescriptorPoolType));
     memcpy(abDestroyOpaque + 16, &uDescriptorPoolObject, sizeof(uDescriptorPoolObject));
@@ -3528,8 +3549,73 @@ int main(int argc, char **argv)
     pGpu->aContexts[0].uContextId = 77;
     pGpu->aContexts[0].cchName = 4;
     memcpy(pGpu->aContexts[0].szName, "save", 5);
-    pGpu->aOpaqueObjects[0].uObject = UINT64_C(0x100000123);
-    pGpu->aOpaqueObjects[0].uType = VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_POOL;
+    uint64_t uSavedDummyPool = 0;
+    memcpy(abCreateDescriptorPool + 72, &uSavedDummyPool, sizeof(uSavedDummyPool));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abCreateDescriptorPool,
+                                                       sizeof(abCreateDescriptorPool), abProtocolReply,
+                                                       sizeof(abProtocolReply), &cbProtocolReply));
+    memcpy(&uSavedDummyPool, abProtocolReply + 16, sizeof(uSavedDummyPool));
+    uint64_t uSavedSampler = 0;
+    memcpy(abCreateSampler + 116, &uSavedSampler, sizeof(uSavedSampler));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abCreateSampler,
+                                                       sizeof(abCreateSampler), abProtocolReply,
+                                                       sizeof(abProtocolReply), &cbProtocolReply));
+    memcpy(&uSavedSampler, abProtocolReply + 16, sizeof(uSavedSampler));
+    uint32_t const uDestroyPoolType = VIRTIOGPU_VK_CMD_DESTROY_DESCRIPTOR_POOL;
+    memcpy(abDestroyOpaque + 0, &uDestroyPoolType, sizeof(uDestroyPoolType));
+    memcpy(abDestroyOpaque + 16, &uSavedDummyPool, sizeof(uSavedDummyPool));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abDestroyOpaque,
+                                                       sizeof(abDestroyOpaque), abProtocolReply,
+                                                       sizeof(abProtocolReply), &cbProtocolReply));
+    uint8_t abSavedLayout[108] = { 0 };
+    memcpy(abSavedLayout, abCreateDescriptorLayout, 52);
+    memcpy(abSavedLayout + 84, abCreateDescriptorLayout + 52, 24);
+    uint32_t const cSavedBindings = 1, uSavedDescriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    uint32_t const fSavedStages = VK_SHADER_STAGE_FRAGMENT_BIT;
+    uint64_t const cSavedEncoded = 1;
+    memcpy(abSavedLayout + 40, &cSavedBindings, sizeof(cSavedBindings));
+    memcpy(abSavedLayout + 44, &cSavedEncoded, sizeof(cSavedEncoded));
+    memcpy(abSavedLayout + 56, &uSavedDescriptorType, sizeof(uSavedDescriptorType));
+    memcpy(abSavedLayout + 60, &cSavedBindings, sizeof(cSavedBindings));
+    memcpy(abSavedLayout + 64, &fSavedStages, sizeof(fSavedStages));
+    memcpy(abSavedLayout + 68, &cSavedEncoded, sizeof(cSavedEncoded));
+    memcpy(abSavedLayout + 76, &uSavedSampler, sizeof(uSavedSampler));
+    uint64_t uSavedLayout = 0;
+    memcpy(abSavedLayout + 100, &uSavedLayout, sizeof(uSavedLayout));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abSavedLayout, sizeof(abSavedLayout), &cbQueueCommand)
+                  && cbQueueCommand == sizeof(abSavedLayout)
+                  && virtioGpuR3EncodeVenusProtocolReply(pGpu, abSavedLayout, sizeof(abSavedLayout),
+                                                          abProtocolReply, sizeof(abProtocolReply),
+                                                          &cbProtocolReply));
+    memcpy(&uSavedLayout, abProtocolReply + 16, sizeof(uSavedLayout));
+    uint8_t abSavedPipeline[96] = { 0 };
+    memcpy(abSavedPipeline, abCreatePipelineLayout, 52);
+    memcpy(abSavedPipeline + 60, abCreatePipelineLayout + 52, 36);
+    memcpy(abSavedPipeline + 40, &cSavedBindings, sizeof(cSavedBindings));
+    memcpy(abSavedPipeline + 44, &cSavedEncoded, sizeof(cSavedEncoded));
+    memcpy(abSavedPipeline + 52, &uSavedLayout, sizeof(uSavedLayout));
+    uint64_t uSavedPipeline = 0;
+    memcpy(abSavedPipeline + 88, &uSavedPipeline, sizeof(uSavedPipeline));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abSavedPipeline, sizeof(abSavedPipeline), &cbQueueCommand)
+                  && cbQueueCommand == sizeof(abSavedPipeline)
+                  && virtioGpuR3EncodeVenusProtocolReply(pGpu, abSavedPipeline,
+                                                          sizeof(abSavedPipeline), abProtocolReply,
+                                                          sizeof(abProtocolReply), &cbProtocolReply));
+    memcpy(&uSavedPipeline, abProtocolReply + 16, sizeof(uSavedPipeline));
+    RTTESTI_CHECK(uSavedSampler && uSavedLayout && uSavedPipeline
+                  && virtioGpuR3FindOpaqueObject(pGpu, uSavedSampler)
+                  && virtioGpuR3FindOpaqueObject(pGpu, uSavedLayout)
+                  && virtioGpuR3FindOpaqueObject(pGpu, uSavedPipeline));
+    uint64_t uSavedDescriptorPoolObject = 0;
+    memcpy(abCreateDescriptorPool + 72, &uSavedDescriptorPoolObject, sizeof(uSavedDescriptorPoolObject));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abCreateDescriptorPool,
+                                                       sizeof(abCreateDescriptorPool), abProtocolReply,
+                                                       sizeof(abProtocolReply), &cbProtocolReply));
+    memcpy(&uSavedDescriptorPoolObject, abProtocolReply + 16, sizeof(uSavedDescriptorPoolObject));
+    RTTESTI_CHECK(uSavedDescriptorPoolObject != 0
+                  && virtioGpuR3FindOpaqueObject(pGpu, uSavedDescriptorPoolObject)
+                  && virtioGpuR3FindOpaqueObject(pGpu, uSavedDescriptorPoolObject)->cbCreate
+                     == sizeof(abCreateDescriptorPool));
     tstInitQueue(&pGpu->Virtio, 0);
     tstInitQueue(&pGpu->Virtio, 1);
     tstPost(&pGpu->Virtio, 0, 24, 408);
@@ -3543,9 +3629,26 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(Ssm.off == Ssm.cb && pGpu->Config.fEventsRead == 1);
     RTTESTI_CHECK(virtioGpuR3FindContext(pGpu, 77) && pGpu->aContexts[0].cchName == 4
                   && !memcmp(pGpu->aContexts[0].szName, "save", 4));
-    RTTESTI_CHECK(virtioGpuR3FindOpaqueObject(pGpu, UINT64_C(0x100000123))
-                  && virtioGpuR3FindOpaqueObject(pGpu, UINT64_C(0x100000123))->uType
-                     == VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_POOL);
+    RTTESTI_CHECK(virtioGpuR3FindOpaqueObject(pGpu, uSavedDescriptorPoolObject)
+                  && virtioGpuR3FindOpaqueObject(pGpu, uSavedDescriptorPoolObject)->uType
+                     == VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_POOL
+                  && virtioGpuR3FindOpaqueObject(pGpu, uSavedDescriptorPoolObject)->cbCreate
+                     == sizeof(abCreateDescriptorPool));
+    PVIRTIOGPUOPAQUEOBJECT pSavedSampler = virtioGpuR3FindOpaqueObject(pGpu, uSavedSampler);
+    PVIRTIOGPUOPAQUEOBJECT pSavedLayout = virtioGpuR3FindOpaqueObject(pGpu, uSavedLayout);
+    PVIRTIOGPUOPAQUEOBJECT pSavedPipeline = virtioGpuR3FindOpaqueObject(pGpu, uSavedPipeline);
+    RTTESTI_CHECK(pSavedSampler && pSavedLayout && pSavedPipeline
+                  && pSavedLayout->cbCreate == sizeof(abSavedLayout)
+                  && pSavedPipeline->cbCreate == sizeof(abSavedPipeline));
+    if (fHostOpaqueObjects)
+    {
+        PVIRTIOGPUOPAQUEOBJECT pSavedPool = virtioGpuR3FindOpaqueObject(pGpu, uSavedDescriptorPoolObject);
+        RTTESTI_CHECK(pSavedPool && pSavedPool->hDescriptorPool != VK_NULL_HANDLE);
+        RTTESTI_CHECK(pSavedSampler && pSavedLayout && pSavedPipeline
+                      && pSavedSampler->hSampler != VK_NULL_HANDLE
+                      && pSavedLayout->hDescriptorSetLayout != VK_NULL_HANDLE
+                      && pSavedPipeline->hPipelineLayout != VK_NULL_HANDLE);
+    }
     RTTESTI_CHECK(pGpu->Virtio.aVirtqueues[0].fAttached && pGpu->Virtio.aVirtqueues[1].fAttached);
     virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
     RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, 0) == 408);

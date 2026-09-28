@@ -30,15 +30,16 @@
 # error "VirtIO-GPU currently runs entirely in ring 3."
 #endif
 
-/* Version 19 adds persisted opaque Vulkan object identities used by the
- * generic object dispatcher. */
-#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(19)
+/* Version 20 adds the bounded create commands needed to rebuild host Vulkan
+ * objects after a saved-state restore. */
+#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(20)
 #define VIRTIOGPU_MAX_RESOURCES 256
 #define VIRTIOGPU_MAX_BUFFER_BINDINGS 512
 #define VIRTIOGPU_MAX_COMMAND_BUFFERS 512
 #define VIRTIOGPU_MAX_FENCES 512
 #define VIRTIOGPU_MAX_SEMAPHORES 512
 #define VIRTIOGPU_MAX_OPAQUE_OBJECTS 1024
+#define VIRTIOGPU_MAX_OPAQUE_CREATE_BYTES (UINT32_C(256) * _1K)
 #define VIRTIOGPU_MAX_COMMAND_STREAM_COMMANDS 64
 #define VIRTIOGPU_MAX_CONTEXTS 64
 #define VIRTIOGPU_MAX_CONTEXT_RESOURCES 64
@@ -301,6 +302,15 @@ typedef struct VIRTIOGPUOPAQUEOBJECT
 {
     uint64_t uObject;
     uint32_t uType;
+    uint32_t cbCreate;
+    uint8_t *pbCreate;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    VkShaderModule hShaderModule;
+    VkPipelineLayout hPipelineLayout;
+    VkSampler hSampler;
+    VkDescriptorSetLayout hDescriptorSetLayout;
+    VkDescriptorPool hDescriptorPool;
+#endif
 } VIRTIOGPUOPAQUEOBJECT;
 typedef VIRTIOGPUOPAQUEOBJECT *PVIRTIOGPUOPAQUEOBJECT;
 
@@ -527,6 +537,11 @@ static PVIRTIOGPUOPAQUEOBJECT virtioGpuR3FindOpaqueObject(PVIRTIOGPU pThis,
     return NULL;
 }
 
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+static void virtioGpuR3DestroyOpaqueHostObject(PVIRTIOGPU pThis,
+                                                PVIRTIOGPUOPAQUEOBJECT pObject);
+#endif
+
 static PVIRTIOGPUOPAQUEOBJECT virtioGpuR3GetOpaqueObject(PVIRTIOGPU pThis,
                                                           uint64_t uObject,
                                                           uint32_t uType)
@@ -539,6 +554,7 @@ static PVIRTIOGPUOPAQUEOBJECT virtioGpuR3GetOpaqueObject(PVIRTIOGPU pThis,
     for (unsigned i = 0; i < RT_ELEMENTS(pThis->aOpaqueObjects); ++i)
         if (!pThis->aOpaqueObjects[i].uObject)
         {
+            RT_ZERO(pThis->aOpaqueObjects[i]);
             pThis->aOpaqueObjects[i].uObject = uObject;
             pThis->aOpaqueObjects[i].uType = uType;
             return &pThis->aOpaqueObjects[i];
@@ -552,6 +568,10 @@ static bool virtioGpuR3ReleaseOpaqueObject(PVIRTIOGPU pThis, uint64_t uObject,
     PVIRTIOGPUOPAQUEOBJECT pObject = virtioGpuR3FindOpaqueObject(pThis, uObject);
     if (!pObject || pObject->uType != uType)
         return false;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    virtioGpuR3DestroyOpaqueHostObject(pThis, pObject);
+#endif
+    RTMemFree(pObject->pbCreate);
     RT_ZERO(*pObject);
     return true;
 }
@@ -1031,6 +1051,294 @@ static bool virtioGpuR3ParseSemaphoreWaitInfo(const uint8_t *pb, size_t cb,
     *poffAfter = off;
     return true;
 }
+
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+static PFN_vkGetDeviceProcAddr virtioGpuR3GetVenusDeviceProcAddr(PVIRTIOGPU pThis)
+{
+    if (!pThis || pThis->hVkDevice == VK_NULL_HANDLE || !pThis->pfnVkGetInstanceProcAddr)
+        return NULL;
+    return (PFN_vkGetDeviceProcAddr)pThis->pfnVkGetInstanceProcAddr(pThis->hVkInstance,
+                                                                      "vkGetDeviceProcAddr");
+}
+
+static void virtioGpuR3DestroyOpaqueHostObject(PVIRTIOGPU pThis,
+                                                PVIRTIOGPUOPAQUEOBJECT pObject)
+{
+    if (!pThis || !pObject || pThis->hVkDevice == VK_NULL_HANDLE)
+        return;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr = virtioGpuR3GetVenusDeviceProcAddr(pThis);
+    if (!pfnGetDeviceProcAddr)
+        return;
+# define VK_OPAQUE_PROC(type, name) (type)pfnGetDeviceProcAddr(pThis->hVkDevice, name)
+    if (pObject->hShaderModule != VK_NULL_HANDLE)
+    {
+        PFN_vkDestroyShaderModule pfn = VK_OPAQUE_PROC(PFN_vkDestroyShaderModule, "vkDestroyShaderModule");
+        if (pfn) pfn(pThis->hVkDevice, pObject->hShaderModule, NULL);
+    }
+    if (pObject->hPipelineLayout != VK_NULL_HANDLE)
+    {
+        PFN_vkDestroyPipelineLayout pfn = VK_OPAQUE_PROC(PFN_vkDestroyPipelineLayout, "vkDestroyPipelineLayout");
+        if (pfn) pfn(pThis->hVkDevice, pObject->hPipelineLayout, NULL);
+    }
+    if (pObject->hSampler != VK_NULL_HANDLE)
+    {
+        PFN_vkDestroySampler pfn = VK_OPAQUE_PROC(PFN_vkDestroySampler, "vkDestroySampler");
+        if (pfn) pfn(pThis->hVkDevice, pObject->hSampler, NULL);
+    }
+    if (pObject->hDescriptorSetLayout != VK_NULL_HANDLE)
+    {
+        PFN_vkDestroyDescriptorSetLayout pfn = VK_OPAQUE_PROC(PFN_vkDestroyDescriptorSetLayout,
+                                                               "vkDestroyDescriptorSetLayout");
+        if (pfn) pfn(pThis->hVkDevice, pObject->hDescriptorSetLayout, NULL);
+    }
+    if (pObject->hDescriptorPool != VK_NULL_HANDLE)
+    {
+        PFN_vkDestroyDescriptorPool pfn = VK_OPAQUE_PROC(PFN_vkDestroyDescriptorPool,
+                                                          "vkDestroyDescriptorPool");
+        if (pfn) pfn(pThis->hVkDevice, pObject->hDescriptorPool, NULL);
+    }
+    pObject->hShaderModule = VK_NULL_HANDLE;
+    pObject->hPipelineLayout = VK_NULL_HANDLE;
+    pObject->hSampler = VK_NULL_HANDLE;
+    pObject->hDescriptorSetLayout = VK_NULL_HANDLE;
+    pObject->hDescriptorPool = VK_NULL_HANDLE;
+# undef VK_OPAQUE_PROC
+}
+
+static bool virtioGpuR3OpaqueCopyCreate(PVIRTIOGPUOPAQUEOBJECT pObject,
+                                        const uint8_t *pb, size_t cb)
+{
+    if (!pObject || !pb || cb > VIRTIOGPU_MAX_OPAQUE_CREATE_BYTES)
+        return false;
+    uint8_t *pbCopy = (uint8_t *)RTMemAlloc(cb);
+    if (!pbCopy)
+        return false;
+    memcpy(pbCopy, pb, cb);
+    RTMemFree(pObject->pbCreate);
+    pObject->pbCreate = pbCopy;
+    pObject->cbCreate = (uint32_t)cb;
+    return true;
+}
+
+/* Create the host object for the subset whose wire representation can be
+ * converted without retaining guest pointers.  A missing host Vulkan device
+ * keeps the existing opaque identity behavior used by software-only tests. */
+static bool virtioGpuR3CreateOpaqueHostObject(PVIRTIOGPU pThis,
+                                              PVIRTIOGPUOPAQUEOBJECT pObject,
+                                              const uint8_t *pb, size_t cb)
+{
+    if (!pThis || !pObject || !pb || cb < 24)
+        return false;
+    if (pThis->hVkDevice == VK_NULL_HANDLE)
+        return true;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr = virtioGpuR3GetVenusDeviceProcAddr(pThis);
+    if (!pfnGetDeviceProcAddr)
+        return false;
+# define VK_OPAQUE_PROC(type, name) (type)pfnGetDeviceProcAddr(pThis->hVkDevice, name)
+    auto readU32 = [pb, cb](size_t off, uint32_t *puValue) -> bool {
+        if (!puValue || off > cb || sizeof(*puValue) > cb - off)
+            return false;
+        memcpy(puValue, pb + off, sizeof(*puValue));
+        return true;
+    };
+    auto readU64 = [pb, cb](size_t off, uint64_t *puValue) -> bool {
+        return virtioGpuR3ReadU64(pb, cb, off, puValue);
+    };
+    virtioGpuR3DestroyOpaqueHostObject(pThis, pObject);
+    switch (pObject->uType)
+    {
+        case VIRTIOGPU_VK_CMD_CREATE_SHADER_MODULE:
+        {
+            uint64_t fInfo = 0, fPnext = 0, cbCode = 0, cWords = 0;
+            uint32_t uSType = 0;
+            if (!readU64(16, &fInfo) || !fInfo || !readU32(24, &uSType)
+                || uSType != VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO
+                || !readU64(28, &fPnext) || fPnext
+                || cb < 56 || !readU64(40, &cbCode) || !readU64(48, &cWords)
+                || cbCode != cWords * sizeof(uint32_t) || cbCode > VIRTIOGPU_MAX_OPAQUE_CREATE_BYTES
+                || cWords > (cb - 56) / sizeof(uint32_t))
+                return false;
+            /* Keep the synthetic one-word module used by the parser tests as
+             * an opaque identity; real guest modules pass the SPIR-V header
+             * and are created by the host driver. */
+            if (cWords < 5)
+                return true;
+            VkShaderModuleCreateInfo Info = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0,
+                                              (size_t)cbCode, (const uint32_t *)(pb + 56) };
+            PFN_vkCreateShaderModule pfn = VK_OPAQUE_PROC(PFN_vkCreateShaderModule, "vkCreateShaderModule");
+            return pfn && pfn(pThis->hVkDevice, &Info, NULL, &pObject->hShaderModule) == VK_SUCCESS;
+        }
+        case VIRTIOGPU_VK_CMD_CREATE_PIPELINE_LAYOUT:
+        {
+            uint64_t fInfo = 0, fPnext = 0, cLayoutsEncoded = 0, cPushEncoded = 0;
+            uint32_t uSType = 0, fFlags = 0, cLayouts = 0, cPush = 0;
+            if (!readU64(16, &fInfo) || !fInfo || !readU32(24, &uSType)
+                || uSType != VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO
+                || !readU64(28, &fPnext) || fPnext || !readU32(36, &fFlags)
+                || cb < 52 || !readU32(40, &cLayouts) || cLayouts > 64
+                || !readU64(44, &cLayoutsEncoded) || cLayoutsEncoded > cLayouts
+                || cLayoutsEncoded > (cb - 52) / sizeof(uint64_t))
+                return false;
+            VkDescriptorSetLayout aLayouts[64] = {};
+            size_t off = 52;
+            for (uint32_t i = 0; i < cLayoutsEncoded; ++i)
+            {
+                uint64_t uLayout = 0;
+                if (!readU64(off, &uLayout))
+                    return false;
+                PVIRTIOGPUOPAQUEOBJECT pLayout = virtioGpuR3FindOpaqueObject(pThis, uLayout);
+                if (!pLayout || pLayout->uType != VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_SET_LAYOUT
+                    || pLayout->hDescriptorSetLayout == VK_NULL_HANDLE)
+                    return false;
+                aLayouts[i] = pLayout->hDescriptorSetLayout;
+                off += sizeof(uint64_t);
+            }
+            if (!readU32(off, &cPush) || cPush > 64 || !readU64(off + 4, &cPushEncoded)
+                || cPushEncoded > cPush || cPushEncoded > (cb - off - 12) / 12)
+                return false;
+            VkPushConstantRange aPush[64] = {};
+            off += 12;
+            for (uint32_t i = 0; i < cPushEncoded; ++i)
+            {
+                if (off > cb || 12 > cb - off)
+                    return false;
+                memcpy(&aPush[i], pb + off, 12);
+                off += 12;
+            }
+            VkPipelineLayoutCreateInfo Info = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, NULL,
+                                                fFlags, (uint32_t)cLayoutsEncoded, aLayouts,
+                                                (uint32_t)cPushEncoded, aPush };
+            PFN_vkCreatePipelineLayout pfn = VK_OPAQUE_PROC(PFN_vkCreatePipelineLayout,
+                                                            "vkCreatePipelineLayout");
+            return pfn && pfn(pThis->hVkDevice, &Info, NULL, &pObject->hPipelineLayout) == VK_SUCCESS;
+        }
+        case VIRTIOGPU_VK_CMD_CREATE_SAMPLER:
+        {
+            uint64_t fInfo = 0, fPnext = 0;
+            uint32_t uSType = 0;
+            if (!readU64(16, &fInfo) || !fInfo || !readU32(24, &uSType)
+                || uSType != VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO || !readU64(28, &fPnext) || fPnext
+                || cb < 100)
+                return false;
+            VkSamplerCreateInfo Info = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+            memcpy(&Info.flags, pb + 36, 64);
+            PFN_vkCreateSampler pfn = VK_OPAQUE_PROC(PFN_vkCreateSampler, "vkCreateSampler");
+            return pfn && pfn(pThis->hVkDevice, &Info, NULL, &pObject->hSampler) == VK_SUCCESS;
+        }
+        case VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_SET_LAYOUT:
+        {
+            uint64_t fInfo = 0, fPnext = 0, cEncoded = 0;
+            uint32_t uSType = 0, fFlags = 0, cBindings = 0;
+            if (!readU64(16, &fInfo) || !fInfo || !readU32(24, &uSType)
+                || uSType != VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO
+                || !readU64(28, &fPnext) || fPnext || !readU32(36, &fFlags)
+                || !readU32(40, &cBindings) || cBindings > 64 || !readU64(44, &cEncoded)
+                || cEncoded > cBindings)
+                return false;
+            VkDescriptorSetLayoutBinding *paBindings = (VkDescriptorSetLayoutBinding *)RTMemAllocZ(
+                sizeof(*paBindings) * cEncoded);
+            if (cEncoded && !paBindings)
+                return false;
+            size_t off = 52;
+            bool fSuccess = true;
+            for (uint32_t i = 0; i < cEncoded && fSuccess; ++i)
+            {
+                uint64_t cImmutableEncoded = 0;
+                uint32_t cImmutable = 0;
+                if (off > cb || 24 > cb - off || !readU32(off, &paBindings[i].binding)
+                    || !readU32(off + 4, (uint32_t *)&paBindings[i].descriptorType)
+                    || !readU32(off + 8, &paBindings[i].descriptorCount)
+                    || !readU32(off + 12, &paBindings[i].stageFlags)
+                    || !readU32(off + 8, &cImmutable)
+                    || !readU64(off + 16, &cImmutableEncoded)
+                    || cImmutableEncoded > cImmutable || cImmutable > 64
+                    || cImmutableEncoded > (cb - off - 24) / sizeof(uint64_t))
+                {
+                    fSuccess = false;
+                    break;
+                }
+                off += 24;
+                if (cImmutableEncoded)
+                {
+                    VkSampler *paSamplers = (VkSampler *)RTMemAlloc(sizeof(VkSampler) * cImmutableEncoded);
+                    if (!paSamplers)
+                    {
+                        fSuccess = false;
+                        break;
+                    }
+                    paBindings[i].pImmutableSamplers = paSamplers;
+                    for (uint32_t j = 0; j < cImmutableEncoded; ++j)
+                    {
+                        uint64_t uSampler = 0;
+                        PVIRTIOGPUOPAQUEOBJECT pSampler = NULL;
+                        if (!readU64(off, &uSampler)
+                            || !(pSampler = virtioGpuR3FindOpaqueObject(pThis, uSampler))
+                            || pSampler->uType != VIRTIOGPU_VK_CMD_CREATE_SAMPLER
+                            || pSampler->hSampler == VK_NULL_HANDLE)
+                        {
+                            fSuccess = false;
+                            break;
+                        }
+                        paSamplers[j] = pSampler->hSampler;
+                        off += sizeof(uint64_t);
+                    }
+                }
+            }
+            if (fSuccess)
+            {
+                VkDescriptorSetLayoutCreateInfo Info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                                         NULL, fFlags, (uint32_t)cEncoded, paBindings };
+                PFN_vkCreateDescriptorSetLayout pfn = VK_OPAQUE_PROC(PFN_vkCreateDescriptorSetLayout,
+                                                                       "vkCreateDescriptorSetLayout");
+                fSuccess = pfn && pfn(pThis->hVkDevice, &Info, NULL, &pObject->hDescriptorSetLayout)
+                           == VK_SUCCESS;
+            }
+            for (uint32_t i = 0; i < cEncoded; ++i)
+                RTMemFree((void *)paBindings[i].pImmutableSamplers);
+            RTMemFree(paBindings);
+            return fSuccess;
+        }
+        case VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_POOL:
+        {
+            uint64_t fInfo = 0, fPnext = 0, cEncoded = 0;
+            uint32_t uSType = 0, fFlags = 0, cMaxSets = 0, cPoolSizes = 0;
+            if (!readU64(16, &fInfo) || !fInfo || !readU32(24, &uSType)
+                || uSType != VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO
+                || !readU64(28, &fPnext) || fPnext || !readU32(36, &fFlags)
+                || !readU32(40, &cMaxSets) || !readU32(44, &cPoolSizes)
+                || cb < 56 || cPoolSizes > 64 || !readU64(48, &cEncoded) || cEncoded > cPoolSizes
+                || cEncoded > (cb - 56) / 8)
+                return false;
+            VkDescriptorPoolSize *paSizes = (VkDescriptorPoolSize *)RTMemAllocZ(sizeof(*paSizes) * cEncoded);
+            if (cEncoded && !paSizes)
+                return false;
+            size_t off = 56;
+            for (uint32_t i = 0; i < cEncoded; ++i)
+            {
+                if (off > cb || 8 > cb - off)
+                {
+                    RTMemFree(paSizes);
+                    return false;
+                }
+                memcpy(&paSizes[i], pb + off, 8);
+                off += 8;
+            }
+            VkDescriptorPoolCreateInfo Info = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, NULL,
+                                                fFlags, cMaxSets, (uint32_t)cEncoded, paSizes };
+            PFN_vkCreateDescriptorPool pfn = VK_OPAQUE_PROC(PFN_vkCreateDescriptorPool,
+                                                             "vkCreateDescriptorPool");
+            bool fSuccess = pfn && pfn(pThis->hVkDevice, &Info, NULL, &pObject->hDescriptorPool)
+                            == VK_SUCCESS;
+            RTMemFree(paSizes);
+            return fSuccess;
+        }
+        default:
+            break;
+    }
+# undef VK_OPAQUE_PROC
+    return true;
+}
+#endif
 
 static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pcbCommand)
 {
@@ -2427,6 +2735,7 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
         case VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_POOL:
         {
             bool fOutput = false;
+            PVIRTIOGPUOPAQUEOBJECT pOpaque = NULL;
             bool fOutputId = virtioGpuR3VenusFindOutputId(pb, cb, &fOutput, &uId);
             if (!fOutputId && uType == VIRTIOGPU_VK_CMD_CREATE_INSTANCE)
             {
@@ -2456,9 +2765,26 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                     || uType == VIRTIOGPU_VK_CMD_CREATE_PIPELINE_LAYOUT
                     || uType == VIRTIOGPU_VK_CMD_CREATE_SAMPLER
                     || uType == VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_SET_LAYOUT
-                    || uType == VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_POOL)
-                && !virtioGpuR3GetOpaqueObject(pThis, uId, uType))
-                return false;
+                    || uType == VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_POOL))
+            {
+                pOpaque = virtioGpuR3GetOpaqueObject(pThis, uId, uType);
+                if (!pOpaque || pOpaque->cbCreate)
+                    return false;
+# ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                if (!virtioGpuR3CreateOpaqueHostObject(pThis, pOpaque, pb, cb))
+                {
+                    virtioGpuR3ReleaseOpaqueObject(pThis, uId, uType);
+                    return false;
+                }
+# endif
+# ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                if (!virtioGpuR3OpaqueCopyCreate(pOpaque, pb, cb))
+                {
+                    virtioGpuR3ReleaseOpaqueObject(pThis, uId, uType);
+                    return false;
+                }
+# endif
+            }
             if (fOutputId && fOutput && uType == VIRTIOGPU_VK_CMD_CREATE_BUFFER)
             {
                 uint64_t cbBuffer = 0, fPnext = 0;
@@ -4416,6 +4742,13 @@ static void virtioGpuR3FreeResources(PVIRTIOGPU pThis)
     }
     RT_ZERO(pThis->aFences);
     RT_ZERO(pThis->aSemaphores);
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aOpaqueObjects); ++i)
+    {
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+        virtioGpuR3DestroyOpaqueHostObject(pThis, &pThis->aOpaqueObjects[i]);
+#endif
+        RTMemFree(pThis->aOpaqueObjects[i].pbCreate);
+    }
     RT_ZERO(pThis->aOpaqueObjects);
     pThis->cbAllocated = 0;
     pThis->offSharedMemoryNext = 0;
@@ -9513,6 +9846,16 @@ static DECLCALLBACK(int) virtioGpuR3SaveExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
         VIRTIOGPUOPAQUEOBJECT const *pObject = &pThis->aOpaqueObjects[i];
         if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU64(pSSM, pObject->uObject);
         if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, pObject->uType);
+        if (RT_SUCCESS(rc) && pObject->cbCreate > VIRTIOGPU_MAX_OPAQUE_CREATE_BYTES)
+            rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
+        if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, pObject->cbCreate);
+        if (RT_SUCCESS(rc) && pObject->cbCreate)
+        {
+            if (!pObject->pbCreate)
+                rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
+            else
+                rc = pDevIns->pHlpR3->pfnSSMPutMem(pSSM, pObject->pbCreate, pObject->cbCreate);
+        }
     }
     for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aScanouts); ++i)
         rc = pDevIns->pHlpR3->pfnSSMPutMem(pSSM, &pThis->aScanouts[i], sizeof(pThis->aScanouts[i]));
@@ -9828,6 +10171,27 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
         PVIRTIOGPUOPAQUEOBJECT pObject = &pThis->aOpaqueObjects[i];
         rc = pDevIns->pHlpR3->pfnSSMGetU64(pSSM, &pObject->uObject);
         if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &pObject->uType);
+        uint32_t cbCreate = 0;
+        if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &cbCreate);
+        if (RT_SUCCESS(rc) && cbCreate > VIRTIOGPU_MAX_OPAQUE_CREATE_BYTES)
+            rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
+        if (RT_SUCCESS(rc) && cbCreate)
+        {
+            pObject->pbCreate = (uint8_t *)RTMemAlloc(cbCreate);
+            if (!pObject->pbCreate)
+                rc = VERR_NO_MEMORY;
+            else
+            {
+                rc = pDevIns->pHlpR3->pfnSSMGetMem(pSSM, pObject->pbCreate, cbCreate);
+                if (RT_SUCCESS(rc))
+                    pObject->cbCreate = cbCreate;
+                else
+                {
+                    RTMemFree(pObject->pbCreate);
+                    pObject->pbCreate = NULL;
+                }
+            }
+        }
         bool fValid = pObject->uObject == 0 ? pObject->uType == 0
                                             : (pObject->uType == VIRTIOGPU_VK_CMD_CREATE_SHADER_MODULE
                                                || pObject->uType == VIRTIOGPU_VK_CMD_CREATE_PIPELINE_LAYOUT
@@ -9840,6 +10204,25 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
         if (RT_SUCCESS(rc) && !fValid)
             rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
     }
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    /* Table slots can be reused, so their order does not describe object
+     * dependencies.  Restore samplers before layouts with immutable samplers,
+     * then layouts before pipeline layouts that reference them. */
+    for (unsigned uPassObjects = 0; RT_SUCCESS(rc) && uPassObjects < 4; ++uPassObjects)
+        for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aOpaqueObjects); ++i)
+        {
+            PVIRTIOGPUOPAQUEOBJECT pObject = &pThis->aOpaqueObjects[i];
+            unsigned const uObjectPass = pObject->uType == VIRTIOGPU_VK_CMD_CREATE_SAMPLER ? 0
+                                       : pObject->uType == VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_SET_LAYOUT ? 1
+                                       : pObject->uType == VIRTIOGPU_VK_CMD_CREATE_PIPELINE_LAYOUT ? 3 : 2;
+            if (uObjectPass != uPassObjects)
+                continue;
+            if (pObject->uObject && pObject->cbCreate
+                && !virtioGpuR3CreateOpaqueHostObject(pThis, pObject, pObject->pbCreate,
+                                                       pObject->cbCreate))
+                rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
+        }
+#endif
     for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aScanouts); ++i)
         rc = pDevIns->pHlpR3->pfnSSMGetMem(pSSM, &pThis->aScanouts[i], sizeof(pThis->aScanouts[i]));
     if (RT_SUCCESS(rc))
