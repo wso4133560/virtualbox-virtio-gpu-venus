@@ -209,4 +209,13 @@ git rev-parse HEAD
 git ls-remote origin refs/heads/main
 ```
 
+## 2026-09-28 本轮最终证据
+
+- 提交 `1efdc39a450984bd1c1b46495bec7da09a77b28c` 已推送到 `origin/main`。
+- 宿主回归 `.build\\windows\\virtio-gpu-validation.json`：55 组通过，包含 physical image format、external buffer/fence/semaphore、descriptor set layout support、host-backed image layout/memory requirements；`-IncludeRegistration` 通过。
+- 客体标准报告 `.build\\windows\\linux-venus-image-next\\report.json`：`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、20 秒 workload 14142 次、`vboxSupState=RUNNING`、`passed=true`。
+- 客体 saved-state 报告 `.build\\windows\\linux-venus-image-save4\\report.json`：`saveRestoreVerified=true`、恢复 Vulkan exit 0、初始/恢复日志均含 `VULKANINFO_PASS` 和 `VULKAN_WORKLOAD_PASS`、`passed=true`。
+- 客体 reset 报告 `.build\\windows\\linux-venus-image-reset3\\report.json`：`resetVerified=true`、reset Vulkan exit 0、`passed=true`；reset 前增加 `vkDeviceWaitIdle` 后不再出现 `VBoxHeadless` 访问冲突。
+- 最终开发包 `.build\\windows\\virtualbox-virtio-gpu-venus-image-final.zip`：257 个文件，ZIP SHA256 `463CEF63F24CDBDC4C7EB8D5139E226E2B25F14102D04C00E2CB6958280E88F1`；包内外 `VBoxDD.dll` SHA256 `1D564863030A408124E348457F23708D5D9F9DD1081502755C24B625D6F523C6`，包校验通过。
+
 只提交本阶段相关文件，保留测试报告在 `.build` 下，不要提交临时 VM 密钥、磁盘或 core dump。
