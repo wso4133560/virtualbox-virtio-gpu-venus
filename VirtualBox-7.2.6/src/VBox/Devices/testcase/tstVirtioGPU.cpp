@@ -1931,6 +1931,170 @@ int main(int argc, char **argv)
                   && uPropertiesApiVersion == pGpu->VkProperties.apiVersion
                   && !strncmp(szPropertiesName, pGpu->VkProperties.deviceName,
                               sizeof(szPropertiesName)));
+    RTTestSub(g_hTest, "Venus physical image format properties query");
+    uint8_t abImageFormatProperties[56] = { 0 };
+    uint32_t uImageFormatPropertiesType = VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_IMAGE_FORMAT_PROPERTIES;
+    uint32_t uQueryImageFormat = VK_FORMAT_R8G8B8A8_UNORM;
+    uint32_t uQueryImageType = VK_IMAGE_TYPE_2D;
+    uint32_t uQueryImageTiling = VK_IMAGE_TILING_OPTIMAL;
+    uint32_t uQueryImageUsage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+                              | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    uint32_t uQueryImageFlags = 0;
+    uint64_t fImageFormatPropertiesOut = 1;
+    memcpy(abImageFormatProperties + 0, &uImageFormatPropertiesType, sizeof(uImageFormatPropertiesType));
+    memcpy(abImageFormatProperties + 8, &uPhysicalDeviceId, sizeof(uPhysicalDeviceId));
+    memcpy(abImageFormatProperties + 16, &uQueryImageFormat, sizeof(uQueryImageFormat));
+    memcpy(abImageFormatProperties + 20, &uQueryImageType, sizeof(uQueryImageType));
+    memcpy(abImageFormatProperties + 24, &uQueryImageTiling, sizeof(uQueryImageTiling));
+    memcpy(abImageFormatProperties + 28, &uQueryImageUsage, sizeof(uQueryImageUsage));
+    memcpy(abImageFormatProperties + 32, &uQueryImageFlags, sizeof(uQueryImageFlags));
+    memcpy(abImageFormatProperties + 36, &fImageFormatPropertiesOut,
+           sizeof(fImageFormatPropertiesOut));
+    size_t cbImageFormatCommand = 0;
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abImageFormatProperties,
+                                              sizeof(abImageFormatProperties),
+                                              &cbImageFormatCommand)
+                  && cbImageFormatCommand == sizeof(abImageFormatProperties)
+                  && virtioGpuR3EncodeVenusProtocolReply(pGpu, abImageFormatProperties,
+                                                         sizeof(abImageFormatProperties),
+                                                         abProtocolReply, sizeof(abProtocolReply),
+                                                         &cbProtocolReply));
+    uint32_t uImageFormatReplyType = 0, uImageFormatReplyResult = UINT32_MAX;
+    uint64_t uImageFormatReplyPointer = 0;
+    uint32_t uImageFormatMaxWidth = 0, uImageFormatMaxHeight = 0, uImageFormatMaxDepth = 0;
+    memcpy(&uImageFormatReplyType, abProtocolReply + 0, sizeof(uImageFormatReplyType));
+    memcpy(&uImageFormatReplyResult, abProtocolReply + 4, sizeof(uImageFormatReplyResult));
+    memcpy(&uImageFormatReplyPointer, abProtocolReply + 8, sizeof(uImageFormatReplyPointer));
+    memcpy(&uImageFormatMaxWidth, abProtocolReply + 16, sizeof(uImageFormatMaxWidth));
+    memcpy(&uImageFormatMaxHeight, abProtocolReply + 20, sizeof(uImageFormatMaxHeight));
+    memcpy(&uImageFormatMaxDepth, abProtocolReply + 24, sizeof(uImageFormatMaxDepth));
+    RTTESTI_CHECK(cbProtocolReply == 48
+                  && uImageFormatReplyType == uImageFormatPropertiesType
+                  && uImageFormatReplyPointer == 1
+                  && uImageFormatReplyResult == VK_SUCCESS
+                  && uImageFormatMaxWidth != 0 && uImageFormatMaxHeight != 0
+                  && uImageFormatMaxDepth != 0);
+    RTTestSub(g_hTest, "Venus external buffer, fence and semaphore queries");
+    uint8_t abExternalBuffer[68] = { 0 };
+    uint32_t uExternalBufferType = VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_EXTERNAL_BUFFER_PROPERTIES;
+    uint64_t fExternalInfo = 1, fExternalPNext = 0, fExternalOutput = 1;
+    uint32_t uExternalBufferSType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO;
+    uint32_t uExternalBufferFlags = 0, uExternalBufferUsage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    uint32_t uExternalBufferHandle = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+    memcpy(abExternalBuffer + 0, &uExternalBufferType, sizeof(uExternalBufferType));
+    memcpy(abExternalBuffer + 8, &uPhysicalDeviceId, sizeof(uPhysicalDeviceId));
+    memcpy(abExternalBuffer + 16, &fExternalInfo, sizeof(fExternalInfo));
+    memcpy(abExternalBuffer + 24, &uExternalBufferSType, sizeof(uExternalBufferSType));
+    memcpy(abExternalBuffer + 28, &fExternalPNext, sizeof(fExternalPNext));
+    memcpy(abExternalBuffer + 36, &uExternalBufferFlags, sizeof(uExternalBufferFlags));
+    memcpy(abExternalBuffer + 40, &uExternalBufferUsage, sizeof(uExternalBufferUsage));
+    memcpy(abExternalBuffer + 44, &uExternalBufferHandle, sizeof(uExternalBufferHandle));
+    memcpy(abExternalBuffer + 48, &fExternalOutput, sizeof(fExternalOutput));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abExternalBuffer, sizeof(abExternalBuffer),
+                                              &cbImageFormatCommand)
+                  && cbImageFormatCommand == sizeof(abExternalBuffer)
+                  && virtioGpuR3EncodeVenusProtocolReply(pGpu, abExternalBuffer,
+                                                         sizeof(abExternalBuffer), abProtocolReply,
+                                                         sizeof(abProtocolReply), &cbProtocolReply)
+                  && cbProtocolReply == 36);
+    uint32_t uExternalReplyType = 0, uExternalReplySType = 0;
+    uint64_t uExternalReplyPointer = 0;
+    memcpy(&uExternalReplyType, abProtocolReply + 0, sizeof(uExternalReplyType));
+    memcpy(&uExternalReplyPointer, abProtocolReply + 4, sizeof(uExternalReplyPointer));
+    memcpy(&uExternalReplySType, abProtocolReply + 12, sizeof(uExternalReplySType));
+    RTTESTI_CHECK(uExternalReplyType == uExternalBufferType && uExternalReplyPointer == 1
+                  && uExternalReplySType == VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES);
+
+    uint8_t abExternalFence[60] = { 0 };
+    uint32_t uExternalFenceType = VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_EXTERNAL_FENCE_PROPERTIES;
+    uint32_t uExternalFenceSType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_FENCE_INFO;
+    uint32_t uExternalFenceHandle = VK_EXTERNAL_FENCE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+    memcpy(abExternalFence + 0, &uExternalFenceType, sizeof(uExternalFenceType));
+    memcpy(abExternalFence + 8, &uPhysicalDeviceId, sizeof(uPhysicalDeviceId));
+    memcpy(abExternalFence + 16, &fExternalInfo, sizeof(fExternalInfo));
+    memcpy(abExternalFence + 24, &uExternalFenceSType, sizeof(uExternalFenceSType));
+    memcpy(abExternalFence + 28, &fExternalPNext, sizeof(fExternalPNext));
+    memcpy(abExternalFence + 36, &uExternalFenceHandle, sizeof(uExternalFenceHandle));
+    memcpy(abExternalFence + 40, &fExternalOutput, sizeof(fExternalOutput));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abExternalFence, sizeof(abExternalFence),
+                                              &cbImageFormatCommand)
+                  && cbImageFormatCommand == sizeof(abExternalFence)
+                  && virtioGpuR3EncodeVenusProtocolReply(pGpu, abExternalFence,
+                                                         sizeof(abExternalFence), abProtocolReply,
+                                                         sizeof(abProtocolReply), &cbProtocolReply)
+                  && cbProtocolReply == 36);
+    memcpy(&uExternalReplyType, abProtocolReply + 0, sizeof(uExternalReplyType));
+    memcpy(&uExternalReplyPointer, abProtocolReply + 4, sizeof(uExternalReplyPointer));
+    memcpy(&uExternalReplySType, abProtocolReply + 12, sizeof(uExternalReplySType));
+    RTTESTI_CHECK(uExternalReplyType == uExternalFenceType && uExternalReplyPointer == 1
+                  && uExternalReplySType == VK_STRUCTURE_TYPE_EXTERNAL_FENCE_PROPERTIES);
+
+    uint8_t abExternalSemaphore[60] = { 0 };
+    uint32_t uExternalSemaphoreType = VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_PROPERTIES;
+    uint32_t uExternalSemaphoreSType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO;
+    uint32_t uExternalSemaphoreHandle = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+    memcpy(abExternalSemaphore + 0, &uExternalSemaphoreType, sizeof(uExternalSemaphoreType));
+    memcpy(abExternalSemaphore + 8, &uPhysicalDeviceId, sizeof(uPhysicalDeviceId));
+    memcpy(abExternalSemaphore + 16, &fExternalInfo, sizeof(fExternalInfo));
+    memcpy(abExternalSemaphore + 24, &uExternalSemaphoreSType, sizeof(uExternalSemaphoreSType));
+    memcpy(abExternalSemaphore + 28, &fExternalPNext, sizeof(fExternalPNext));
+    memcpy(abExternalSemaphore + 36, &uExternalSemaphoreHandle, sizeof(uExternalSemaphoreHandle));
+    memcpy(abExternalSemaphore + 40, &fExternalOutput, sizeof(fExternalOutput));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abExternalSemaphore, sizeof(abExternalSemaphore),
+                                              &cbImageFormatCommand)
+                  && cbImageFormatCommand == sizeof(abExternalSemaphore)
+                  && virtioGpuR3EncodeVenusProtocolReply(pGpu, abExternalSemaphore,
+                                                         sizeof(abExternalSemaphore), abProtocolReply,
+                                                         sizeof(abProtocolReply), &cbProtocolReply)
+                  && cbProtocolReply == 36);
+    memcpy(&uExternalReplyType, abProtocolReply + 0, sizeof(uExternalReplyType));
+    memcpy(&uExternalReplyPointer, abProtocolReply + 4, sizeof(uExternalReplyPointer));
+    memcpy(&uExternalReplySType, abProtocolReply + 12, sizeof(uExternalReplySType));
+    RTTESTI_CHECK(uExternalReplyType == uExternalSemaphoreType && uExternalReplyPointer == 1
+                  && uExternalReplySType == VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES);
+    RTTestSub(g_hTest, "Venus descriptor set layout support query");
+    uint8_t abDescriptorSupport[96] = { 0 };
+    uint32_t uDescriptorSupportType = VIRTIOGPU_VK_CMD_GET_DESCRIPTOR_SET_LAYOUT_SUPPORT;
+    uint64_t fDescriptorCreateInfo = 1, fDescriptorPNext = 0, cDescriptorEncoded = 1;
+    uint32_t uDescriptorCreateSType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    uint32_t uDescriptorFlags = 0, cQueryDescriptorBindings = 1;
+    uint32_t uDescriptorBinding = 0, uDescriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    uint32_t cDescriptorCount = 1, fDescriptorStages = VK_SHADER_STAGE_VERTEX_BIT;
+    uint64_t cImmutableSamplers = 0, fDescriptorOutput = 1;
+    uint32_t uDescriptorSupportSType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_SUPPORT;
+    uint64_t fDescriptorSupportPNext = 0;
+    memcpy(abDescriptorSupport + 0, &uDescriptorSupportType, sizeof(uDescriptorSupportType));
+    memcpy(abDescriptorSupport + 8, &uPhysicalDeviceId, sizeof(uPhysicalDeviceId));
+    memcpy(abDescriptorSupport + 16, &fDescriptorCreateInfo, sizeof(fDescriptorCreateInfo));
+    memcpy(abDescriptorSupport + 24, &uDescriptorCreateSType, sizeof(uDescriptorCreateSType));
+    memcpy(abDescriptorSupport + 28, &fDescriptorPNext, sizeof(fDescriptorPNext));
+    memcpy(abDescriptorSupport + 36, &uDescriptorFlags, sizeof(uDescriptorFlags));
+    memcpy(abDescriptorSupport + 40, &cQueryDescriptorBindings, sizeof(cQueryDescriptorBindings));
+    memcpy(abDescriptorSupport + 44, &cDescriptorEncoded, sizeof(cDescriptorEncoded));
+    memcpy(abDescriptorSupport + 52, &uDescriptorBinding, sizeof(uDescriptorBinding));
+    memcpy(abDescriptorSupport + 56, &uDescriptorType, sizeof(uDescriptorType));
+    memcpy(abDescriptorSupport + 60, &cDescriptorCount, sizeof(cDescriptorCount));
+    memcpy(abDescriptorSupport + 64, &fDescriptorStages, sizeof(fDescriptorStages));
+    memcpy(abDescriptorSupport + 68, &cImmutableSamplers, sizeof(cImmutableSamplers));
+    memcpy(abDescriptorSupport + 76, &fDescriptorOutput, sizeof(fDescriptorOutput));
+    memcpy(abDescriptorSupport + 84, &uDescriptorSupportSType, sizeof(uDescriptorSupportSType));
+    memcpy(abDescriptorSupport + 88, &fDescriptorSupportPNext, sizeof(fDescriptorSupportPNext));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abDescriptorSupport, sizeof(abDescriptorSupport),
+                                              &cbImageFormatCommand)
+                  && cbImageFormatCommand == sizeof(abDescriptorSupport)
+                  && virtioGpuR3EncodeVenusProtocolReply(pGpu, abDescriptorSupport,
+                                                         sizeof(abDescriptorSupport), abProtocolReply,
+                                                         sizeof(abProtocolReply), &cbProtocolReply)
+                  && cbProtocolReply == 28);
+    uint32_t uDescriptorReplyType = 0, uDescriptorReplySType = 0, fDescriptorSupported = 0;
+    uint64_t fDescriptorReplyOutput = 0;
+    memcpy(&uDescriptorReplyType, abProtocolReply + 0, sizeof(uDescriptorReplyType));
+    memcpy(&fDescriptorReplyOutput, abProtocolReply + 4, sizeof(fDescriptorReplyOutput));
+    memcpy(&uDescriptorReplySType, abProtocolReply + 12, sizeof(uDescriptorReplySType));
+    memcpy(&fDescriptorSupported, abProtocolReply + 24, sizeof(fDescriptorSupported));
+    RTTESTI_CHECK(uDescriptorReplyType == uDescriptorSupportType && fDescriptorReplyOutput == 1
+                  && uDescriptorReplySType == VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_SUPPORT
+                  && fDescriptorSupported <= 1);
     RTTestSub(g_hTest, "Venus queue, image memory requirements and bindings");
     uint8_t abGetQueue[40] = { 0 };
     uint32_t uGetQueueType = VIRTIOGPU_VK_CMD_GET_DEVICE_QUEUE;

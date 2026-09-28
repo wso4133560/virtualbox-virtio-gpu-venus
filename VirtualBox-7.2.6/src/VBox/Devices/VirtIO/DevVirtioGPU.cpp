@@ -75,6 +75,11 @@
 #define VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_FEATURES UINT32_C(3)
 #define VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_FEATURES2 UINT32_C(147)
 #define VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_FORMAT_PROPERTIES UINT32_C(4)
+#define VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_IMAGE_FORMAT_PROPERTIES UINT32_C(5)
+#define VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_EXTERNAL_BUFFER_PROPERTIES UINT32_C(161)
+#define VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_EXTERNAL_FENCE_PROPERTIES UINT32_C(162)
+#define VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_PROPERTIES UINT32_C(163)
+#define VIRTIOGPU_VK_CMD_GET_DESCRIPTOR_SET_LAYOUT_SUPPORT UINT32_C(164)
 #define VIRTIOGPU_VK_CMD_CREATE_COMMAND_POOL UINT32_C(85)
 #define VIRTIOGPU_VK_CMD_CREATE_IMAGE UINT32_C(54)
 #define VIRTIOGPU_VK_CMD_DESTROY_IMAGE UINT32_C(55)
@@ -1507,6 +1512,7 @@ static bool virtioGpuR3CreateOpaqueHostObject(PVIRTIOGPU pThis,
 static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pcbCommand)
 {
     uint32_t uType = 0;
+    uint64_t uPointer = 0;
     if (!pb || cb < 8 || !pcbCommand)
         return false;
     memcpy(&uType, pb, sizeof(uType));
@@ -2328,11 +2334,127 @@ static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pc
              * (sType, null pNext marker; output fields are omitted). */
             *pcbCommand = 40;
             return cb >= *pcbCommand;
+        case VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_IMAGE_FORMAT_PROPERTIES:
+            /* physical device, format/type/tiling/usage/flags, and the
+             * optional VkImageFormatProperties partial (maxExtent only). */
+            *pcbCommand = 44;
+            if (cb < *pcbCommand)
+                return false;
+            if (!virtioGpuR3ReadU64(pb, cb, 36, &uPointer) || (uPointer != 0 && uPointer != 1))
+                return false;
+            *pcbCommand += uPointer ? 12 : 0;
+            return cb >= *pcbCommand;
         case VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_IMAGE_FORMAT_PROPERTIES2:
             /* physical device, VkPhysicalDeviceImageFormatInfo2, and
              * VkImageFormatProperties2 partial output. */
             *pcbCommand = 76;
             return cb >= *pcbCommand;
+        case VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_EXTERNAL_BUFFER_PROPERTIES:
+        {
+            uint64_t fInfo = 0, fPnext = 0, fOutput = 0;
+            if (!virtioGpuR3ReadU64(pb, cb, 16, &fInfo) || fInfo > 1)
+                return false;
+            size_t off = 24;
+            if (fInfo)
+            {
+                if (cb < off + sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t) * 3
+                    || !virtioGpuR3ReadU64(pb, cb, off + sizeof(uint32_t), &fPnext)
+                    || fPnext)
+                    return false;
+                off += sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t) * 3;
+            }
+            if (!virtioGpuR3ReadU64(pb, cb, off, &fOutput) || fOutput > 1)
+                return false;
+            *pcbCommand = off + sizeof(uint64_t) + (fOutput ? sizeof(uint32_t) + sizeof(uint64_t) : 0);
+            return cb >= *pcbCommand;
+        }
+        case VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_EXTERNAL_FENCE_PROPERTIES:
+        {
+            uint64_t fInfo = 0, fPnext = 0, fOutput = 0;
+            if (!virtioGpuR3ReadU64(pb, cb, 16, &fInfo) || fInfo > 1)
+                return false;
+            size_t off = 24;
+            if (fInfo)
+            {
+                if (cb < off + sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t)
+                    || !virtioGpuR3ReadU64(pb, cb, off + sizeof(uint32_t), &fPnext)
+                    || fPnext)
+                    return false;
+                off += sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t);
+            }
+            if (!virtioGpuR3ReadU64(pb, cb, off, &fOutput) || fOutput > 1)
+                return false;
+            *pcbCommand = off + sizeof(uint64_t) + (fOutput ? sizeof(uint32_t) + sizeof(uint64_t) : 0);
+            return cb >= *pcbCommand;
+        }
+        case VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_PROPERTIES:
+        {
+            uint64_t fInfo = 0, fPnext = 0, fPnextNext = 0, fOutput = 0;
+            if (!virtioGpuR3ReadU64(pb, cb, 16, &fInfo) || fInfo > 1)
+                return false;
+            size_t off = 24;
+            if (fInfo)
+            {
+                if (cb < off + sizeof(uint32_t) + sizeof(uint64_t)
+                    || !virtioGpuR3ReadU64(pb, cb, off + sizeof(uint32_t), &fPnext))
+                    return false;
+                off += sizeof(uint32_t) + sizeof(uint64_t);
+                if (fPnext)
+                {
+                    if (cb < off + sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t)
+                        + sizeof(uint64_t)
+                        || !virtioGpuR3ReadU64(pb, cb, off + sizeof(uint32_t), &fPnextNext)
+                        || fPnextNext)
+                        return false;
+                    off += sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t) + sizeof(uint64_t);
+                }
+                else
+                    off += sizeof(uint32_t);
+            }
+            if (!virtioGpuR3ReadU64(pb, cb, off, &fOutput) || fOutput > 1)
+                return false;
+            *pcbCommand = off + sizeof(uint64_t) + (fOutput ? sizeof(uint32_t) + sizeof(uint64_t) : 0);
+            return cb >= *pcbCommand;
+        }
+        case VIRTIOGPU_VK_CMD_GET_DESCRIPTOR_SET_LAYOUT_SUPPORT:
+        {
+            uint64_t fCreateInfo = 0, fPnext = 0, cEncoded = 0, fOutput = 0;
+            if (!virtioGpuR3ReadU64(pb, cb, 16, &fCreateInfo) || fCreateInfo > 1)
+                return false;
+            size_t off = 24;
+            if (fCreateInfo)
+            {
+                uint32_t cBindings = 0;
+                if (cb < off + sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t) * 2
+                    + sizeof(uint64_t)
+                    || !virtioGpuR3ReadU64(pb, cb, off + sizeof(uint32_t), &fPnext)
+                    || fPnext)
+                    return false;
+                memcpy(&cBindings, pb + off + 16, sizeof(cBindings));
+                if (cBindings > 64
+                    || !virtioGpuR3ReadU64(pb, cb, off + 20, &cEncoded)
+                    || cEncoded > cBindings)
+                    return false;
+                off += 28;
+                for (uint64_t i = 0; i < cEncoded; ++i)
+                {
+                    uint32_t cImmutable = 0;
+                    uint64_t cImmutableEncoded = 0;
+                    if (off > cb || cb - off < 24
+                        || !virtioGpuR3ReadU64(pb, cb, off + 16, &cImmutableEncoded))
+                        return false;
+                    memcpy(&cImmutable, pb + off + 8, sizeof(cImmutable));
+                    if (cImmutable > 64 || cImmutableEncoded > cImmutable
+                        || cImmutableEncoded > (cb - off - 24) / sizeof(uint64_t))
+                        return false;
+                    off += 24 + (size_t)cImmutableEncoded * sizeof(uint64_t);
+                }
+            }
+            if (!virtioGpuR3ReadU64(pb, cb, off, &fOutput) || fOutput > 1)
+                return false;
+            *pcbCommand = off + sizeof(uint64_t) + (fOutput ? sizeof(uint32_t) + sizeof(uint64_t) : 0);
+            return cb >= *pcbCommand;
+        }
         case VIRTIOGPU_VK_CMD_GET_IMAGE_MEMORY_REQUIREMENTS2:
             /* device, VkImageMemoryRequirementsInfo2, and the partial
              * VkMemoryRequirements2 output with its dedicated pNext chain. */
@@ -4348,6 +4470,337 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                     || !virtioGpuR3VenusPutU32(&Enc, Props.bufferFeatures))
                     return false;
             }
+            break;
+        }
+        case VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_IMAGE_FORMAT_PROPERTIES:
+        {
+            uint32_t uFormat = 0, uImageType = 0, uTiling = 0, uUsage = 0, uFlags = 0;
+            if (cb < 44
+                || !virtioGpuR3VenusReadU64(pb, cb, 36, &uPointer)
+                || (uPointer != 0 && uPointer != 1)
+                || (uPointer && cb < 56)
+                || !virtioGpuR3VenusPutU32(&Enc, uType))
+                return false;
+            memcpy(&uFormat, pb + 16, sizeof(uFormat));
+            memcpy(&uImageType, pb + 20, sizeof(uImageType));
+            memcpy(&uTiling, pb + 24, sizeof(uTiling));
+            memcpy(&uUsage, pb + 28, sizeof(uUsage));
+            memcpy(&uFlags, pb + 32, sizeof(uFlags));
+            PFN_vkGetPhysicalDeviceImageFormatProperties pfnGet =
+                (PFN_vkGetPhysicalDeviceImageFormatProperties)pThis->pfnVkGetInstanceProcAddr(
+                    pThis->hVkInstance, "vkGetPhysicalDeviceImageFormatProperties");
+            VkImageFormatProperties Props;
+            RT_ZERO(Props);
+            VkResult const enmResult = pfnGet
+                ? pfnGet(pThis->hVkPhysicalDevice, (VkFormat)uFormat, (VkImageType)uImageType,
+                         (VkImageTiling)uTiling, (VkImageUsageFlags)uUsage,
+                         (VkImageCreateFlags)uFlags, &Props)
+                : VK_ERROR_INITIALIZATION_FAILED;
+            if (!virtioGpuR3VenusPutResult(&Enc, enmResult)
+                || !virtioGpuR3VenusPutU64(&Enc, uPointer))
+                return false;
+            if (uPointer
+                && (!virtioGpuR3VenusPutU32(&Enc, Props.maxExtent.width)
+                    || !virtioGpuR3VenusPutU32(&Enc, Props.maxExtent.height)
+                    || !virtioGpuR3VenusPutU32(&Enc, Props.maxExtent.depth)
+                    || !virtioGpuR3VenusPutU32(&Enc, Props.maxMipLevels)
+                    || !virtioGpuR3VenusPutU32(&Enc, Props.maxArrayLayers)
+                    || !virtioGpuR3VenusPutU32(&Enc, Props.sampleCounts)
+                    || !virtioGpuR3VenusPutU64(&Enc, Props.maxResourceSize)))
+                return false;
+            break;
+        }
+        case VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_EXTERNAL_BUFFER_PROPERTIES:
+        {
+            uint64_t fInfo = 0, fPnext = 0, fOutput = 0;
+            if (!virtioGpuR3VenusReadU64(pb, cb, 16, &fInfo) || fInfo > 1)
+                return false;
+            size_t off = 24;
+            VkPhysicalDeviceExternalBufferInfo Info;
+            RT_ZERO(Info);
+            Info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO;
+            if (fInfo)
+            {
+                uint32_t uFlags = 0, uUsage = 0, uHandleType = 0;
+                if (cb < off + sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t) * 3
+                    || !virtioGpuR3VenusReadU64(pb, cb, off + sizeof(uint32_t), &fPnext)
+                    || fPnext)
+                    return false;
+                memcpy(&uFlags, pb + off + 12, sizeof(uFlags));
+                memcpy(&uUsage, pb + off + 16, sizeof(uUsage));
+                memcpy(&uHandleType, pb + off + 20, sizeof(uHandleType));
+                Info.flags = uFlags;
+                Info.usage = uUsage;
+                Info.handleType = (VkExternalMemoryHandleTypeFlagBits)uHandleType;
+                off += sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t) * 3;
+            }
+            if (!virtioGpuR3VenusReadU64(pb, cb, off, &fOutput) || fOutput > 1
+                || !virtioGpuR3VenusPutU32(&Enc, uType)
+                || !virtioGpuR3VenusPutU64(&Enc, fOutput))
+                return false;
+            if (fOutput)
+            {
+                VkExternalBufferProperties Props;
+                RT_ZERO(Props);
+                Props.sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES;
+                PFN_vkGetPhysicalDeviceExternalBufferProperties pfnGet =
+                    (PFN_vkGetPhysicalDeviceExternalBufferProperties)pThis->pfnVkGetInstanceProcAddr(
+                        pThis->hVkInstance, "vkGetPhysicalDeviceExternalBufferProperties");
+                if (fInfo && pfnGet)
+                    pfnGet(pThis->hVkPhysicalDevice, &Info, &Props);
+                if (!virtioGpuR3VenusPutU32(&Enc, Props.sType)
+                    || !virtioGpuR3VenusPutU64(&Enc, 0)
+                    || !virtioGpuR3VenusPutU32(&Enc, Props.externalMemoryProperties.externalMemoryFeatures)
+                    || !virtioGpuR3VenusPutU32(&Enc, Props.externalMemoryProperties.exportFromImportedHandleTypes)
+                    || !virtioGpuR3VenusPutU32(&Enc, Props.externalMemoryProperties.compatibleHandleTypes))
+                    return false;
+            }
+            break;
+        }
+        case VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_EXTERNAL_FENCE_PROPERTIES:
+        {
+            uint64_t fInfo = 0, fPnext = 0, fOutput = 0;
+            if (!virtioGpuR3VenusReadU64(pb, cb, 16, &fInfo) || fInfo > 1)
+                return false;
+            size_t off = 24;
+            VkPhysicalDeviceExternalFenceInfo Info;
+            RT_ZERO(Info);
+            Info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_FENCE_INFO;
+            if (fInfo)
+            {
+                uint32_t uHandleType = 0;
+                if (cb < off + sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t)
+                    || !virtioGpuR3VenusReadU64(pb, cb, off + sizeof(uint32_t), &fPnext)
+                    || fPnext)
+                    return false;
+                memcpy(&uHandleType, pb + off + 12, sizeof(uHandleType));
+                Info.handleType = (VkExternalFenceHandleTypeFlagBits)uHandleType;
+                off += sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t);
+            }
+            if (!virtioGpuR3VenusReadU64(pb, cb, off, &fOutput) || fOutput > 1
+                || !virtioGpuR3VenusPutU32(&Enc, uType)
+                || !virtioGpuR3VenusPutU64(&Enc, fOutput))
+                return false;
+            if (fOutput)
+            {
+                VkExternalFenceProperties Props;
+                RT_ZERO(Props);
+                Props.sType = VK_STRUCTURE_TYPE_EXTERNAL_FENCE_PROPERTIES;
+                PFN_vkGetPhysicalDeviceExternalFenceProperties pfnGet =
+                    (PFN_vkGetPhysicalDeviceExternalFenceProperties)pThis->pfnVkGetInstanceProcAddr(
+                        pThis->hVkInstance, "vkGetPhysicalDeviceExternalFenceProperties");
+                if (fInfo && pfnGet)
+                    pfnGet(pThis->hVkPhysicalDevice, &Info, &Props);
+                if (!virtioGpuR3VenusPutU32(&Enc, Props.sType)
+                    || !virtioGpuR3VenusPutU64(&Enc, 0)
+                    || !virtioGpuR3VenusPutU32(&Enc, Props.exportFromImportedHandleTypes)
+                    || !virtioGpuR3VenusPutU32(&Enc, Props.compatibleHandleTypes)
+                    || !virtioGpuR3VenusPutU32(&Enc, Props.externalFenceFeatures))
+                    return false;
+            }
+            break;
+        }
+        case VIRTIOGPU_VK_CMD_GET_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_PROPERTIES:
+        {
+            uint64_t fInfo = 0, fPnext = 0, fPnextNext = 0, fOutput = 0;
+            if (!virtioGpuR3VenusReadU64(pb, cb, 16, &fInfo) || fInfo > 1)
+                return false;
+            size_t off = 24;
+            VkPhysicalDeviceExternalSemaphoreInfo Info;
+            VkSemaphoreTypeCreateInfo TypeInfo;
+            RT_ZERO(Info);
+            RT_ZERO(TypeInfo);
+            Info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO;
+            TypeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+            if (fInfo)
+            {
+                if (cb < off + sizeof(uint32_t) + sizeof(uint64_t)
+                    || !virtioGpuR3VenusReadU64(pb, cb, off + sizeof(uint32_t), &fPnext))
+                    return false;
+                off += sizeof(uint32_t) + sizeof(uint64_t);
+                if (fPnext)
+                {
+                    uint32_t uSemaphoreType = 0;
+                    if (cb < off + sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t)
+                        + sizeof(uint64_t)
+                        || !virtioGpuR3VenusReadU64(pb, cb, off + sizeof(uint32_t), &fPnextNext)
+                        || fPnextNext)
+                        return false;
+                    memcpy(&uSemaphoreType, pb + off + 12, sizeof(uSemaphoreType));
+                    memcpy(&TypeInfo.initialValue, pb + off + 16, sizeof(TypeInfo.initialValue));
+                    TypeInfo.semaphoreType = (VkSemaphoreType)uSemaphoreType;
+                    Info.pNext = &TypeInfo;
+                    off += sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t) + sizeof(uint64_t);
+                }
+                uint32_t uHandleType = 0;
+                if (cb < off + sizeof(uint32_t))
+                    return false;
+                memcpy(&uHandleType, pb + off, sizeof(uHandleType));
+                Info.handleType = (VkExternalSemaphoreHandleTypeFlagBits)uHandleType;
+                off += sizeof(uint32_t);
+            }
+            if (!virtioGpuR3VenusReadU64(pb, cb, off, &fOutput) || fOutput > 1
+                || !virtioGpuR3VenusPutU32(&Enc, uType)
+                || !virtioGpuR3VenusPutU64(&Enc, fOutput))
+                return false;
+            if (fOutput)
+            {
+                VkExternalSemaphoreProperties Props;
+                RT_ZERO(Props);
+                Props.sType = VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES;
+                PFN_vkGetPhysicalDeviceExternalSemaphoreProperties pfnGet =
+                    (PFN_vkGetPhysicalDeviceExternalSemaphoreProperties)pThis->pfnVkGetInstanceProcAddr(
+                        pThis->hVkInstance, "vkGetPhysicalDeviceExternalSemaphoreProperties");
+                if (fInfo && pfnGet)
+                    pfnGet(pThis->hVkPhysicalDevice, &Info, &Props);
+                if (!virtioGpuR3VenusPutU32(&Enc, Props.sType)
+                    || !virtioGpuR3VenusPutU64(&Enc, 0)
+                    || !virtioGpuR3VenusPutU32(&Enc, Props.exportFromImportedHandleTypes)
+                    || !virtioGpuR3VenusPutU32(&Enc, Props.compatibleHandleTypes)
+                    || !virtioGpuR3VenusPutU32(&Enc, Props.externalSemaphoreFeatures))
+                    return false;
+            }
+            break;
+        }
+        case VIRTIOGPU_VK_CMD_GET_DESCRIPTOR_SET_LAYOUT_SUPPORT:
+        {
+            uint64_t fCreateInfo = 0, fPnext = 0, cEncoded = 0, fOutput = 0;
+            VkDescriptorSetLayoutBinding aBindings[64];
+            VkSampler *apImmutableSamplers[64];
+            RT_ZERO(aBindings);
+            RT_ZERO(apImmutableSamplers);
+            VkDescriptorSetLayoutCreateInfo Info;
+            RT_ZERO(Info);
+            Info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+            bool fParsed = virtioGpuR3VenusReadU64(pb, cb, 16, &fCreateInfo) && fCreateInfo <= 1;
+            size_t off = 24;
+            if (fParsed && fCreateInfo)
+            {
+                uint32_t cBindings = 0, uSType = 0, fFlags = 0;
+                fParsed = cb >= off + sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t) * 2
+                       && virtioGpuR3VenusReadU64(pb, cb, off + sizeof(uint32_t), &fPnext)
+                       && !fPnext;
+                if (fParsed)
+                {
+                    memcpy(&uSType, pb + off, sizeof(uSType));
+                    memcpy(&fFlags, pb + off + 12, sizeof(fFlags));
+                    memcpy(&cBindings, pb + off + 16, sizeof(cBindings));
+                    fParsed = uSType == VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO
+                           && cBindings <= 64
+                           && virtioGpuR3VenusReadU64(pb, cb, off + 20, &cEncoded)
+                           && cEncoded <= cBindings;
+                    off += 28;
+                    if (fParsed)
+                    {
+                        for (uint64_t i = 0; i < cEncoded; ++i)
+                        {
+                            uint32_t cImmutable = 0, uBinding = 0, uDescriptorType = 0,
+                                     uDescriptorCount = 0, uStageFlags = 0;
+                            uint64_t cImmutableEncoded = 0;
+                            if (off > cb || cb - off < 24
+                                || !virtioGpuR3VenusReadU64(pb, cb, off + 16, &cImmutableEncoded))
+                            {
+                                fParsed = false;
+                                break;
+                            }
+                            memcpy(&uBinding, pb + off, sizeof(uBinding));
+                            memcpy(&uDescriptorType, pb + off + 4, sizeof(uDescriptorType));
+                            memcpy(&uDescriptorCount, pb + off + 8, sizeof(uDescriptorCount));
+                            memcpy(&uStageFlags, pb + off + 12, sizeof(uStageFlags));
+                            cImmutable = uDescriptorCount;
+                            if (cImmutable > 64 || cImmutableEncoded > cImmutable
+                                || cImmutableEncoded > (cb - off - 24) / sizeof(uint64_t))
+                            {
+                                fParsed = false;
+                                break;
+                            }
+                            aBindings[i].binding = uBinding;
+                            aBindings[i].descriptorType = (VkDescriptorType)uDescriptorType;
+                            aBindings[i].descriptorCount = uDescriptorCount;
+                            aBindings[i].stageFlags = uStageFlags;
+                            off += 24;
+                            if (cImmutableEncoded)
+                            {
+                                apImmutableSamplers[i] = (VkSampler *)RTMemAllocZ(
+                                    sizeof(VkSampler) * (size_t)cImmutableEncoded);
+                                if (!apImmutableSamplers[i])
+                                {
+                                    fParsed = false;
+                                    break;
+                                }
+                                aBindings[i].pImmutableSamplers = apImmutableSamplers[i];
+                                for (uint64_t j = 0; j < cImmutableEncoded; ++j)
+                                {
+                                    uint64_t uSampler = 0;
+                                    PVIRTIOGPUOPAQUEOBJECT pSampler = NULL;
+                                    if (!virtioGpuR3VenusReadU64(pb, cb, off, &uSampler)
+                                        || !(pSampler = virtioGpuR3FindOpaqueObject(pThis, uSampler))
+                                        || pSampler->uType != VIRTIOGPU_VK_CMD_CREATE_SAMPLER
+                                        || pSampler->hSampler == VK_NULL_HANDLE)
+                                    {
+                                        fParsed = false;
+                                        break;
+                                    }
+                                    apImmutableSamplers[i][j] = pSampler->hSampler;
+                                    off += sizeof(uint64_t);
+                                }
+                            }
+                        }
+                    }
+                    Info.flags = fFlags;
+                    Info.bindingCount = (uint32_t)cEncoded;
+                    Info.pBindings = aBindings;
+                }
+            }
+            fParsed = fParsed && virtioGpuR3VenusReadU64(pb, cb, off, &fOutput) && fOutput <= 1;
+            if (!fParsed
+                || !virtioGpuR3VenusPutU32(&Enc, uType)
+                || !virtioGpuR3VenusPutU64(&Enc, fParsed && fOutput ? 1 : 0))
+            {
+                for (unsigned i = 0; i < RT_ELEMENTS(apImmutableSamplers); ++i)
+                    RTMemFree(apImmutableSamplers[i]);
+                return false;
+            }
+            if (fOutput)
+            {
+                uint32_t uSupportSType = 0;
+                uint64_t fSupportPnext = 0;
+                if (cb < off + 8 + sizeof(uint32_t) + sizeof(uint64_t)
+                    || !virtioGpuR3VenusReadU64(pb, cb, off + 12, &fSupportPnext)
+                    || fSupportPnext)
+                {
+                    for (unsigned i = 0; i < RT_ELEMENTS(apImmutableSamplers); ++i)
+                        RTMemFree(apImmutableSamplers[i]);
+                    return false;
+                }
+                memcpy(&uSupportSType, pb + off + 8, sizeof(uSupportSType));
+                if (uSupportSType != VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_SUPPORT)
+                {
+                    for (unsigned i = 0; i < RT_ELEMENTS(apImmutableSamplers); ++i)
+                        RTMemFree(apImmutableSamplers[i]);
+                    return false;
+                }
+                VkDescriptorSetLayoutSupport Support;
+                RT_ZERO(Support);
+                Support.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_SUPPORT;
+                PFN_vkGetDescriptorSetLayoutSupport pfnGet = NULL;
+                PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr = virtioGpuR3GetVenusDeviceProcAddr(pThis);
+                if (pfnGetDeviceProcAddr)
+                    pfnGet = (PFN_vkGetDescriptorSetLayoutSupport)pfnGetDeviceProcAddr(
+                        pThis->hVkDevice, "vkGetDescriptorSetLayoutSupport");
+                if (fCreateInfo && pfnGet)
+                    pfnGet(pThis->hVkDevice, &Info, &Support);
+                if (!virtioGpuR3VenusPutU32(&Enc, Support.sType)
+                    || !virtioGpuR3VenusPutU64(&Enc, 0)
+                    || !virtioGpuR3VenusPutU32(&Enc, Support.supported))
+                {
+                    for (unsigned i = 0; i < RT_ELEMENTS(apImmutableSamplers); ++i)
+                        RTMemFree(apImmutableSamplers[i]);
+                    return false;
+                }
+            }
+            for (unsigned i = 0; i < RT_ELEMENTS(apImmutableSamplers); ++i)
+                RTMemFree(apImmutableSamplers[i]);
             break;
         }
         case VIRTIOGPU_VK_CMD_GET_DEVICE_QUEUE:
