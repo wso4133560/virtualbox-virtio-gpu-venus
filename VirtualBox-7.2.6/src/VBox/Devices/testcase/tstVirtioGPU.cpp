@@ -2597,10 +2597,10 @@ int main(int argc, char **argv)
     uint32_t uCreateDescriptorPoolType = VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_POOL;
     uint64_t fDescriptorPoolInfo = 1, fDescriptorPoolPNext = 0;
     uint32_t uDescriptorPoolSType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    uint32_t cPoolSets = 1, cPoolSizes = 1;
+    uint32_t cPoolSets = 2, cPoolSizes = 1;
     uint64_t cPoolSizesEncoded = 1, fDescriptorPoolAllocator = 0;
     uint64_t fDescriptorPoolOutput = 1, uDescriptorPoolObject = 0;
-    uint32_t uPoolDescriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, cPoolDescriptorCount = 1;
+    uint32_t uPoolDescriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, cPoolDescriptorCount = 2;
     memcpy(abCreateDescriptorPool + 0, &uCreateDescriptorPoolType, sizeof(uCreateDescriptorPoolType));
     memcpy(abCreateDescriptorPool + 8, &uGetQueueDevice, sizeof(uGetQueueDevice));
     memcpy(abCreateDescriptorPool + 16, &fDescriptorPoolInfo, sizeof(fDescriptorPoolInfo));
@@ -2642,7 +2642,8 @@ int main(int argc, char **argv)
     uint8_t abAllocateDescriptorSet[80] = { 0 };
     uint32_t uAllocateDescriptorSetType = VIRTIOGPU_VK_CMD_ALLOCATE_DESCRIPTOR_SETS;
     uint64_t fAllocateInfo = 1, fAllocatePNext = 0, cAllocateLayouts = 1,
-             cAllocateOutput = 1, uDescriptorSetObject = UINT64_C(0x5531);
+             cAllocateOutput = 1, uDescriptorSetObject = UINT64_C(0x5531),
+             uDescriptorSetObject2 = UINT64_C(0x5532);
     uint32_t uAllocateSType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, cAllocateSets = 1;
     memcpy(abAllocateDescriptorSet + 0, &uAllocateDescriptorSetType, sizeof(uAllocateDescriptorSetType));
     memcpy(abAllocateDescriptorSet + 8, &uGetQueueDevice, sizeof(uGetQueueDevice));
@@ -2666,6 +2667,17 @@ int main(int argc, char **argv)
                   && pDescriptorSet->uType == VIRTIOGPU_VK_CMD_ALLOCATE_DESCRIPTOR_SETS);
     if (fHostOpaqueObjects)
         RTTESTI_CHECK(pDescriptorSet && pDescriptorSet->hDescriptorSet != VK_NULL_HANDLE);
+    memcpy(abAllocateDescriptorSet + 72, &uDescriptorSetObject2, sizeof(uDescriptorSetObject2));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abAllocateDescriptorSet,
+                                               sizeof(abAllocateDescriptorSet), &cbQueueCommand)
+                  && virtioGpuR3EncodeVenusProtocolReply(pGpu, abAllocateDescriptorSet,
+                                                          sizeof(abAllocateDescriptorSet), abProtocolReply,
+                                                          sizeof(abProtocolReply), &cbProtocolReply));
+    PVIRTIOGPUOPAQUEOBJECT pDescriptorSet2 = virtioGpuR3FindOpaqueObject(pGpu, uDescriptorSetObject2);
+    RTTESTI_CHECK(cbProtocolReply == 24 && pDescriptorSet2
+                  && pDescriptorSet2->uType == VIRTIOGPU_VK_CMD_ALLOCATE_DESCRIPTOR_SETS);
+    if (fHostOpaqueObjects)
+        RTTESTI_CHECK(pDescriptorSet2 && pDescriptorSet2->hDescriptorSet != VK_NULL_HANDLE);
     uint8_t abUpdateDescriptorSets[120] = { 0 };
     uint32_t uUpdateDescriptorSetsType = VIRTIOGPU_VK_CMD_UPDATE_DESCRIPTOR_SETS;
     uint32_t cDescriptorWrites = 1, cDescriptorCopies = 0;
@@ -2703,6 +2715,35 @@ int main(int argc, char **argv)
                                                           sizeof(abUpdateDescriptorSets), abProtocolReply,
                                                           sizeof(abProtocolReply), &cbProtocolReply)
                   && cbProtocolReply == 4);
+    uint8_t abCopyDescriptorSets[88] = { 0 };
+    uint32_t uCopyDescriptorSetsType = VIRTIOGPU_VK_CMD_UPDATE_DESCRIPTOR_SETS;
+    uint32_t cCopyWrites = 0, cCopyCopies = 1;
+    uint64_t cCopyWritesEncoded = 0, cCopyCopiesEncoded = 1;
+    uint32_t uCopySType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
+    uint64_t fCopyPNext = 0;
+    uint32_t uCopyBinding = 0, uCopyArrayElement = 0, cCopyDescriptors = 1;
+    memcpy(abCopyDescriptorSets + 0, &uCopyDescriptorSetsType, sizeof(uCopyDescriptorSetsType));
+    memcpy(abCopyDescriptorSets + 8, &uGetQueueDevice, sizeof(uGetQueueDevice));
+    memcpy(abCopyDescriptorSets + 16, &cCopyWrites, sizeof(cCopyWrites));
+    memcpy(abCopyDescriptorSets + 20, &cCopyWritesEncoded, sizeof(cCopyWritesEncoded));
+    memcpy(abCopyDescriptorSets + 28, &cCopyCopies, sizeof(cCopyCopies));
+    memcpy(abCopyDescriptorSets + 32, &cCopyCopiesEncoded, sizeof(cCopyCopiesEncoded));
+    memcpy(abCopyDescriptorSets + 40, &uCopySType, sizeof(uCopySType));
+    memcpy(abCopyDescriptorSets + 44, &fCopyPNext, sizeof(fCopyPNext));
+    memcpy(abCopyDescriptorSets + 52, &uDescriptorSetObject, sizeof(uDescriptorSetObject));
+    memcpy(abCopyDescriptorSets + 60, &uCopyBinding, sizeof(uCopyBinding));
+    memcpy(abCopyDescriptorSets + 64, &uCopyArrayElement, sizeof(uCopyArrayElement));
+    memcpy(abCopyDescriptorSets + 68, &uDescriptorSetObject2, sizeof(uDescriptorSetObject2));
+    memcpy(abCopyDescriptorSets + 76, &uCopyBinding, sizeof(uCopyBinding));
+    memcpy(abCopyDescriptorSets + 80, &uCopyArrayElement, sizeof(uCopyArrayElement));
+    memcpy(abCopyDescriptorSets + 84, &cCopyDescriptors, sizeof(cCopyDescriptors));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abCopyDescriptorSets,
+                                               sizeof(abCopyDescriptorSets), &cbQueueCommand)
+                  && cbQueueCommand == sizeof(abCopyDescriptorSets)
+                  && virtioGpuR3EncodeVenusProtocolReply(pGpu, abCopyDescriptorSets,
+                                                          sizeof(abCopyDescriptorSets), abProtocolReply,
+                                                          sizeof(abProtocolReply), &cbProtocolReply)
+                  && cbProtocolReply == 4);
     uint32_t cMalformedWrites = 1;
     uint64_t cMalformedWritesEncoded = 1;
     memcpy(abUpdateDescriptorSets + 16, &cMalformedWrites, sizeof(cMalformedWrites));
@@ -2721,26 +2762,31 @@ int main(int argc, char **argv)
     RTTESTI_CHECK_RC(virtioGpuR3LoadExec(pDev, pDescriptorSetSsm, VIRTIOGPU_SAVED_STATE_VERSION,
                                          SSM_PASS_FINAL), VINF_SUCCESS);
     pDescriptorSet = virtioGpuR3FindOpaqueObject(pGpu, uDescriptorSetObject);
+    pDescriptorSet2 = virtioGpuR3FindOpaqueObject(pGpu, uDescriptorSetObject2);
     PVIRTIOGPUOPAQUEOBJECT pDescriptorLayout2 = virtioGpuR3FindOpaqueObject(pGpu,
                                                                              uDescriptorLayoutObject2);
     PVIRTIOGPUOPAQUEOBJECT pDescriptorPool2 = virtioGpuR3FindOpaqueObject(pGpu, uDescriptorPoolObject);
-    RTTESTI_CHECK(pDescriptorSet && pDescriptorLayout2 && pDescriptorPool2
+    RTTESTI_CHECK(pDescriptorSet && pDescriptorSet2 && pDescriptorLayout2 && pDescriptorPool2
                   && pDescriptorSet->uType == VIRTIOGPU_VK_CMD_ALLOCATE_DESCRIPTOR_SETS
+                  && pDescriptorSet2->uType == VIRTIOGPU_VK_CMD_ALLOCATE_DESCRIPTOR_SETS
                   && pDescriptorLayout2->hDescriptorSetLayout != VK_NULL_HANDLE
                   && pDescriptorPool2->hDescriptorPool != VK_NULL_HANDLE);
     if (fHostOpaqueObjects)
         RTTESTI_CHECK(pDescriptorSet && pDescriptorSet->hDescriptorSet != VK_NULL_HANDLE
-                      && pDescriptorSet->hDescriptorSetPool == pDescriptorPool2->hDescriptorPool);
-    uint8_t abFreeDescriptorSets[44] = { 0 };
+                      && pDescriptorSet->hDescriptorSetPool == pDescriptorPool2->hDescriptorPool
+                      && pDescriptorSet2->hDescriptorSet != VK_NULL_HANDLE
+                      && pDescriptorSet2->hDescriptorSetPool == pDescriptorPool2->hDescriptorPool);
+    uint8_t abFreeDescriptorSets[52] = { 0 };
     uint32_t uFreeDescriptorSetsType = VIRTIOGPU_VK_CMD_FREE_DESCRIPTOR_SETS;
-    uint32_t cFreeDescriptorSets = 1;
-    uint64_t cFreeDescriptorSetsEncoded = 1;
+    uint32_t cFreeDescriptorSets = 2;
+    uint64_t cFreeDescriptorSetsEncoded = 2;
     memcpy(abFreeDescriptorSets + 0, &uFreeDescriptorSetsType, sizeof(uFreeDescriptorSetsType));
     memcpy(abFreeDescriptorSets + 8, &uGetQueueDevice, sizeof(uGetQueueDevice));
     memcpy(abFreeDescriptorSets + 16, &uDescriptorPoolObject, sizeof(uDescriptorPoolObject));
     memcpy(abFreeDescriptorSets + 24, &cFreeDescriptorSets, sizeof(cFreeDescriptorSets));
     memcpy(abFreeDescriptorSets + 28, &cFreeDescriptorSetsEncoded, sizeof(cFreeDescriptorSetsEncoded));
     memcpy(abFreeDescriptorSets + 36, &uDescriptorSetObject, sizeof(uDescriptorSetObject));
+    memcpy(abFreeDescriptorSets + 44, &uDescriptorSetObject2, sizeof(uDescriptorSetObject2));
     uint64_t uWrongDescriptorPool = UINT64_C(0xdeadbeef);
     memcpy(abFreeDescriptorSets + 16, &uWrongDescriptorPool, sizeof(uWrongDescriptorPool));
     RTTESTI_CHECK(!virtioGpuR3EncodeVenusProtocolReply(pGpu, abFreeDescriptorSets,
@@ -2753,7 +2799,8 @@ int main(int argc, char **argv)
                   && virtioGpuR3EncodeVenusProtocolReply(pGpu, abFreeDescriptorSets,
                                                           sizeof(abFreeDescriptorSets), abProtocolReply,
                                                           sizeof(abProtocolReply), &cbProtocolReply)
-                  && cbProtocolReply == 8 && !virtioGpuR3FindOpaqueObject(pGpu, uDescriptorSetObject));
+                  && cbProtocolReply == 8 && !virtioGpuR3FindOpaqueObject(pGpu, uDescriptorSetObject)
+                  && !virtioGpuR3FindOpaqueObject(pGpu, uDescriptorSetObject2));
     memcpy(abDestroyOpaque + 0, &uDestroyDescriptorLayoutType, sizeof(uDestroyDescriptorLayoutType));
     memcpy(abDestroyOpaque + 16, &uDescriptorLayoutObject2, sizeof(uDescriptorLayoutObject2));
     RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abDestroyOpaque, sizeof(abDestroyOpaque),
