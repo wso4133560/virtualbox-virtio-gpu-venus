@@ -363,6 +363,7 @@ AssertCompileSize(VIRTIOGPUMOVECURSOR, 40);
 #define VIRTIOGPU_TARGET_2D                    UINT32_C(2)
 #define VIRTIOGPU_RESOURCE_FLAG_Y_0_TOP        UINT32_C(1)
 #define VIRTIOGPU_FLAG_FENCE                UINT32_C(1)
+#define VIRTIOGPU_FLAG_INFO_RING_IDX        UINT32_C(2)
 
 /* VirtIO-GPU device feature bits from the transport specification. */
 #define VIRTIOGPU_F_VIRGL                   (UINT64_C(1) << 0)

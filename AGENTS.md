@@ -324,4 +324,14 @@ git ls-remote origin refs/heads/main
 - `.build\\windows\\virtualbox-virtio-gpu-venus-backing-v25-final.zip` 包含 257 个文件，ZIP SHA256 为 `6FEDC42622936A3527C61176038714608A9AE89BBAFCB16F3B01835320DC6797`；包校验的 manifest、版本、VirtIO-GPU/Venus 回归和 PE/VMMR0 加载均通过。
 - 一次 workload 重试曾因 Venus ring 的 `QUEUE_SUBMIT` 解析在第 1024 次附近触发 fatal；同一修订后的复验通过，不能把单次失败扩大为稳定性结论。
 
+## 2026-09-29 SUBMIT_3D INFO_RING_IDX flag
+
+- Linux virtio-gpu 控制头的 `flags=0x3` 同时表示 `FENCE` 和 `INFO_RING_IDX`；旧实现只允许 `FENCE`，因此把合法的空 `SUBMIT_3D` fence carrier 错误返回为 `0x1205`。
+- 新增 `VIRTIOGPU_FLAG_INFO_RING_IDX`，control/cursor 队列现在拒绝未知 flag、接受标准 `INFO_RING_IDX`，并保留已有 fence 回包语义；宿主回归新增该组合的空 `SUBMIT_3D` 检查。
+- 干净构建的宿主回归 `.build\windows\virtio-gpu-validation.json` 通过 61 组，`missingGroups=[]`，`-IncludeRegistration` 通过；`VBoxDD.dll` SHA256 为 `3DBAFB3B67BC98FBC651F02B5002B767EDF2F495A6F9DA954AD2C95C05494331`。
+- 客体标准报告 `.build\windows\linux-venus-info-ring-final\report.json`：`guestVulkanVerified=true`、1 秒 workload 482 次、`guestVulkanWorkloadExit=0`、`vboxSupState=RUNNING`、`cleanupErrors=[]`、`passed=true`；对应 `serial.log` 不再出现 `response 0x1205 (command 0x207)`。
+- 同一 DLL 的 saved-state 报告 `.build\windows\linux-venus-info-ring-save-final2\report.json`：`guestVulkanVerified=true`、1 秒 workload 577 次、`saveRestoreVerified=true`、`saveRestoreVulkanExit=0`、`cleanupErrors=[]`、`passed=true`；恢复串口同样无 `0x1205/0x207`。
+- 最终运行时包 `.build\windows\virtualbox-virtio-gpu-venus-info-ring-final.zip` 共 257 个文件，ZIP SHA256 为 `30FB048412B4840140056CDF8788698D9D5B5BE6CDE951BE6ADEDDA7D75EC04B`；manifest、版本 `7.2.6r172322`、VirtIO-GPU/Venus 回归和 PE/VMMR0 加载均通过。
+- 完整 Venus renderer protocol、所有 Vulkan 对象/查询、真实桌面 framebuffer/cursor/任意分辨率端到端验收、8 小时压力、完整性能矩阵和正式 Windows 安装器仍未完成。
+
 只提交本阶段相关文件，保留测试报告在 `.build` 下，不要提交临时 VM 密钥、磁盘或 core dump。

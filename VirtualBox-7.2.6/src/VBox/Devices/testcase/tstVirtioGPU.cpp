@@ -849,6 +849,24 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(g_abRam[0x5000 + 408] == 0xa5);
     RTTESTI_CHECK(g_cIrqs > 0);
 
+    RTTestSub(g_hTest, "control flags with info ring index");
+    VIRTIOGPUSUBMIT3D SubmitFlags = { 0, 0 };
+    uint16_t uBeforeFlags = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
+    tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_SUBMIT_3D, &SubmitFlags,
+                   sizeof(SubmitFlags), sizeof(VIRTIOGPUCTRLHDR), 0);
+    VIRTIOGPUCTRLHDR SubmitReq;
+    memcpy(&SubmitReq, &g_abRam[0x4000], sizeof(SubmitReq));
+    SubmitReq.uFlags = VIRTIOGPU_FLAG_FENCE | VIRTIOGPU_FLAG_INFO_RING_IDX;
+    SubmitReq.uFenceId = UINT64_C(0x1122334455667788);
+    SubmitReq.uPadding = 0;
+    memcpy(&g_abRam[0x4000], &SubmitReq, sizeof(SubmitReq));
+    virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
+    RTTESTI_CHECK(tstCompletion(&pGpu->Virtio, 0, uBeforeFlags) == sizeof(VIRTIOGPUCTRLHDR));
+    memcpy(&Resp, &g_abRam[0x5000], sizeof(Resp.Hdr));
+    RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA
+                  && Resp.Hdr.uFlags == VIRTIOGPU_FLAG_FENCE
+                  && Resp.Hdr.uFenceId == SubmitReq.uFenceId);
+
     VIRTIOGPUGETEDID GetEdid = { 0, 0 };
     uint16_t uBefore = pGpu->Virtio.aVirtqueues[0].uUsedIdxShadow;
     tstPostCommand(&pGpu->Virtio, 0, VIRTIOGPU_CMD_GET_EDID, &GetEdid, sizeof(GetEdid),
@@ -4214,7 +4232,7 @@ int main(int argc, char **argv)
         { 24, 0,  0x100, 0, 0, 0 },
         { 24, 24, 0x100, 0, 24, 0x1205 },
         { 24, 24, 0xffff, 0, 24, 0x1200 },
-        { 24, 408, 0x100, 2, 24, 0x1205 },
+        { 24, 408, 0x100, 2, 408, 0x1101 },
         { 0, 24, 0x100, 0, 24, 0x1205 }
     };
     for (unsigned i = 0; i < RT_ELEMENTS(aCases); ++i)

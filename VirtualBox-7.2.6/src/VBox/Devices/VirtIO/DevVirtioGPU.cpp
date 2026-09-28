@@ -9914,7 +9914,9 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
     bool fPreserveResponse = false;
     void *pvResponse = &Resp;
     int rcReq = virtioGpuR3Read(pDevIns, pVirtio, pBuf, &Req, sizeof(Req));
-    uint32_t uResponse = RT_FAILURE(rcReq) || (RT_SUCCESS(rcReq) && (Req.uFlags & ~VIRTIOGPU_FLAG_FENCE))
+    uint32_t uResponse = RT_FAILURE(rcReq)
+                        || (RT_SUCCESS(rcReq)
+                            && (Req.uFlags & ~(VIRTIOGPU_FLAG_FENCE | VIRTIOGPU_FLAG_INFO_RING_IDX)))
                         ? VIRTIOGPU_RESP_ERR_INVALID_PARAMETER : VIRTIOGPU_RESP_ERR_UNSPEC;
     if ((uQueue == VIRTIOGPU_QUEUE_CONTROL || uQueue == VIRTIOGPU_QUEUE_CURSOR)
         && pBuf->cbPhysReturn >= sizeof(Resp.Hdr))
@@ -9922,7 +9924,9 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
         virtioGpuR3Response(&Resp, &Req, uResponse);
         cbResp = sizeof(Resp.Hdr);
     }
-    if (RT_SUCCESS(rcReq) && !(Req.uFlags & ~VIRTIOGPU_FLAG_FENCE) && uQueue == VIRTIOGPU_QUEUE_CONTROL)
+    if (RT_SUCCESS(rcReq)
+        && !(Req.uFlags & ~(VIRTIOGPU_FLAG_FENCE | VIRTIOGPU_FLAG_INFO_RING_IDX))
+        && uQueue == VIRTIOGPU_QUEUE_CONTROL)
     {
         switch (Req.uType)
         {
@@ -11444,7 +11448,8 @@ static int virtioGpuR3Complete(PPDMDEVINS pDevIns, PVIRTIOCORE pVirtio, uint16_t
                 break;
         }
     }
-    else if (RT_SUCCESS(rcReq) && !(Req.uFlags & ~VIRTIOGPU_FLAG_FENCE)
+    else if (RT_SUCCESS(rcReq)
+             && !(Req.uFlags & ~(VIRTIOGPU_FLAG_FENCE | VIRTIOGPU_FLAG_INFO_RING_IDX))
              && uQueue == VIRTIOGPU_QUEUE_CURSOR)
     {
         PVIRTIOGPUCC pThisCC = PDMDEVINS_2_DATA_CC(pDevIns, PVIRTIOGPUCC);
