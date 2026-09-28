@@ -52,6 +52,8 @@ $image = .\tools\get-linux-test-image.ps1
 
 当前 host Vulkan object 依赖顺序修复后的复验报告为 `.build/windows/linux-venus-host-objects7/report.json`、`.build/windows/linux-venus-host-objects30-7/report.json`、`.build/windows/linux-venus-host-objects-save7/report.json` 和 `.build/windows/linux-venus-host-objects-reset7/report.json`：标准 5 秒 workload 3268 次、30 秒 workload 21195 次，saved-state 初始/恢复 workload 2924/3073 次，reset 初始/恢复 workload 3087/3407 次；四份报告均 `passed=true`、`cleanupErrors=[]`，对应日志均包含 `VULKANINFO_PASS` 和 `VULKAN_WORKLOAD_PASS`。
 
+当前 host fence/semaphore 同步对象改动后的复验报告为 `.build/windows/linux-venus-host-sync3/report.json`、`.build/windows/linux-venus-host-sync-repeat3/report.json`、`.build/windows/linux-venus-host-sync-save3/report.json` 和 `.build/windows/linux-venus-host-sync-reset3/report.json`：标准/重复启动 workload 3288/3516 次，saved-state 初始/恢复 workload 3027/3073 次，reset 初始/恢复 workload 3267/3141 次；四份报告均 `passed=true`、`cleanupErrors=[]`，对应日志均包含 `VULKANINFO_PASS` 和 `VULKAN_WORKLOAD_PASS`，使用的 `VBoxDD.dll` SHA256 为 `FE0A10401151BA094A6D78877134D9D204E00B7FFC2190DE7B011D4711DFF7BD`。
+
 `vkQueueSubmit2`/idle 回复改动后的标准报告 `.build/windows/linux-venus-submit2-admin56/report.json` 同样满足 `guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`guestVulkanExit=0` 和 `cleanupErrors=[]`。
 
 ## 2026-09-14 协议修复证据

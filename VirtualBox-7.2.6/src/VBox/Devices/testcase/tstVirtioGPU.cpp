@@ -2400,6 +2400,8 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(pSemaphore && !pSemaphore->fSignaled && cbProtocolReply == 24
                   && uCreateSemaphoreReplyType == uCreateSemaphoreType
                   && uCreateSemaphoreReplyResult == VK_SUCCESS);
+    if (fHostOpaqueObjects)
+        RTTESTI_CHECK(pSemaphore && pSemaphore->hVkSemaphore != VK_NULL_HANDLE);
     if (pSemaphore)
     {
         pSemaphore->fSignaled = true;
@@ -2452,6 +2454,60 @@ int main(int argc, char **argv)
                                                            sizeof(abProtocolReply), &cbProtocolReply)
                       && cbProtocolReply == 4 && !virtioGpuR3FindSemaphore(pGpu, uSemaphore));
     }
+    RTTestSub(g_hTest, "Venus host fence lifecycle");
+    uint8_t abCreateFence[64] = { 0 };
+    uint32_t uCreateFenceType = VIRTIOGPU_VK_CMD_CREATE_FENCE;
+    uint64_t uFenceDevice = UINT64_C(0x1001), fFenceCreateInfo = 1;
+    uint32_t uFenceSType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, fFenceFlags = 0;
+    uint64_t fFencePNext = 0, fFenceAllocator = 0, fFenceOutput = 1;
+    uint64_t uHostFence = UINT64_C(0x5523);
+    memcpy(abCreateFence + 0, &uCreateFenceType, sizeof(uCreateFenceType));
+    memcpy(abCreateFence + 8, &uFenceDevice, sizeof(uFenceDevice));
+    memcpy(abCreateFence + 16, &fFenceCreateInfo, sizeof(fFenceCreateInfo));
+    memcpy(abCreateFence + 24, &uFenceSType, sizeof(uFenceSType));
+    memcpy(abCreateFence + 28, &fFencePNext, sizeof(fFencePNext));
+    memcpy(abCreateFence + 36, &fFenceFlags, sizeof(fFenceFlags));
+    memcpy(abCreateFence + 40, &fFenceAllocator, sizeof(fFenceAllocator));
+    memcpy(abCreateFence + 48, &fFenceOutput, sizeof(fFenceOutput));
+    memcpy(abCreateFence + 56, &uHostFence, sizeof(uHostFence));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abCreateFence, sizeof(abCreateFence),
+                                                       abProtocolReply, sizeof(abProtocolReply),
+                                                       &cbProtocolReply));
+    PVIRTIOGPUFENCESTATE pHostFence = virtioGpuR3FindFence(pGpu, uHostFence);
+    RTTESTI_CHECK(pHostFence && !pHostFence->fSignaled && cbProtocolReply == 24);
+    if (fHostOpaqueObjects)
+        RTTESTI_CHECK(pHostFence && pHostFence->hVkFence != VK_NULL_HANDLE);
+    uint8_t abFenceStatus[24] = { 0 };
+    uint32_t uFenceStatusType = VIRTIOGPU_VK_CMD_GET_FENCE_STATUS;
+    memcpy(abFenceStatus + 0, &uFenceStatusType, sizeof(uFenceStatusType));
+    memcpy(abFenceStatus + 8, &uFenceDevice, sizeof(uFenceDevice));
+    memcpy(abFenceStatus + 16, &uHostFence, sizeof(uHostFence));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abFenceStatus, sizeof(abFenceStatus),
+                                                       abProtocolReply, sizeof(abProtocolReply),
+                                                       &cbProtocolReply)
+                  && cbProtocolReply == 8);
+    uint8_t abResetFence[36] = { 0 };
+    uint32_t uResetFenceType = VIRTIOGPU_VK_CMD_RESET_FENCES;
+    uint32_t cResetFence = 1;
+    uint64_t cResetFenceEncoded = 1;
+    memcpy(abResetFence + 0, &uResetFenceType, sizeof(uResetFenceType));
+    memcpy(abResetFence + 8, &uFenceDevice, sizeof(uFenceDevice));
+    memcpy(abResetFence + 16, &cResetFence, sizeof(cResetFence));
+    memcpy(abResetFence + 20, &cResetFenceEncoded, sizeof(cResetFenceEncoded));
+    memcpy(abResetFence + 28, &uHostFence, sizeof(uHostFence));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abResetFence, sizeof(abResetFence),
+                                                       abProtocolReply, sizeof(abProtocolReply),
+                                                       &cbProtocolReply)
+                  && cbProtocolReply == 8 && pHostFence && !pHostFence->fSignaled);
+    uint8_t abDestroyFence[32] = { 0 };
+    uint32_t uDestroyFenceType = VIRTIOGPU_VK_CMD_DESTROY_FENCE;
+    memcpy(abDestroyFence + 0, &uDestroyFenceType, sizeof(uDestroyFenceType));
+    memcpy(abDestroyFence + 8, &uFenceDevice, sizeof(uFenceDevice));
+    memcpy(abDestroyFence + 16, &uHostFence, sizeof(uHostFence));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abDestroyFence, sizeof(abDestroyFence),
+                                                       abProtocolReply, sizeof(abProtocolReply),
+                                                       &cbProtocolReply)
+                  && cbProtocolReply == 4 && !virtioGpuR3FindFence(pGpu, uHostFence));
     RTTestSub(g_hTest, "Venus timeline semaphore query, signal and wait");
     uint8_t abCreateTimeline[88] = { 0 };
     uint64_t uTimelineSemaphore = UINT64_C(0x5522);
@@ -2479,6 +2535,8 @@ int main(int argc, char **argv)
     PVIRTIOGPUSEMAPHORESTATE pTimeline = virtioGpuR3FindSemaphore(pGpu, uTimelineSemaphore);
     RTTESTI_CHECK(pTimeline && pTimeline->fTimeline && pTimeline->uValue == uTimelineInitialValue
                   && cbProtocolReply == 24);
+    if (fHostOpaqueObjects)
+        RTTESTI_CHECK(pTimeline && pTimeline->hVkSemaphore != VK_NULL_HANDLE);
     uint8_t abGetTimeline[32] = { 0 };
     uint32_t uGetTimelineType = VIRTIOGPU_VK_CMD_GET_SEMAPHORE_COUNTER_VALUE;
     memcpy(abGetTimeline + 0, &uGetTimelineType, sizeof(uGetTimelineType));
@@ -2564,6 +2622,8 @@ int main(int argc, char **argv)
     pTimeline = virtioGpuR3FindSemaphore(pGpu, uTimelineSemaphore);
     RTTESTI_CHECK(pTimeline && pTimeline->fTimeline && !pTimeline->fSignaled
                   && pTimeline->uValue == uTimelineSignalValue);
+    if (fHostOpaqueObjects)
+        RTTESTI_CHECK(pTimeline && pTimeline->hVkSemaphore != VK_NULL_HANDLE);
     uint8_t abDestroyTimeline[32] = { 0 };
     uint32_t uDestroyTimelineType = VIRTIOGPU_VK_CMD_DESTROY_SEMAPHORE;
     memcpy(abDestroyTimeline + 0, &uDestroyTimelineType, sizeof(uDestroyTimelineType));

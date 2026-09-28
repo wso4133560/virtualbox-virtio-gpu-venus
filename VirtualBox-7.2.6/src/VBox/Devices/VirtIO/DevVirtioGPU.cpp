@@ -283,6 +283,9 @@ typedef struct VIRTIOGPUFENCESTATE
 {
     uint64_t uFence;
     bool fSignaled;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    VkFence hVkFence;
+#endif
 } VIRTIOGPUFENCESTATE;
 typedef VIRTIOGPUFENCESTATE *PVIRTIOGPUFENCESTATE;
 
@@ -292,6 +295,9 @@ typedef struct VIRTIOGPUSEMAPHORESTATE
     bool fTimeline;
     bool fSignaled;
     uint64_t uValue;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    VkSemaphore hVkSemaphore;
+#endif
 } VIRTIOGPUSEMAPHORESTATE;
 typedef VIRTIOGPUSEMAPHORESTATE *PVIRTIOGPUSEMAPHORESTATE;
 
@@ -682,13 +688,166 @@ static PVIRTIOGPUSEMAPHORESTATE virtioGpuR3GetSemaphore(PVIRTIOGPU pThis,
     return NULL;
 }
 
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+static PFN_vkGetDeviceProcAddr virtioGpuR3GetVenusDeviceProcAddr(PVIRTIOGPU pThis);
+
+static void virtioGpuR3DestroyFenceHost(PVIRTIOGPU pThis, PVIRTIOGPUFENCESTATE pFence)
+{
+    if (!pThis || !pFence || pFence->hVkFence == VK_NULL_HANDLE || pThis->hVkDevice == VK_NULL_HANDLE)
+        return;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr = virtioGpuR3GetVenusDeviceProcAddr(pThis);
+    PFN_vkDestroyFence pfnDestroyFence = pfnGetDeviceProcAddr
+        ? (PFN_vkDestroyFence)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkDestroyFence") : NULL;
+    if (pfnDestroyFence)
+        pfnDestroyFence(pThis->hVkDevice, pFence->hVkFence, NULL);
+    pFence->hVkFence = VK_NULL_HANDLE;
+}
+
+static void virtioGpuR3DestroySemaphoreHost(PVIRTIOGPU pThis,
+                                             PVIRTIOGPUSEMAPHORESTATE pSemaphore)
+{
+    if (!pThis || !pSemaphore || pSemaphore->hVkSemaphore == VK_NULL_HANDLE
+        || pThis->hVkDevice == VK_NULL_HANDLE)
+        return;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr = virtioGpuR3GetVenusDeviceProcAddr(pThis);
+    PFN_vkDestroySemaphore pfnDestroySemaphore = pfnGetDeviceProcAddr
+        ? (PFN_vkDestroySemaphore)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkDestroySemaphore") : NULL;
+    if (pfnDestroySemaphore)
+        pfnDestroySemaphore(pThis->hVkDevice, pSemaphore->hVkSemaphore, NULL);
+    pSemaphore->hVkSemaphore = VK_NULL_HANDLE;
+}
+
+static bool virtioGpuR3CreateFenceHost(PVIRTIOGPU pThis, PVIRTIOGPUFENCESTATE pFence,
+                                       VkFenceCreateFlags fFlags)
+{
+    if (!pThis || !pFence || pThis->hVkDevice == VK_NULL_HANDLE)
+        return true;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr = virtioGpuR3GetVenusDeviceProcAddr(pThis);
+    PFN_vkCreateFence pfnCreateFence = pfnGetDeviceProcAddr
+        ? (PFN_vkCreateFence)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkCreateFence") : NULL;
+    if (!pfnCreateFence)
+        return false;
+    VkFenceCreateInfo const Info = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, NULL, fFlags };
+    return pfnCreateFence(pThis->hVkDevice, &Info, NULL, &pFence->hVkFence) == VK_SUCCESS;
+}
+
+static bool virtioGpuR3CreateSemaphoreHost(PVIRTIOGPU pThis,
+                                            PVIRTIOGPUSEMAPHORESTATE pSemaphore,
+                                            bool fTimeline, uint64_t uInitialValue)
+{
+    if (!pThis || !pSemaphore || pThis->hVkDevice == VK_NULL_HANDLE)
+        return true;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr = virtioGpuR3GetVenusDeviceProcAddr(pThis);
+    PFN_vkCreateSemaphore pfnCreateSemaphore = pfnGetDeviceProcAddr
+        ? (PFN_vkCreateSemaphore)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkCreateSemaphore") : NULL;
+    if (!pfnCreateSemaphore)
+        return false;
+    VkSemaphoreTypeCreateInfo TypeInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO, NULL,
+                                           VK_SEMAPHORE_TYPE_BINARY, 0 };
+    if (fTimeline)
+    {
+        TypeInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+        TypeInfo.initialValue = uInitialValue;
+    }
+    VkSemaphoreCreateInfo const Info = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                                         fTimeline ? &TypeInfo : NULL, 0 };
+    return pfnCreateSemaphore(pThis->hVkDevice, &Info, NULL, &pSemaphore->hVkSemaphore) == VK_SUCCESS;
+}
+
+static bool virtioGpuR3QueryFenceHost(PVIRTIOGPU pThis, PVIRTIOGPUFENCESTATE pFence,
+                                      bool *pfSignaled)
+{
+    if (!pFence || !pfSignaled || pFence->hVkFence == VK_NULL_HANDLE || !pThis
+        || pThis->hVkDevice == VK_NULL_HANDLE)
+        return false;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr = virtioGpuR3GetVenusDeviceProcAddr(pThis);
+    PFN_vkGetFenceStatus pfnGetFenceStatus = pfnGetDeviceProcAddr
+        ? (PFN_vkGetFenceStatus)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkGetFenceStatus") : NULL;
+    if (!pfnGetFenceStatus)
+        return false;
+    VkResult const rc = pfnGetFenceStatus(pThis->hVkDevice, pFence->hVkFence);
+    if (rc == VK_SUCCESS)
+    {
+        *pfSignaled = true;
+        return true;
+    }
+    if (rc == VK_NOT_READY)
+    {
+        *pfSignaled = false;
+        return true;
+    }
+    return false;
+}
+
+static bool virtioGpuR3CompleteFenceHost(PVIRTIOGPU pThis, PVIRTIOGPUFENCESTATE pFence)
+{
+    if (!pFence || pFence->hVkFence == VK_NULL_HANDLE || !pThis
+        || pThis->hVkDevice == VK_NULL_HANDLE || pThis->hVkQueue == VK_NULL_HANDLE)
+        return true;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr = virtioGpuR3GetVenusDeviceProcAddr(pThis);
+    PFN_vkResetFences pfnResetFences = pfnGetDeviceProcAddr
+        ? (PFN_vkResetFences)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkResetFences") : NULL;
+    PFN_vkQueueSubmit pfnQueueSubmit = pfnGetDeviceProcAddr
+        ? (PFN_vkQueueSubmit)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkQueueSubmit") : NULL;
+    PFN_vkWaitForFences pfnWaitForFences = pfnGetDeviceProcAddr
+        ? (PFN_vkWaitForFences)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkWaitForFences") : NULL;
+    if (!pfnResetFences || !pfnQueueSubmit || !pfnWaitForFences
+        || pfnResetFences(pThis->hVkDevice, 1, &pFence->hVkFence) != VK_SUCCESS)
+        return false;
+    VkSubmitInfo const Submit = { VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, 0, NULL, NULL, 0, NULL, 0, NULL };
+    if (pfnQueueSubmit(pThis->hVkQueue, 1, &Submit, pFence->hVkFence) != VK_SUCCESS)
+        return false;
+    return pfnWaitForFences(pThis->hVkDevice, 1, &pFence->hVkFence, VK_TRUE,
+                            UINT64_C(1000000000)) == VK_SUCCESS;
+}
+
+static bool virtioGpuR3QueryTimelineSemaphoreHost(PVIRTIOGPU pThis,
+                                                   PVIRTIOGPUSEMAPHORESTATE pSemaphore,
+                                                   uint64_t *puValue)
+{
+    if (!pThis || !pSemaphore || !puValue || !pSemaphore->fTimeline
+        || pSemaphore->hVkSemaphore == VK_NULL_HANDLE || pThis->hVkDevice == VK_NULL_HANDLE)
+        return false;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr = virtioGpuR3GetVenusDeviceProcAddr(pThis);
+    PFN_vkGetSemaphoreCounterValue pfnGetCounter = pfnGetDeviceProcAddr
+        ? (PFN_vkGetSemaphoreCounterValue)pfnGetDeviceProcAddr(pThis->hVkDevice,
+                                                                "vkGetSemaphoreCounterValue") : NULL;
+    if (!pfnGetCounter || pfnGetCounter(pThis->hVkDevice, pSemaphore->hVkSemaphore, puValue) != VK_SUCCESS)
+        return false;
+    pSemaphore->uValue = RT_MAX(pSemaphore->uValue, *puValue);
+    return true;
+}
+
+static bool virtioGpuR3SignalTimelineSemaphoreHost(PVIRTIOGPU pThis,
+                                                    PVIRTIOGPUSEMAPHORESTATE pSemaphore,
+                                                    uint64_t uValue)
+{
+    if (!pThis || !pSemaphore || !pSemaphore->fTimeline
+        || pSemaphore->hVkSemaphore == VK_NULL_HANDLE || pThis->hVkDevice == VK_NULL_HANDLE)
+        return false;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr = virtioGpuR3GetVenusDeviceProcAddr(pThis);
+    PFN_vkSignalSemaphore pfnSignal = pfnGetDeviceProcAddr
+        ? (PFN_vkSignalSemaphore)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkSignalSemaphore") : NULL;
+    VkSemaphoreSignalInfo const Info = { VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO, NULL,
+                                         pSemaphore->hVkSemaphore, uValue };
+    return pfnSignal && pfnSignal(pThis->hVkDevice, &Info) == VK_SUCCESS;
+}
+#endif
+
 static bool virtioGpuR3WaitSemaphore(PVIRTIOGPU pThis, uint64_t uSemaphore, uint64_t uValue)
 {
     PVIRTIOGPUSEMAPHORESTATE pState = virtioGpuR3FindSemaphore(pThis, uSemaphore);
     if (!pState)
         return false;
     if (pState->fTimeline)
+    {
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+        uint64_t uHostValue = 0;
+        if (virtioGpuR3QueryTimelineSemaphoreHost(pThis, pState, &uHostValue))
+            return uHostValue >= uValue;
+#endif
         return pState->uValue >= uValue;
+    }
     if (uValue || !pState->fSignaled)
         return false;
     pState->fSignaled = false;
@@ -704,6 +863,11 @@ static bool virtioGpuR3SignalSemaphore(PVIRTIOGPU pThis, uint64_t uSemaphore, ui
     {
         if (uValue <= pState->uValue)
             return false;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+        if (pState->hVkSemaphore != VK_NULL_HANDLE
+            && !virtioGpuR3SignalTimelineSemaphoreHost(pThis, pState, uValue))
+            return false;
+#endif
         pState->uValue = uValue;
         return true;
     }
@@ -2838,6 +3002,14 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                 if (!pFence)
                     return false;
                 pFence->fSignaled = !!(fFence & VK_FENCE_CREATE_SIGNALED_BIT);
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                if (!virtioGpuR3CreateFenceHost(pThis, pFence,
+                                                pFence->fSignaled ? VK_FENCE_CREATE_SIGNALED_BIT : 0))
+                {
+                    RT_ZERO(*pFence);
+                    return false;
+                }
+#endif
             }
             if (fOutputId && fOutput && uType == VIRTIOGPU_VK_CMD_CREATE_SEMAPHORE)
             {
@@ -2854,6 +3026,13 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                 pSemaphore->fTimeline = fTimeline;
                 pSemaphore->fSignaled = false;
                 pSemaphore->uValue = uInitialValue;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                if (!virtioGpuR3CreateSemaphoreHost(pThis, pSemaphore, fTimeline, uInitialValue))
+                {
+                    RT_ZERO(*pSemaphore);
+                    return false;
+                }
+#endif
             }
             if (!fOutputId
                 || !virtioGpuR3VenusPutU32(&Enc, uType)
@@ -3115,7 +3294,11 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                 return false;
             PVIRTIOGPUSEMAPHORESTATE pSemaphore = virtioGpuR3FindSemaphore(pThis, uSemaphore);
             VkResult rcVk = pSemaphore && pSemaphore->fTimeline ? VK_SUCCESS : VK_ERROR_FEATURE_NOT_PRESENT;
-            uint64_t const uValue = pSemaphore ? pSemaphore->uValue : 0;
+            uint64_t uValue = pSemaphore ? pSemaphore->uValue : 0;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+            if (pSemaphore && pSemaphore->fTimeline)
+                virtioGpuR3QueryTimelineSemaphoreHost(pThis, pSemaphore, &uValue);
+#endif
             if (!virtioGpuR3VenusPutResult(&Enc, rcVk)
                 || !virtioGpuR3VenusPutU64(&Enc, fOutput)
                 || (fOutput && !virtioGpuR3VenusPutU64(&Enc, uValue)))
@@ -3256,6 +3439,10 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                 PVIRTIOGPUFENCESTATE pFence = virtioGpuR3FindFence(pThis, uId);
                 if (!pFence)
                     return false;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                if (!virtioGpuR3CompleteFenceHost(pThis, pFence))
+                    return false;
+#endif
                 pFence->fSignaled = true;
             }
             if (!virtioGpuR3VenusPutU32(&Enc, uType)
@@ -3345,6 +3532,10 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                 PVIRTIOGPUFENCESTATE pFence = virtioGpuR3FindFence(pThis, uId);
                 if (!pFence)
                     return false;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                if (!virtioGpuR3CompleteFenceHost(pThis, pFence))
+                    return false;
+#endif
                 pFence->fSignaled = true;
             }
             if (!virtioGpuR3VenusPutU32(&Enc, uType)
@@ -3357,9 +3548,15 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
             if (!virtioGpuR3VenusReadU64(pb, cb, 16, &uId))
                 return false;
             PVIRTIOGPUFENCESTATE pFence = virtioGpuR3FindFence(pThis, uId);
+            bool fSignaled = pFence && pFence->fSignaled;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+            if (pFence && pFence->hVkFence != VK_NULL_HANDLE)
+                virtioGpuR3QueryFenceHost(pThis, pFence, &fSignaled);
+#endif
             if (!pFence || !virtioGpuR3VenusPutU32(&Enc, uType)
-                || !virtioGpuR3VenusPutResult(&Enc, pFence->fSignaled ? VK_SUCCESS : VK_NOT_READY))
+                || !virtioGpuR3VenusPutResult(&Enc, fSignaled ? VK_SUCCESS : VK_NOT_READY))
                 return false;
+            pFence->fSignaled = fSignaled;
             break;
         }
         case VIRTIOGPU_VK_CMD_WAIT_FOR_FENCES:
@@ -3385,8 +3582,14 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                 if (!virtioGpuR3VenusReadU64(pb, cb, 28 + i * 8, &uId)) return false;
                 PVIRTIOGPUFENCESTATE pFence = virtioGpuR3FindFence(pThis, uId);
                 if (!pFence) return false;
-                fAny |= pFence->fSignaled;
-                if (fWaitAll) fReady &= pFence->fSignaled;
+                bool fSignaled = pFence->fSignaled;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                if (pFence->hVkFence != VK_NULL_HANDLE)
+                    virtioGpuR3QueryFenceHost(pThis, pFence, &fSignaled);
+#endif
+                pFence->fSignaled = fSignaled;
+                fAny |= fSignaled;
+                if (fWaitAll) fReady &= fSignaled;
             }
             if (!fWaitAll) fReady = fAny;
             (void)uTimeout;
@@ -3409,6 +3612,17 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                 if (!virtioGpuR3VenusReadU64(pb, cb, 28 + i * 8, &uId)) return false;
                 PVIRTIOGPUFENCESTATE pFence = virtioGpuR3FindFence(pThis, uId);
                 if (!pFence) return false;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                if (pFence->hVkFence != VK_NULL_HANDLE)
+                {
+                    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr = virtioGpuR3GetVenusDeviceProcAddr(pThis);
+                    PFN_vkResetFences pfnResetFences = pfnGetDeviceProcAddr
+                        ? (PFN_vkResetFences)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkResetFences") : NULL;
+                    if (!pfnResetFences
+                        || pfnResetFences(pThis->hVkDevice, 1, &pFence->hVkFence) != VK_SUCCESS)
+                        return false;
+                }
+#endif
                 pFence->fSignaled = false;
             }
             if (!virtioGpuR3VenusPutU32(&Enc, uType)
@@ -3496,10 +3710,20 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
             if (uType == VIRTIOGPU_VK_CMD_DESTROY_FENCE)
             {
                 if (PVIRTIOGPUFENCESTATE pFence = virtioGpuR3FindFence(pThis, uId))
+                {
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                    virtioGpuR3DestroyFenceHost(pThis, pFence);
+#endif
                     RT_ZERO(*pFence);
+                }
             }
             else if (PVIRTIOGPUSEMAPHORESTATE pSemaphore = virtioGpuR3FindSemaphore(pThis, uId))
+            {
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                virtioGpuR3DestroySemaphoreHost(pThis, pSemaphore);
+#endif
                 RT_ZERO(*pSemaphore);
+            }
             if (!virtioGpuR3VenusPutU32(&Enc, uType))
                 return false;
             break;
@@ -4740,8 +4964,20 @@ static void virtioGpuR3FreeResources(PVIRTIOGPU pThis)
         virtioGpuR3ClearCommandBufferCommands(&pThis->aCommandBuffers[i]);
         RT_ZERO(pThis->aCommandBuffers[i]);
     }
-    RT_ZERO(pThis->aFences);
-    RT_ZERO(pThis->aSemaphores);
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aFences); ++i)
+    {
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+        virtioGpuR3DestroyFenceHost(pThis, &pThis->aFences[i]);
+#endif
+        RT_ZERO(pThis->aFences[i]);
+    }
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aSemaphores); ++i)
+    {
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+        virtioGpuR3DestroySemaphoreHost(pThis, &pThis->aSemaphores[i]);
+#endif
+        RT_ZERO(pThis->aSemaphores[i]);
+    }
     for (unsigned i = 0; i < RT_ELEMENTS(pThis->aOpaqueObjects); ++i)
     {
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
@@ -10143,6 +10379,12 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
             if (pThis->aFences[j].uFence
                 && pThis->aFences[j].uFence == pFence->uFence)
                 fValid = false;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+        if (RT_SUCCESS(rc) && fValid && pFence->uFence
+            && !virtioGpuR3CreateFenceHost(pThis, pFence,
+                                           pFence->fSignaled ? VK_FENCE_CREATE_SIGNALED_BIT : 0))
+            fValid = false;
+#endif
         if (RT_SUCCESS(rc) && !fValid)
             rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
     }
@@ -10163,6 +10405,12 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
             if (pThis->aSemaphores[j].uSemaphore
                 && pThis->aSemaphores[j].uSemaphore == pSemaphore->uSemaphore)
                 fValid = false;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+        if (RT_SUCCESS(rc) && fValid && pSemaphore->uSemaphore
+            && !virtioGpuR3CreateSemaphoreHost(pThis, pSemaphore, pSemaphore->fTimeline,
+                                                pSemaphore->uValue))
+            fValid = false;
+#endif
         if (RT_SUCCESS(rc) && !fValid)
             rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
     }
@@ -10344,6 +10592,10 @@ static DECLCALLBACK(void) virtioGpuR3Reset(PPDMDEVINS pDevIns)
     PVIRTIOGPU pThis = PDMDEVINS_2_DATA(pDevIns, PVIRTIOGPU);
     PVIRTIOGPUCC pThisCC = PDMDEVINS_2_DATA_CC(pDevIns, PVIRTIOGPUCC);
     virtioCoreR3ResetDevice(pDevIns, &pThis->Virtio, &pThisCC->Virtio);
+    /* A device reset invalidates all guest Vulkan identities.  Release their
+     * host resources as part of reset so a subsequent guest init cannot reuse
+     * stale fences, semaphores, bindings or ring metadata. */
+    virtioGpuR3FreeResources(pThis);
 }
 
 static DECLCALLBACK(int) virtioGpuR3Destruct(PPDMDEVINS pDevIns)

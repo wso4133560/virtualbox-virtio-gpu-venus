@@ -123,7 +123,8 @@ foreach ($scenario in @('linux-venus-before', 'linux-venus-final', 'linux-softwa
                         'linux-venus-opaque-objects5', 'linux-venus-recording-defer30',
                         'linux-venus-recording-save5', 'linux-venus-recording-reset5',
                         'linux-venus-host-objects7', 'linux-venus-host-objects30-7', 'linux-venus-host-objects-save7',
-                        'linux-venus-host-objects-reset7')) {
+                        'linux-venus-host-objects-reset7', 'linux-venus-host-sync3', 'linux-venus-host-sync-repeat3',
+                        'linux-venus-host-sync-save3', 'linux-venus-host-sync-reset3')) {
     $sourceDir = Join-Path $repoRoot (Join-Path '.build\windows' $scenario)
     if (Test-Path -LiteralPath $sourceDir -PathType Container) {
         $destination = Join-Path $runtimeValidation $scenario
