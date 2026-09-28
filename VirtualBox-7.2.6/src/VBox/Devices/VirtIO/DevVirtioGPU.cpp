@@ -30,13 +30,15 @@
 # error "VirtIO-GPU currently runs entirely in ring 3."
 #endif
 
-/* Version 18 adds persisted recorded Venus command-buffer streams. */
-#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(18)
+/* Version 19 adds persisted opaque Vulkan object identities used by the
+ * generic object dispatcher. */
+#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(19)
 #define VIRTIOGPU_MAX_RESOURCES 256
 #define VIRTIOGPU_MAX_BUFFER_BINDINGS 512
 #define VIRTIOGPU_MAX_COMMAND_BUFFERS 512
 #define VIRTIOGPU_MAX_FENCES 512
 #define VIRTIOGPU_MAX_SEMAPHORES 512
+#define VIRTIOGPU_MAX_OPAQUE_OBJECTS 1024
 #define VIRTIOGPU_MAX_COMMAND_STREAM_COMMANDS 64
 #define VIRTIOGPU_MAX_CONTEXTS 64
 #define VIRTIOGPU_MAX_CONTEXT_RESOURCES 64
@@ -130,6 +132,16 @@
 #define VIRTIOGPU_VK_CMD_END_COMMAND_BUFFER UINT32_C(91)
 #define VIRTIOGPU_VK_CMD_RESET_COMMAND_BUFFER UINT32_C(92)
 #define VIRTIOGPU_VK_CMD_GET_BUFFER_MEMORY_REQUIREMENTS2 UINT32_C(145)
+#define VIRTIOGPU_VK_CMD_CREATE_SHADER_MODULE UINT32_C(59)
+#define VIRTIOGPU_VK_CMD_DESTROY_SHADER_MODULE UINT32_C(60)
+#define VIRTIOGPU_VK_CMD_CREATE_PIPELINE_LAYOUT UINT32_C(68)
+#define VIRTIOGPU_VK_CMD_DESTROY_PIPELINE_LAYOUT UINT32_C(69)
+#define VIRTIOGPU_VK_CMD_CREATE_SAMPLER UINT32_C(70)
+#define VIRTIOGPU_VK_CMD_DESTROY_SAMPLER UINT32_C(71)
+#define VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_SET_LAYOUT UINT32_C(72)
+#define VIRTIOGPU_VK_CMD_DESTROY_DESCRIPTOR_SET_LAYOUT UINT32_C(73)
+#define VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_POOL UINT32_C(74)
+#define VIRTIOGPU_VK_CMD_DESTROY_DESCRIPTOR_POOL UINT32_C(75)
 #define VIRTIOGPU_VK_CMD_FLAG_GENERATE_REPLY UINT32_C(0x00000001)
 #define VIRTIOGPU_VK_RING_STATUS_IDLE UINT32_C(0x00000001)
 #define VIRTIOGPU_VK_RING_STATUS_FATAL UINT32_C(0x00000002)
@@ -282,6 +294,16 @@ typedef struct VIRTIOGPUSEMAPHORESTATE
 } VIRTIOGPUSEMAPHORESTATE;
 typedef VIRTIOGPUSEMAPHORESTATE *PVIRTIOGPUSEMAPHORESTATE;
 
+/* Some Vulkan objects do not need a host handle for the current transfer
+ * backend, but their guest identities must still have correct create/destroy
+ * and saved-state semantics. */
+typedef struct VIRTIOGPUOPAQUEOBJECT
+{
+    uint64_t uObject;
+    uint32_t uType;
+} VIRTIOGPUOPAQUEOBJECT;
+typedef VIRTIOGPUOPAQUEOBJECT *PVIRTIOGPUOPAQUEOBJECT;
+
 typedef struct VIRTIOGPU
 {
     VIRTIOCORE      Virtio;  /* Must stay first for the common transport. */
@@ -293,6 +315,7 @@ typedef struct VIRTIOGPU
     VIRTIOGPUCOMMANDBUFFERSTATE aCommandBuffers[VIRTIOGPU_MAX_COMMAND_BUFFERS];
     VIRTIOGPUFENCESTATE aFences[VIRTIOGPU_MAX_FENCES];
     VIRTIOGPUSEMAPHORESTATE aSemaphores[VIRTIOGPU_MAX_SEMAPHORES];
+    VIRTIOGPUOPAQUEOBJECT aOpaqueObjects[VIRTIOGPU_MAX_OPAQUE_OBJECTS];
     VIRTIOGPUSCANOUT aScanouts[VIRTIOGPU_MAX_SCANOUTS];
     uint64_t cbAllocated;
     uint8_t *pbSharedMemory;
@@ -464,6 +487,9 @@ static bool virtioGpuR3VenusObjectIdInUse(PVIRTIOGPU pThis, uint64_t uObject)
     for (unsigned i = 0; i < RT_ELEMENTS(pThis->aSemaphores); ++i)
         if (pThis->aSemaphores[i].uSemaphore == uObject)
             return true;
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aOpaqueObjects); ++i)
+        if (pThis->aOpaqueObjects[i].uObject == uObject)
+            return true;
     for (unsigned i = 0; i < RT_ELEMENTS(pThis->aResources); ++i)
         if (pThis->aResources[i].uVkMemoryObjectId == uObject
             || pThis->aResources[i].uVkBufferObjectId == uObject)
@@ -488,6 +514,46 @@ static uint64_t virtioGpuR3AllocVenusObjectId(PVIRTIOGPU pThis)
         ++uCandidate;
     }
     return 0;
+}
+
+static PVIRTIOGPUOPAQUEOBJECT virtioGpuR3FindOpaqueObject(PVIRTIOGPU pThis,
+                                                           uint64_t uObject)
+{
+    if (!pThis || !uObject)
+        return NULL;
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aOpaqueObjects); ++i)
+        if (pThis->aOpaqueObjects[i].uObject == uObject)
+            return &pThis->aOpaqueObjects[i];
+    return NULL;
+}
+
+static PVIRTIOGPUOPAQUEOBJECT virtioGpuR3GetOpaqueObject(PVIRTIOGPU pThis,
+                                                          uint64_t uObject,
+                                                          uint32_t uType)
+{
+    PVIRTIOGPUOPAQUEOBJECT pObject = virtioGpuR3FindOpaqueObject(pThis, uObject);
+    if (pObject)
+        return pObject->uType == uType ? pObject : NULL;
+    if (!pThis || !uObject || !uType)
+        return NULL;
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aOpaqueObjects); ++i)
+        if (!pThis->aOpaqueObjects[i].uObject)
+        {
+            pThis->aOpaqueObjects[i].uObject = uObject;
+            pThis->aOpaqueObjects[i].uType = uType;
+            return &pThis->aOpaqueObjects[i];
+        }
+    return NULL;
+}
+
+static bool virtioGpuR3ReleaseOpaqueObject(PVIRTIOGPU pThis, uint64_t uObject,
+                                            uint32_t uType)
+{
+    PVIRTIOGPUOPAQUEOBJECT pObject = virtioGpuR3FindOpaqueObject(pThis, uObject);
+    if (!pObject || pObject->uType != uType)
+        return false;
+    RT_ZERO(*pObject);
+    return true;
 }
 
 static PVIRTIOGPUCOMMANDBUFFERSTATE virtioGpuR3FindCommandBuffer(PVIRTIOGPU pThis,
@@ -1180,6 +1246,211 @@ static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pc
             *pcbCommand = off;
             return cb >= *pcbCommand;
         }
+        case VIRTIOGPU_VK_CMD_CREATE_SHADER_MODULE:
+        {
+            size_t off = 16;
+            uint64_t fCreateInfo = 0;
+            if (!virtioGpuR3ReadU64(pb, cb, off, &fCreateInfo) || fCreateInfo > 1)
+                return false;
+            off += sizeof(uint64_t);
+            if (fCreateInfo)
+            {
+                uint32_t uSType = 0, fFlags = 0;
+                uint64_t fPnext = 0, cbCode = 0, cWords = 0;
+                if (cb - off < sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t)
+                    + sizeof(uint64_t) + sizeof(uint64_t))
+                    return false;
+                memcpy(&uSType, pb + off, sizeof(uSType));
+                if (uSType != 16 /* VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO */
+                    || !virtioGpuR3ReadU64(pb, cb, off + sizeof(uSType), &fPnext)
+                    || fPnext)
+                    return false;
+                memcpy(&fFlags, pb + off + sizeof(uSType) + sizeof(fPnext), sizeof(fFlags));
+                RT_NOREF(fFlags);
+                if (!virtioGpuR3ReadU64(pb, cb, off + sizeof(uSType) + sizeof(fPnext)
+                                        + sizeof(fFlags), &cbCode)
+                    || !virtioGpuR3ReadU64(pb, cb, off + sizeof(uSType) + sizeof(fPnext)
+                                           + sizeof(fFlags) + sizeof(cbCode), &cWords)
+                    || (cbCode & 3) || cWords != cbCode / 4
+                    || cWords > VIRTIOGPU_MAX_SUBMIT_BYTES / 4
+                    || cWords > (cb - off - 32) / sizeof(uint32_t))
+                    return false;
+                off += 32 + (size_t)cWords * sizeof(uint32_t);
+            }
+            uint64_t fAllocator = 0, fOutput = 0;
+            if (!virtioGpuR3ReadU64(pb, cb, off, &fAllocator) || fAllocator)
+                return false;
+            off += sizeof(fAllocator);
+            if (!virtioGpuR3ReadU64(pb, cb, off, &fOutput) || fOutput > 1)
+                return false;
+            off += sizeof(fOutput) + (fOutput ? sizeof(uint64_t) : 0);
+            *pcbCommand = off;
+            return cb >= *pcbCommand;
+        }
+        case VIRTIOGPU_VK_CMD_CREATE_PIPELINE_LAYOUT:
+        {
+            size_t off = 16;
+            uint64_t fCreateInfo = 0;
+            if (!virtioGpuR3ReadU64(pb, cb, off, &fCreateInfo) || fCreateInfo > 1)
+                return false;
+            off += sizeof(uint64_t);
+            if (fCreateInfo)
+            {
+                uint32_t uSType = 0, cLayouts = 0, cPushRanges = 0;
+                uint64_t fPnext = 0, cLayoutsEncoded = 0, cPushEncoded = 0;
+                if (cb - off < sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint32_t)
+                    + sizeof(uint32_t) + sizeof(uint64_t))
+                    return false;
+                memcpy(&uSType, pb + off, sizeof(uSType));
+                if (uSType != 30 /* VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO */
+                    || !virtioGpuR3ReadU64(pb, cb, off + sizeof(uSType), &fPnext)
+                    || fPnext)
+                    return false;
+                off += sizeof(uSType) + sizeof(fPnext) + sizeof(uint32_t);
+                memcpy(&cLayouts, pb + off, sizeof(cLayouts));
+                if (cLayouts > 64 || !virtioGpuR3ReadU64(pb, cb, off + sizeof(cLayouts), &cLayoutsEncoded)
+                    || cLayoutsEncoded > cLayouts
+                    || cLayoutsEncoded > (cb - off - sizeof(cLayouts) - sizeof(uint64_t)) / sizeof(uint64_t))
+                    return false;
+                off += sizeof(cLayouts) + sizeof(cLayoutsEncoded)
+                    + (size_t)cLayoutsEncoded * sizeof(uint64_t);
+                if (cb - off < sizeof(cPushRanges) + sizeof(cPushEncoded))
+                    return false;
+                memcpy(&cPushRanges, pb + off, sizeof(cPushRanges));
+                if (cPushRanges > 64 || !virtioGpuR3ReadU64(pb, cb, off + sizeof(cPushRanges), &cPushEncoded)
+                    || cPushEncoded > cPushRanges
+                    || cPushEncoded > (cb - off - sizeof(cPushRanges) - sizeof(uint64_t)) / 12)
+                    return false;
+                off += sizeof(cPushRanges) + sizeof(cPushEncoded) + (size_t)cPushEncoded * 12;
+            }
+            uint64_t fAllocator = 0, fOutput = 0;
+            if (!virtioGpuR3ReadU64(pb, cb, off, &fAllocator) || fAllocator)
+                return false;
+            off += sizeof(fAllocator);
+            if (!virtioGpuR3ReadU64(pb, cb, off, &fOutput) || fOutput > 1)
+                return false;
+            off += sizeof(fOutput) + (fOutput ? sizeof(uint64_t) : 0);
+            *pcbCommand = off;
+            return cb >= *pcbCommand;
+        }
+        case VIRTIOGPU_VK_CMD_CREATE_SAMPLER:
+        {
+            /* VkSamplerCreateInfo has only fixed-width scalar fields after
+             * the sType/pNext pair.  Reject extension chains here so the
+             * command boundary remains deterministic. */
+            size_t off = 16;
+            uint64_t fCreateInfo = 0;
+            if (!virtioGpuR3ReadU64(pb, cb, off, &fCreateInfo) || fCreateInfo > 1)
+                return false;
+            off += sizeof(fCreateInfo);
+            if (fCreateInfo)
+            {
+                uint32_t uSType = 0;
+                uint64_t fPnext = 0;
+                if (cb - off < 4 + 8 + 64
+                    || !virtioGpuR3ReadU64(pb, cb, off + 4, &fPnext))
+                    return false;
+                memcpy(&uSType, pb + off, sizeof(uSType));
+                if (uSType != 31 /* VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO */ || fPnext)
+                    return false;
+                off += 4 + 8 + 64;
+            }
+            uint64_t fAllocator = 0, fOutput = 0;
+            if (!virtioGpuR3ReadU64(pb, cb, off, &fAllocator) || fAllocator)
+                return false;
+            off += sizeof(fAllocator);
+            if (!virtioGpuR3ReadU64(pb, cb, off, &fOutput) || fOutput > 1)
+                return false;
+            off += sizeof(fOutput) + (fOutput ? sizeof(uint64_t) : 0);
+            *pcbCommand = off;
+            return cb >= *pcbCommand;
+        }
+        case VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_SET_LAYOUT:
+        {
+            size_t off = 16;
+            uint64_t fCreateInfo = 0;
+            if (!virtioGpuR3ReadU64(pb, cb, off, &fCreateInfo) || fCreateInfo > 1)
+                return false;
+            off += sizeof(fCreateInfo);
+            if (fCreateInfo)
+            {
+                uint32_t uSType = 0, fFlags = 0, cBindings = 0;
+                uint64_t fPnext = 0, cEncoded = 0;
+                if (cb - off < 4 + 8 + 4 + 4 + 8)
+                    return false;
+                memcpy(&uSType, pb + off, sizeof(uSType));
+                if (!virtioGpuR3ReadU64(pb, cb, off + 4, &fPnext) || fPnext)
+                    return false;
+                memcpy(&fFlags, pb + off + 12, sizeof(fFlags));
+                RT_NOREF(fFlags);
+                off += 16;
+                memcpy(&cBindings, pb + off, sizeof(cBindings));
+                if (cBindings > 64 || !virtioGpuR3ReadU64(pb, cb, off + 4, &cEncoded)
+                    || cEncoded > cBindings || cEncoded > (cb - off - 12) / 24)
+                    return false;
+                off += 12;
+                for (uint64_t i = 0; i < cEncoded; ++i)
+                {
+                    uint32_t cImmutable = 0;
+                    uint64_t cImmutableEncoded = 0;
+                    if (cb - off < 24
+                        || !virtioGpuR3ReadU64(pb, cb, off + 16, &cImmutableEncoded))
+                        return false;
+                    memcpy(&cImmutable, pb + off + 8, sizeof(cImmutable));
+                    if (cImmutableEncoded > cImmutable
+                        || cImmutableEncoded > (cb - off - 24) / sizeof(uint64_t))
+                        return false;
+                    off += 24 + (size_t)cImmutableEncoded * sizeof(uint64_t);
+                }
+                if (uSType != 32 /* VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO */)
+                    return false;
+            }
+            uint64_t fAllocator = 0, fOutput = 0;
+            if (!virtioGpuR3ReadU64(pb, cb, off, &fAllocator) || fAllocator)
+                return false;
+            off += sizeof(fAllocator);
+            if (!virtioGpuR3ReadU64(pb, cb, off, &fOutput) || fOutput > 1)
+                return false;
+            off += sizeof(fOutput) + (fOutput ? sizeof(uint64_t) : 0);
+            *pcbCommand = off;
+            return cb >= *pcbCommand;
+        }
+        case VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_POOL:
+        {
+            size_t off = 16;
+            uint64_t fCreateInfo = 0;
+            if (!virtioGpuR3ReadU64(pb, cb, off, &fCreateInfo) || fCreateInfo > 1)
+                return false;
+            off += sizeof(fCreateInfo);
+            if (fCreateInfo)
+            {
+                uint32_t uSType = 0, cPoolSizes = 0;
+                uint64_t fPnext = 0, cEncoded = 0;
+                if (cb - off < 4 + 8 + 4 + 4 + 8)
+                    return false;
+                memcpy(&uSType, pb + off, sizeof(uSType));
+                if (!virtioGpuR3ReadU64(pb, cb, off + 4, &fPnext) || fPnext)
+                    return false;
+                off += 12;
+                off += sizeof(uint32_t) * 2; /* flags, maxSets */
+                memcpy(&cPoolSizes, pb + off, sizeof(cPoolSizes));
+                if (cPoolSizes > 64 || !virtioGpuR3ReadU64(pb, cb, off + 4, &cEncoded)
+                    || cEncoded > cPoolSizes || cEncoded > (cb - off - 12) / 8)
+                    return false;
+                off += 12 + (size_t)cEncoded * 8;
+                if (uSType != 33 /* VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO */)
+                    return false;
+            }
+            uint64_t fAllocator = 0, fOutput = 0;
+            if (!virtioGpuR3ReadU64(pb, cb, off, &fAllocator) || fAllocator)
+                return false;
+            off += sizeof(fAllocator);
+            if (!virtioGpuR3ReadU64(pb, cb, off, &fOutput) || fOutput > 1)
+                return false;
+            off += sizeof(fOutput) + (fOutput ? sizeof(uint64_t) : 0);
+            *pcbCommand = off;
+            return cb >= *pcbCommand;
+        }
         case VIRTIOGPU_VK_CMD_CREATE_COMMAND_POOL:
             /* device, VkCommandPoolCreateInfo (sType/pNext/flags/family),
              * allocator marker, and output pool handle. */
@@ -1322,6 +1593,11 @@ static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pc
         case VIRTIOGPU_VK_CMD_DESTROY_BUFFER:
         case VIRTIOGPU_VK_CMD_DESTROY_FENCE:
         case VIRTIOGPU_VK_CMD_DESTROY_SEMAPHORE:
+        case VIRTIOGPU_VK_CMD_DESTROY_SHADER_MODULE:
+        case VIRTIOGPU_VK_CMD_DESTROY_PIPELINE_LAYOUT:
+        case VIRTIOGPU_VK_CMD_DESTROY_SAMPLER:
+        case VIRTIOGPU_VK_CMD_DESTROY_DESCRIPTOR_SET_LAYOUT:
+        case VIRTIOGPU_VK_CMD_DESTROY_DESCRIPTOR_POOL:
         case VIRTIOGPU_VK_CMD_FREE_MEMORY:
             *pcbCommand = 32;
             return cb >= *pcbCommand;
@@ -2144,6 +2420,11 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
         case VIRTIOGPU_VK_CMD_ALLOCATE_MEMORY:
         case VIRTIOGPU_VK_CMD_CREATE_FENCE:
         case VIRTIOGPU_VK_CMD_CREATE_SEMAPHORE:
+        case VIRTIOGPU_VK_CMD_CREATE_SHADER_MODULE:
+        case VIRTIOGPU_VK_CMD_CREATE_PIPELINE_LAYOUT:
+        case VIRTIOGPU_VK_CMD_CREATE_SAMPLER:
+        case VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_SET_LAYOUT:
+        case VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_POOL:
         {
             bool fOutput = false;
             bool fOutputId = virtioGpuR3VenusFindOutputId(pb, cb, &fOutput, &uId);
@@ -2170,6 +2451,14 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                 if (!uId)
                     return false;
             }
+            if (fOutputId && fOutput
+                && (uType == VIRTIOGPU_VK_CMD_CREATE_SHADER_MODULE
+                    || uType == VIRTIOGPU_VK_CMD_CREATE_PIPELINE_LAYOUT
+                    || uType == VIRTIOGPU_VK_CMD_CREATE_SAMPLER
+                    || uType == VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_SET_LAYOUT
+                    || uType == VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_POOL)
+                && !virtioGpuR3GetOpaqueObject(pThis, uId, uType))
+                return false;
             if (fOutputId && fOutput && uType == VIRTIOGPU_VK_CMD_CREATE_BUFFER)
             {
                 uint64_t cbBuffer = 0, fPnext = 0;
@@ -2466,6 +2755,27 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                 }
             }
             if (!virtioGpuR3VenusPutU32(&Enc, uType))
+                return false;
+            break;
+        }
+        case VIRTIOGPU_VK_CMD_DESTROY_SHADER_MODULE:
+        case VIRTIOGPU_VK_CMD_DESTROY_PIPELINE_LAYOUT:
+        case VIRTIOGPU_VK_CMD_DESTROY_SAMPLER:
+        case VIRTIOGPU_VK_CMD_DESTROY_DESCRIPTOR_SET_LAYOUT:
+        case VIRTIOGPU_VK_CMD_DESTROY_DESCRIPTOR_POOL:
+        {
+            uint32_t uObjectType = VIRTIOGPU_VK_CMD_CREATE_PIPELINE_LAYOUT;
+            if (uType == VIRTIOGPU_VK_CMD_DESTROY_SHADER_MODULE)
+                uObjectType = VIRTIOGPU_VK_CMD_CREATE_SHADER_MODULE;
+            else if (uType == VIRTIOGPU_VK_CMD_DESTROY_SAMPLER)
+                uObjectType = VIRTIOGPU_VK_CMD_CREATE_SAMPLER;
+            else if (uType == VIRTIOGPU_VK_CMD_DESTROY_DESCRIPTOR_SET_LAYOUT)
+                uObjectType = VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_SET_LAYOUT;
+            else if (uType == VIRTIOGPU_VK_CMD_DESTROY_DESCRIPTOR_POOL)
+                uObjectType = VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_POOL;
+            if (!virtioGpuR3VenusReadU64(pb, cb, 16, &uId)
+                || !virtioGpuR3ReleaseOpaqueObject(pThis, uId, uObjectType)
+                || !virtioGpuR3VenusPutU32(&Enc, uType))
                 return false;
             break;
         }
@@ -3983,8 +4293,26 @@ static void virtioGpuR3ProcessVenusRings(PVIRTIOGPU pThis)
                     continue;
                 }
 #endif
-                LogRelMax(128, ("virtio-gpu: Venus ring command rejected ring=%llu type=%u\n",
-                                (unsigned long long)pRing->uRingId, uType));
+                if (uType == VIRTIOGPU_VK_CMD_FILL_BUFFER && cbCommand >= 16)
+                {
+                    uint64_t uCommandBuffer = 0, uBuffer = 0;
+                    memcpy(&uCommandBuffer, pbCommands + off + 8, sizeof(uCommandBuffer));
+                    memcpy(&uBuffer, pbCommands + off + 16, sizeof(uBuffer));
+                    PVIRTIOGPUCOMMANDBUFFERSTATE pState = virtioGpuR3FindCommandBuffer(pThis,
+                                                                                       uCommandBuffer);
+                    PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResourceByVkBuffer(pThis, uBuffer);
+                    LogRelMax(128, ("virtio-gpu: Venus ring command rejected ring=%llu type=%u size=%zu "
+                                    "cb=%RX64 buffer=%RX64 state=%p recording=%RTbool executable=%RTbool "
+                                    "commands=%u resource=%p\n",
+                                    (unsigned long long)pRing->uRingId, uType, cbCommand,
+                                    uCommandBuffer, uBuffer, pState,
+                                    pState ? pState->fRecording : false,
+                                    pState ? pState->fExecutable : false,
+                                    pState ? pState->cCommands : 0, pRes));
+                }
+                else
+                    LogRelMax(128, ("virtio-gpu: Venus ring command rejected ring=%llu type=%u size=%zu\n",
+                                    (unsigned long long)pRing->uRingId, uType, cbCommand));
                 fFatal = true;
                 break;
             }
@@ -4088,6 +4416,7 @@ static void virtioGpuR3FreeResources(PVIRTIOGPU pThis)
     }
     RT_ZERO(pThis->aFences);
     RT_ZERO(pThis->aSemaphores);
+    RT_ZERO(pThis->aOpaqueObjects);
     pThis->cbAllocated = 0;
     pThis->offSharedMemoryNext = 0;
 }
@@ -7166,6 +7495,14 @@ static bool virtioGpuR3ExecuteVenusCommandStream(PVIRTIOGPU pThis, const uint8_t
                      uCommandBuffer, uType, cb));
             return false;
         }
+        if (pState && pState->fRecording)
+        {
+            /* Command recording must not touch host resources.  The guest can
+             * submit the recording stream before a preceding memory bind has
+             * become visible in the host tables; replay it only after
+             * vkEndCommandBuffer/vkQueueSubmit has established the ordering. */
+            return true;
+        }
     }
 
     if (uType == VIRTIOGPU_VK_CMD_FILL_BUFFER)
@@ -9171,6 +9508,12 @@ static DECLCALLBACK(int) virtioGpuR3SaveExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
         if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutBool(pSSM, pSemaphore->fSignaled);
         if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU64(pSSM, pSemaphore->uValue);
     }
+    for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aOpaqueObjects); ++i)
+    {
+        VIRTIOGPUOPAQUEOBJECT const *pObject = &pThis->aOpaqueObjects[i];
+        if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU64(pSSM, pObject->uObject);
+        if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, pObject->uType);
+    }
     for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aScanouts); ++i)
         rc = pDevIns->pHlpR3->pfnSSMPutMem(pSSM, &pThis->aScanouts[i], sizeof(pThis->aScanouts[i]));
     if (RT_SUCCESS(rc))
@@ -9476,6 +9819,23 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
         for (unsigned j = 0; RT_SUCCESS(rc) && fValid && pSemaphore->uSemaphore && j < i; ++j)
             if (pThis->aSemaphores[j].uSemaphore
                 && pThis->aSemaphores[j].uSemaphore == pSemaphore->uSemaphore)
+                fValid = false;
+        if (RT_SUCCESS(rc) && !fValid)
+            rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
+    }
+    for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aOpaqueObjects); ++i)
+    {
+        PVIRTIOGPUOPAQUEOBJECT pObject = &pThis->aOpaqueObjects[i];
+        rc = pDevIns->pHlpR3->pfnSSMGetU64(pSSM, &pObject->uObject);
+        if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &pObject->uType);
+        bool fValid = pObject->uObject == 0 ? pObject->uType == 0
+                                            : (pObject->uType == VIRTIOGPU_VK_CMD_CREATE_SHADER_MODULE
+                                               || pObject->uType == VIRTIOGPU_VK_CMD_CREATE_PIPELINE_LAYOUT
+                                               || pObject->uType == VIRTIOGPU_VK_CMD_CREATE_SAMPLER
+                                               || pObject->uType == VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_SET_LAYOUT
+                                               || pObject->uType == VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_POOL);
+        for (unsigned j = 0; RT_SUCCESS(rc) && fValid && pObject->uObject && j < i; ++j)
+            if (pThis->aOpaqueObjects[j].uObject == pObject->uObject)
                 fValid = false;
         if (RT_SUCCESS(rc) && !fValid)
             rc = VERR_SSM_LOAD_CONFIG_MISMATCH;

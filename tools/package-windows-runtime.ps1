@@ -119,13 +119,15 @@ foreach ($scenario in @('linux-venus-before', 'linux-venus-final', 'linux-softwa
                         'linux-venus-final-object-id', 'linux-venus-final-object-id-save',
                         'linux-venus-final-object-id-repeat', 'linux-venus-cursor-final',
                         'linux-venus-cursor-final-repeat', 'linux-venus-cursor-final-save',
-                        'linux-venus-cursor-final-reset', 'linux-venus-cursor-final-cpu2-long')) {
+                        'linux-venus-cursor-final-reset', 'linux-venus-cursor-final-cpu2-long',
+                        'linux-venus-opaque-objects5', 'linux-venus-recording-defer30',
+                        'linux-venus-recording-save5', 'linux-venus-recording-reset5')) {
     $sourceDir = Join-Path $repoRoot (Join-Path '.build\windows' $scenario)
     if (Test-Path -LiteralPath $sourceDir -PathType Container) {
         $destination = Join-Path $runtimeValidation $scenario
         New-Item -ItemType Directory -Force $destination | Out-Null
         foreach ($name in @('report.json', 'guest.log', 'serial.log', 'VBox.log',
-                            'guest-vulkan.log', 'guest-vulkan-restore.log')) {
+                            'guest-vulkan.log', 'guest-vulkan-restore.log', 'guest-vulkan-reset.log')) {
             $source = Join-Path $sourceDir $name
             if (Test-Path -LiteralPath $source -PathType Leaf) {
                 Copy-Item -LiteralPath $source -Destination $destination
