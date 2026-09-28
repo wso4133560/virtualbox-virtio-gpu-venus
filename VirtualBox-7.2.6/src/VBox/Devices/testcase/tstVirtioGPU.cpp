@@ -2230,8 +2230,30 @@ int main(int argc, char **argv)
     memcpy(&cbImageRequirements, abProtocolReply + 12, sizeof(cbImageRequirements));
     memcpy(&uImageRequirementsAlignment, abProtocolReply + 20, sizeof(uImageRequirementsAlignment));
     memcpy(&fImageMemoryTypes, abProtocolReply + 28, sizeof(fImageMemoryTypes));
-    RTTESTI_CHECK(cbProtocolReply == 32 && cbImageRequirements == 256
-                  && uImageRequirementsAlignment == 256 && fImageMemoryTypes != 0);
+    RTTESTI_CHECK(cbProtocolReply == 32 && cbImageRequirements >= 256
+                  && uImageRequirementsAlignment != 0 && fImageMemoryTypes != 0);
+
+    uint8_t abGetImageLayout[52] = { 0 };
+    uint32_t uGetImageLayoutType = VIRTIOGPU_VK_CMD_GET_IMAGE_SUBRESOURCE_LAYOUT;
+    uint64_t fImageSubresource = 1, fImageLayout = 1;
+    uint32_t uImageAspect = VK_IMAGE_ASPECT_COLOR_BIT, uImageMipLevel = 0, uImageArrayLayer = 0;
+    memcpy(abGetImageLayout + 0, &uGetImageLayoutType, sizeof(uGetImageLayoutType));
+    memcpy(abGetImageLayout + 8, &uGetQueueDevice, sizeof(uGetQueueDevice));
+    memcpy(abGetImageLayout + 16, &uImage, sizeof(uImage));
+    memcpy(abGetImageLayout + 24, &fImageSubresource, sizeof(fImageSubresource));
+    memcpy(abGetImageLayout + 32, &uImageAspect, sizeof(uImageAspect));
+    memcpy(abGetImageLayout + 36, &uImageMipLevel, sizeof(uImageMipLevel));
+    memcpy(abGetImageLayout + 40, &uImageArrayLayer, sizeof(uImageArrayLayer));
+    memcpy(abGetImageLayout + 44, &fImageLayout, sizeof(fImageLayout));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abGetImageLayout, sizeof(abGetImageLayout), &cbQueueCommand)
+                  && cbQueueCommand == sizeof(abGetImageLayout)
+                  && virtioGpuR3EncodeVenusProtocolReply(pGpu, abGetImageLayout,
+                                                                 sizeof(abGetImageLayout), abProtocolReply,
+                                                                 sizeof(abProtocolReply), &cbProtocolReply));
+    uint64_t uImageLayoutSize = 0, uImageLayoutRowPitch = 0;
+    memcpy(&uImageLayoutSize, abProtocolReply + 20, sizeof(uImageLayoutSize));
+    memcpy(&uImageLayoutRowPitch, abProtocolReply + 28, sizeof(uImageLayoutRowPitch));
+    RTTESTI_CHECK(cbProtocolReply == 52 && uImageLayoutSize != 0 && uImageLayoutRowPitch != 0);
 
     uint8_t abBindImage[40] = { 0 };
     uint32_t uBindImageType = VIRTIOGPU_VK_CMD_BIND_IMAGE_MEMORY;
