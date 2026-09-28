@@ -11,7 +11,7 @@
 - 工作目录：`D:\code\virtualbox-virtio-gpu-venus`
 - 分支：`main`
 - 远端：`git@github.com:wso4133560/virtualbox-virtio-gpu-venus.git`
-- 本轮源码验证基于工作树最终 DLL `A5AA4FE295935E384A4569CED70167088878F77715605D10C066D33BAC298095`；提交哈希以 `git HEAD` 和远端分支为准。
+- 本轮源码验证基于工作树最终 DLL `C6F2AE6F5542DB1382F0E5BBC0062D1F9C4AA684CA2DF178809B6E06873B4779`；提交哈希以 `git HEAD` 和远端分支为准。
 - 前两个相关提交：`e239d8c9`（Replay recorded Venus command buffers on submit）、`81dc9bf9`（Package current Venus guest evidence）；更早提交 `2976c1c5`（ring wrap-around/reply bounds）、`72421ab1`（zero output handles in Venus creates）。
 - 开始新工作先执行 `git status --short`；交接时应保持工作树干净。
 
@@ -244,5 +244,13 @@ git ls-remote origin refs/heads/main
 - 宿主回归 `.build\\windows\\virtio-gpu-validation.json` 使用该实现通过 56 组，新增 buffer requirements 查询的非零 size/alignment/type 检查，`-IncludeRegistration` 通过；当前 `VBoxDD.dll` SHA256 为 `F49C3DD98DCD5155AF0A2CA15692225BBE9AF9F509C09B5FBD55E9CAC544511D`。
 - 客体报告 `.build\\windows\\linux-venus-buffer-query10\\report.json` 使用同一 runtime 通过 `vulkaninfo` 和 10 秒 host-visible fill/readback workload（7218 次迭代），`guestVulkanExit=0`、`guestVulkanWorkloadExit=0`、`vboxSupState=RUNNING`、`cleanupErrors=[]`、`passed=true`；日志无 `stuck`、`expired ring` 或 `ring command rejected`。
 - 当前开发包 `.build\\windows\\virtualbox-virtio-gpu-venus-buffer-query-final.zip` 共 257 个文件，ZIP SHA256 `F328580C8A1235E1120525FA580D2A8D1D4BCEC30739773BDE2015B65E7959A2`；包内 `VBoxDD.dll` SHA256 为 `F49C3DD98DCD5155AF0A2CA15692225BBE9AF9F509C09B5FBD55E9CAC544511D`，manifest、版本、VirtIO-GPU/Venus 回归和 PE/VMMR0 加载均通过。
+
+## 2026-09-28 display port 回调
+
+- `PDMIDISPLAYPORT` 的 screenshot、DisplayBlt、CopyRect、动态 video mode 和 dirty-rectangle 通知现在使用当前 scanout/resource shadow；Vulkan image dirty 时先执行 image readback，DisplayBlt 写入后复用现有 host-visible resource sync，不引入独立未绑定的 Vulkan buffer。
+- 宿主回归 `.build\\windows\\virtio-gpu-validation.json` 使用最终 origin 修正版 DLL 通过 57 组并包含注册检查；新增 `display port screenshot, blit and copy callbacks` 子测试，`VBoxDD.dll` SHA256 为 `C6F2AE6F5542DB1382F0E5BBC0062D1F9C4AA684CA2DF178809B6E06873B4779`。
+- 客体报告 `.build\\windows\\linux-venus-display-port-origin10\\report.json` 使用同一 runtime 通过 `vulkaninfo` 和 10 秒 workload（7164 次迭代），`guestVulkanExit=0`、`guestVulkanWorkloadExit=0`、`vboxSupState=RUNNING`、`cleanupErrors=[]`、`passed=true`；运行时 DLL SHA256 同为 `C6F2AE6F5542DB1382F0E5BBC0062D1F9C4AA684CA2DF178809B6E06873B4779`，日志无 `stuck`、`expired ring` 或 `ring command rejected`。
+- 同一 runtime 的 saved-state 报告 `.build\\windows\\linux-venus-display-port-origin-save5\\report.json`：`saveRestoreVerified=true`、恢复 Vulkan exit 0、初始 workload 3242 次、`guestVulkanVerified=true`、`vboxSupState=RUNNING`、`cleanupErrors=[]`、`passed=true`；运行时 DLL SHA256 同为 `C6F2AE6F5542DB1382F0E5BBC0062D1F9C4AA684CA2DF178809B6E06873B4779`。
+- 当前开发包 `.build\\windows\\virtualbox-virtio-gpu-venus-display-port-origin-final.zip` 共 257 个文件，ZIP SHA256 `A60A6FE60EE662A60375C3489BB3BC242E2F7EA4465B872C602F552CA4FEED15`；包内 `VBoxDD.dll` SHA256 为 `C6F2AE6F5542DB1382F0E5BBC0062D1F9C4AA684CA2DF178809B6E06873B4779`，manifest、版本、VirtIO-GPU/Venus 回归和 PE/VMMR0 加载均通过。
 
 只提交本阶段相关文件，保留测试报告在 `.build` 下，不要提交临时 VM 密钥、磁盘或 core dump。

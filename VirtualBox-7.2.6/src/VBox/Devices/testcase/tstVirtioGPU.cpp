@@ -770,6 +770,13 @@ int main(int argc, char **argv)
     DisplayConnector.pfnVBVAMousePointerShape = tstDisplayCursorShape;
     DisplayConnector.pfnVBVAReportCursorPosition = tstDisplayCursorPosition;
     pCC->pDrv = &DisplayConnector;
+    pCC->pDevIns = pDev;
+    pCC->IPort.pfnQueryVideoMode = virtioGpuR3PortQueryVideoMode;
+    pCC->IPort.pfnTakeScreenshot = virtioGpuR3PortTakeScreenshot;
+    pCC->IPort.pfnFreeScreenshot = virtioGpuR3PortFreeScreenshot;
+    pCC->IPort.pfnDisplayBlt = virtioGpuR3PortDisplayBlt;
+    pCC->IPort.pfnUpdateDisplayRect = virtioGpuR3PortUpdateDisplayRect;
+    pCC->IPort.pfnCopyRect = virtioGpuR3PortCopyRect;
     pCC->Virtio.pfnStatusChanged = virtioGpuR3StatusChanged;
     pCC->Virtio.pfnVirtqNotified = virtioGpuR3VirtqNotified;
     pGpu->Virtio.pDevInsR3 = pDev;
@@ -1038,6 +1045,35 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(Resp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA && pGpu->aScanouts[0].uResourceId == 7
                   && (pGpu->Config.fEventsRead & VIRTIOGPU_EVENT_DISPLAY) != 0);
     RTTESTI_CHECK(g_cDisplayResizes == 1);
+
+    RTTestSub(g_hTest, "display port screenshot, blit and copy callbacks");
+    uint32_t cBits = 0, cxMode = 0, cyMode = 0;
+    RTTESTI_CHECK_RC(pCC->IPort.pfnQueryVideoMode(&pCC->IPort, &cBits, &cxMode, &cyMode), VINF_SUCCESS);
+    RTTESTI_CHECK(cBits == 32 && cxMode == 2 && cyMode == 2);
+    uint8_t *pbScreenshot = NULL;
+    size_t cbScreenshot = 0;
+    uint32_t cxScreenshot = 0, cyScreenshot = 0;
+    RTTESTI_CHECK_RC(pCC->IPort.pfnTakeScreenshot(&pCC->IPort, &pbScreenshot, &cbScreenshot,
+                                                  &cxScreenshot, &cyScreenshot), VINF_SUCCESS);
+    RTTESTI_CHECK(pbScreenshot && cbScreenshot == sizeof(abPixels)
+                  && cxScreenshot == 2 && cyScreenshot == 2
+                  && !memcmp(pbScreenshot, abPixels, sizeof(abPixels)));
+    pCC->IPort.pfnFreeScreenshot(&pCC->IPort, pbScreenshot);
+    uint32_t const uDisplayUpdatesBeforeBlt = g_cDisplayUpdates;
+    uint8_t abBltPixel[4] = { 0xa1, 0xb2, 0xc3, 0xd4 };
+    RTTESTI_CHECK_RC(pCC->IPort.pfnDisplayBlt(&pCC->IPort, abBltPixel, 1, 1, 1, 1), VINF_SUCCESS);
+    RTTESTI_CHECK(!memcmp(pGpu->aResources[0].pbPixels + 12, abBltPixel, sizeof(abBltPixel))
+                  && g_cDisplayUpdates == uDisplayUpdatesBeforeBlt + 1);
+    uint8_t abCopySource[4] = { 0xe1, 0xe2, 0xe3, 0xe4 };
+    uint8_t abCopyDestination[4] = { 0, 0, 0, 0 };
+    RTTESTI_CHECK_RC(pCC->IPort.pfnCopyRect(&pCC->IPort, 1, 1, abCopySource, 0, 0, 1, 1, 4, 32,
+                                            abCopyDestination, 0, 0, 1, 1, 4, 32), VINF_SUCCESS);
+    RTTESTI_CHECK(!memcmp(abCopyDestination, abCopySource, sizeof(abCopySource)));
+    memcpy(pGpu->aResources[0].pbPixels, abPixels, sizeof(abPixels));
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    RTTESTI_CHECK_RC(virtioGpuR3VulkanResourceSync(pGpu, &pGpu->aResources[0]), VINF_SUCCESS);
+#endif
+    g_cDisplayUpdates = 0;
 
     RTTestSub(g_hTest, "cursor queue shape, move and hide");
     struct { VIRTIOGPUCURSORPOS Pos; uint32_t uResourceId, uHotX, uHotY; } CursorShape =

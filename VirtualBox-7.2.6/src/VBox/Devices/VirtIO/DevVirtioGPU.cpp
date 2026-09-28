@@ -381,6 +381,7 @@ typedef struct VIRTIOGPUCC
     PDMIDISPLAYPORT IPort;
     R3PTRTYPE(PPDMIBASE) pDrvBase;
     R3PTRTYPE(PPDMIDISPLAYCONNECTOR) pDrv;
+    R3PTRTYPE(PPDMDEVINS) pDevIns;
     TMTIMERHANDLE hVenusPollTimer;
 } VIRTIOGPUCC;
 typedef VIRTIOGPUCC *PVIRTIOGPUCC;
@@ -389,6 +390,7 @@ typedef VIRTIOGPUCC *PVIRTIOGPUCC;
 static int virtioGpuR3VulkanResourceCreate(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes);
 static void virtioGpuR3VulkanResourceDestroy(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes);
 static int virtioGpuR3VulkanResourceSync(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes);
+static int virtioGpuR3VulkanResourceReadbackImage(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes);
 static int virtioGpuR3VulkanResourceMemoryOp(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes, bool fInvalidate);
 #endif
 
@@ -8520,6 +8522,48 @@ static PVIRTIOGPUCC virtioGpuR3PortThis(PPDMIDISPLAYPORT pInterface)
     return RT_FROM_MEMBER(pInterface, VIRTIOGPUCC, IPort);
 }
 
+static PVIRTIOGPU virtioGpuR3PortGpu(PVIRTIOGPUCC pThisCC)
+{
+    if (!pThisCC || !pThisCC->pDevIns)
+        return NULL;
+    return PDMDEVINS_2_DATA(pThisCC->pDevIns, PVIRTIOGPU);
+}
+
+static PVIRTIOGPURESOURCE virtioGpuR3PortScanoutResource(PVIRTIOGPU pThis,
+                                                         uint32_t *puScanout,
+                                                         uint32_t *pcx, uint32_t *pcy,
+                                                         uint32_t *pux, uint32_t *puy,
+                                                         uint32_t *puStride, uint32_t *puOffset)
+{
+    if (!pThis)
+        return NULL;
+    for (uint32_t i = 0; i < VIRTIOGPU_MAX_SCANOUTS; ++i)
+    {
+        VIRTIOGPUSCANOUT const *pScanout = &pThis->aScanouts[i];
+        if (!pScanout->uResourceId)
+            continue;
+        PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResource(pThis, pScanout->uResourceId);
+        if (!pRes)
+            continue;
+        if (puScanout)
+            *puScanout = i;
+        if (pcx)
+            *pcx = pScanout->uWidth ? pScanout->uWidth : pRes->uWidth;
+        if (pcy)
+            *pcy = pScanout->uHeight ? pScanout->uHeight : pRes->uHeight;
+        if (pux)
+            *pux = pScanout->uX;
+        if (puy)
+            *puy = pScanout->uY;
+        if (puStride)
+            *puStride = pScanout->uStride ? pScanout->uStride : pRes->uWidth * 4;
+        if (puOffset)
+            *puOffset = pScanout->uOffset;
+        return pRes;
+    }
+    return NULL;
+}
+
 static DECLCALLBACK(int) virtioGpuR3PortUpdateDisplay(PPDMIDISPLAYPORT pInterface)
 {
     RT_NOREF(pInterface);
@@ -8535,9 +8579,17 @@ static DECLCALLBACK(int) virtioGpuR3PortUpdateDisplayAll(PPDMIDISPLAYPORT pInter
 static DECLCALLBACK(int) virtioGpuR3PortQueryVideoMode(PPDMIDISPLAYPORT pInterface, uint32_t *pcBits,
                                                         uint32_t *pcx, uint32_t *pcy)
 {
-    RT_NOREF(virtioGpuR3PortThis(pInterface));
     if (!pcBits || !pcx || !pcy)
         return VERR_INVALID_POINTER;
+    PVIRTIOGPU pThis = virtioGpuR3PortGpu(virtioGpuR3PortThis(pInterface));
+    uint32_t cx = 0, cy = 0;
+    if (pThis && virtioGpuR3PortScanoutResource(pThis, NULL, &cx, &cy, NULL, NULL, NULL, NULL))
+    {
+        *pcBits = 32;
+        *pcx = cx;
+        *pcy = cy;
+        return VINF_SUCCESS;
+    }
     *pcBits = 32;
     *pcx = 1024;
     *pcy = 768;
@@ -8553,8 +8605,46 @@ static DECLCALLBACK(int) virtioGpuR3PortSetRefreshRate(PPDMIDISPLAYPORT pInterfa
 static DECLCALLBACK(int) virtioGpuR3PortTakeScreenshot(PPDMIDISPLAYPORT pInterface, uint8_t **ppbData,
                                                         size_t *pcbData, uint32_t *pcx, uint32_t *pcy)
 {
-    RT_NOREF(pInterface, ppbData, pcbData, pcx, pcy);
-    return VERR_NOT_SUPPORTED;
+    if (!ppbData || !pcbData || !pcx || !pcy)
+        return VERR_INVALID_PARAMETER;
+    *ppbData = NULL;
+    *pcbData = 0;
+    *pcx = 0;
+    *pcy = 0;
+    PVIRTIOGPU pThis = virtioGpuR3PortGpu(virtioGpuR3PortThis(pInterface));
+    uint32_t cx = 0, cy = 0, uX = 0, uY = 0, uStride = 0, uOffset = 0;
+    PVIRTIOGPURESOURCE pRes = virtioGpuR3PortScanoutResource(pThis, NULL, &cx, &cy,
+                                                               &uX, &uY, &uStride, &uOffset);
+    if (!pRes || !pRes->pbPixels || !cx || !cy || uStride < cx * 4)
+        return VERR_NOT_SUPPORTED;
+    if (uX > pRes->uWidth || uY > pRes->uHeight || cx > pRes->uWidth - uX
+        || cy > pRes->uHeight - uY)
+        return VERR_OUT_OF_RANGE;
+    uint64_t const cbLastRow = (uint64_t)(uY + cy - 1) * uStride;
+    uint64_t const cbEnd = (uint64_t)uOffset + cbLastRow + ((uint64_t)uX + cx) * 4;
+    if (cbEnd > pRes->cbPixels || (uint64_t)cx * cy > SIZE_MAX / 4)
+        return VERR_OUT_OF_RANGE;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    if (pRes->fVulkanImageDirty)
+    {
+        int const rcReadback = virtioGpuR3VulkanResourceReadbackImage(pThis, pRes);
+        if (RT_FAILURE(rcReadback))
+            return rcReadback;
+    }
+#endif
+    size_t const cbScreenshot = (size_t)cx * cy * 4;
+    uint8_t *pbScreenshot = (uint8_t *)RTMemAlloc(cbScreenshot);
+    if (!pbScreenshot)
+        return VERR_NO_MEMORY;
+    for (uint32_t y = 0; y < cy; ++y)
+        memcpy(pbScreenshot + (size_t)y * cx * 4,
+               pRes->pbPixels + uOffset + (size_t)(uY + y) * uStride + (size_t)uX * 4,
+               (size_t)cx * 4);
+    *ppbData = pbScreenshot;
+    *pcbData = cbScreenshot;
+    *pcx = cx;
+    *pcy = cy;
+    return VINF_SUCCESS;
 }
 
 static DECLCALLBACK(void) virtioGpuR3PortFreeScreenshot(PPDMIDISPLAYPORT pInterface, uint8_t *pbData)
@@ -8563,17 +8653,51 @@ static DECLCALLBACK(void) virtioGpuR3PortFreeScreenshot(PPDMIDISPLAYPORT pInterf
     RTMemFree(pbData);
 }
 
+static DECLCALLBACK(void) virtioGpuR3PortUpdateDisplayRect(PPDMIDISPLAYPORT pInterface, int32_t x, int32_t y,
+                                                             uint32_t cx, uint32_t cy);
+
 static DECLCALLBACK(int) virtioGpuR3PortDisplayBlt(PPDMIDISPLAYPORT pInterface, const void *pvData,
                                                     uint32_t x, uint32_t y, uint32_t cx, uint32_t cy)
 {
-    RT_NOREF(pInterface, pvData, x, y, cx, cy);
-    return VERR_NOT_SUPPORTED;
+    if (!pvData || !cx || !cy)
+        return VERR_INVALID_PARAMETER;
+    PVIRTIOGPU pThis = virtioGpuR3PortGpu(virtioGpuR3PortThis(pInterface));
+    uint32_t cxDisplay = 0, cyDisplay = 0, uX = 0, uY = 0, uStride = 0, uOffset = 0;
+    PVIRTIOGPURESOURCE pRes = virtioGpuR3PortScanoutResource(pThis, NULL, &cxDisplay, &cyDisplay,
+                                                               &uX, &uY, &uStride, &uOffset);
+    if (!pRes || !pRes->pbPixels || x > cxDisplay || y > cyDisplay
+        || cx > cxDisplay - x || cy > cyDisplay - y || uStride < cxDisplay * 4)
+        return VERR_INVALID_PARAMETER;
+    if (uX > pRes->uWidth || uY > pRes->uHeight || cxDisplay > pRes->uWidth - uX
+        || cyDisplay > pRes->uHeight - uY)
+        return VERR_OUT_OF_RANGE;
+    uint64_t const cbLastRow = (uint64_t)(uY + cyDisplay - 1) * uStride;
+    uint64_t const cbEnd = (uint64_t)uOffset + cbLastRow + ((uint64_t)uX + cxDisplay) * 4;
+    if (cbEnd > pRes->cbPixels)
+        return VERR_OUT_OF_RANGE;
+    const uint8_t *pbSrc = (const uint8_t *)pvData;
+    for (uint32_t i = 0; i < cy; ++i)
+        memcpy(pRes->pbPixels + uOffset + (size_t)(uY + y + i) * uStride
+                   + (size_t)(uX + x) * 4,
+               pbSrc + (size_t)i * cx * 4, (size_t)cx * 4);
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+    if (pRes->fVulkanBuffer)
+    {
+        int const rcSync = virtioGpuR3VulkanResourceSync(pThis, pRes);
+        if (RT_FAILURE(rcSync))
+            return rcSync;
+    }
+#endif
+    virtioGpuR3PortUpdateDisplayRect(pInterface, (int32_t)x, (int32_t)y, cx, cy);
+    return VINF_SUCCESS;
 }
 
 static DECLCALLBACK(void) virtioGpuR3PortUpdateDisplayRect(PPDMIDISPLAYPORT pInterface, int32_t x, int32_t y,
                                                              uint32_t cx, uint32_t cy)
 {
-    RT_NOREF(pInterface, x, y, cx, cy);
+    PVIRTIOGPUCC pThisCC = virtioGpuR3PortThis(pInterface);
+    if (pThisCC->pDrv && pThisCC->pDrv->pfnUpdateRect && x >= 0 && y >= 0)
+        pThisCC->pDrv->pfnUpdateRect(pThisCC->pDrv, (uint32_t)x, (uint32_t)y, cx, cy);
 }
 
 static DECLCALLBACK(void) virtioGpuR3PortSetRenderVRAM(PPDMIDISPLAYPORT pInterface, bool fRender)
@@ -8588,9 +8712,28 @@ static DECLCALLBACK(int) virtioGpuR3PortCopyRect(PPDMIDISPLAYPORT pInterface, ui
                                                   int32_t yDst, uint32_t cxDst, uint32_t cyDst,
                                                   uint32_t cbDstLine, uint32_t cDstBitsPerPixel)
 {
-    RT_NOREF(pInterface, cx, cy, pbSrc, xSrc, ySrc, cxSrc, cySrc, cbSrcLine, cSrcBitsPerPixel,
-             pbDst, xDst, yDst, cxDst, cyDst, cbDstLine, cDstBitsPerPixel);
-    return VERR_NOT_SUPPORTED;
+    RT_NOREF(pInterface);
+    if (!pbSrc || !pbDst || !cx || !cy || cxSrc != cxDst || cySrc != cyDst
+        || xSrc < 0 || ySrc < 0 || xDst < 0 || yDst < 0
+        || (uint32_t)xSrc > cx || (uint32_t)ySrc > cy || (uint32_t)xDst > cx || (uint32_t)yDst > cy
+        || cxSrc > cx - (uint32_t)xSrc || cySrc > cy - (uint32_t)ySrc
+        || cxDst > cx - (uint32_t)xDst || cyDst > cy - (uint32_t)yDst
+        || (cSrcBitsPerPixel != 32 && cSrcBitsPerPixel != 24 && cSrcBitsPerPixel != 16
+            && cSrcBitsPerPixel != 15 && cSrcBitsPerPixel != 8)
+        || (cDstBitsPerPixel != 32 && cDstBitsPerPixel != 24 && cDstBitsPerPixel != 16
+            && cDstBitsPerPixel != 15 && cDstBitsPerPixel != 8))
+        return VERR_INVALID_PARAMETER;
+    uint32_t const cbSrcPixel = (cSrcBitsPerPixel + 7) / 8;
+    uint32_t const cbDstPixel = (cDstBitsPerPixel + 7) / 8;
+    if ((uint64_t)cxSrc * cbSrcPixel > cbSrcLine || (uint64_t)cxDst * cbDstPixel > cbDstLine)
+        return VERR_INVALID_PARAMETER;
+    if (cbSrcPixel != cbDstPixel)
+        return VERR_NOT_SUPPORTED;
+    for (uint32_t y = 0; y < cySrc; ++y)
+        memmove(pbDst + (size_t)(yDst + (int32_t)y) * cbDstLine + (size_t)xDst * cbDstPixel,
+                pbSrc + (size_t)(ySrc + (int32_t)y) * cbSrcLine + (size_t)xSrc * cbSrcPixel,
+                (size_t)cxSrc * cbSrcPixel);
+    return VINF_SUCCESS;
 }
 
 static DECLCALLBACK(void) virtioGpuR3PortSetViewport(PPDMIDISPLAYPORT pInterface, uint32_t idScreen,
@@ -11166,6 +11309,7 @@ static DECLCALLBACK(int) virtioGpuR3Construct(PPDMDEVINS pDevIns, int iInstance,
     PDMDEV_CHECK_VERSIONS_RETURN(pDevIns);
     PVIRTIOGPU pThis = PDMDEVINS_2_DATA(pDevIns, PVIRTIOGPU);
     PVIRTIOGPUCC pThisCC = PDMDEVINS_2_DATA_CC(pDevIns, PVIRTIOGPUCC);
+    pThisCC->pDevIns = pDevIns;
     pThisCC->IPort.pfnUpdateDisplay = virtioGpuR3PortUpdateDisplay;
     pThisCC->IPort.pfnUpdateDisplayAll = virtioGpuR3PortUpdateDisplayAll;
     pThisCC->IPort.pfnQueryVideoMode = virtioGpuR3PortQueryVideoMode;
