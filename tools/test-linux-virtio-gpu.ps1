@@ -520,7 +520,7 @@ int main(void)
 }
 EOF
 cc -std=c11 -O2 -Wall -Wextra /tmp/virtio-vulkan-smoke.c -o /tmp/virtio-vulkan-smoke -lvulkan
-timeout 30s /tmp/virtio-vulkan-smoke
+timeout __WORKLOAD_TIMEOUT_SECONDS__s /tmp/virtio-vulkan-smoke
 workload_rc=$?
 echo "vulkan_workload_exit=$workload_rc"
 if [ "$workload_rc" = 0 ]; then echo VULKAN_WORKLOAD_PASS; else echo VULKAN_WORKLOAD_FAIL; fi
@@ -534,6 +534,8 @@ exit "$workload_rc"
         $guestVulkanProbe = $guestVulkanProbe.Replace('__RUN_VULKAN_WORKLOAD__', $(if ($RunVulkanWorkload) { '1' } else { '0' }))
         $guestVulkanProbe = $guestVulkanProbe.Replace('__SKIP_VULKANINFO__', $(if ($SkipGuestVulkanInfo) { '1' } else { '0' }))
         $guestVulkanProbe = $guestVulkanProbe.Replace('__WORKLOAD_SECONDS__', $WorkloadSeconds.ToString([Globalization.CultureInfo]::InvariantCulture))
+        $workloadTimeoutSeconds = [Math]::Max(30, $WorkloadSeconds + 30)
+        $guestVulkanProbe = $guestVulkanProbe.Replace('__WORKLOAD_TIMEOUT_SECONDS__', $workloadTimeoutSeconds.ToString([Globalization.CultureInfo]::InvariantCulture))
         $guestVulkanProbe = $guestVulkanProbe.Replace('__VULKAN_PACKAGES__', $(if ($RunVulkanWorkload) { 'mesa-vulkan-drivers vulkan-tools strace build-essential libvulkan-dev' } else { 'mesa-vulkan-drivers vulkan-tools strace' }))
         $guestVulkanPath = Join-Path $reportDir 'guest-vulkan-probe.sh'
         [IO.File]::WriteAllText($guestVulkanPath, $guestVulkanProbe.Replace("`r`n", "`n") + "`n", $utf8)
