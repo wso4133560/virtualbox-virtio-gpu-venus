@@ -11,8 +11,8 @@
 - 工作目录：`D:\code\virtualbox-virtio-gpu-venus`
 - 分支：`main`
 - 远端：`git@github.com:wso4133560/virtualbox-virtio-gpu-venus.git`
-- 最近功能提交：`8b169244b5dfbdca6444380e37bb465cf69e0811`（Replay recorded Venus command buffers on submit）。
-- 前两个相关提交：`2976c1c5`（ring wrap-around/reply bounds）、`72421ab1`（zero output handles in Venus creates）；更早提交 `df51bd21`（ring notify/command-stream execution）、`0116a7f5`（ring protocol state/progress）。
+- 最近提交：`5c35e1b5f6a6d9f19120ab8cfe60c82e384c67e1`（按 workload 时长扩展客体验收超时）。
+- 前两个相关提交：`e239d8c9`（Replay recorded Venus command buffers on submit）、`81dc9bf9`（Package current Venus guest evidence）；更早提交 `2976c1c5`（ring wrap-around/reply bounds）、`72421ab1`（zero output handles in Venus creates）。
 - 开始新工作先执行 `git status --short`；交接时应保持工作树干净。
 
 ## Windows 编译环境
@@ -89,6 +89,7 @@ kmk: Failed to create worker threads
 - saved-state 报告 `.build\windows\linux-venus-save-restore-admin47\report.json`：`saveRestoreVerified=true`、`saveRestoreVulkanExit=0`、`cleanupErrors=[]`、`passed=true`；恢复日志同时包含 `VULKANINFO_PASS` 和 `VULKAN_WORKLOAD_PASS`。
 - 双 vCPU 报告 `.build\windows\linux-venus-cpu2-admin48\report.json`：`cpuCount=2`、`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`cleanupErrors=[]`、`passed=true`；这是一轮启动与 smoke 验证，不替代长时间压力测试。
 - 当前构建双 vCPU 重试报告 `.build\windows\linux-venus-cursor-final-cpu2-long\report.json`：`cpuCount=2`、`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`guestVulkanExit=0`、`guestVulkanWorkloadExit=0`、`cleanupErrors=[]`、`passed=true`；运行时 `VBoxDD.dll` SHA256 为 `3CA41E3DEB841CA85B04B62B8FD272777C62365253410F660532E1B00BFAB411`。该报告覆盖当前构建的双 vCPU smoke，不替代长时间稳定性矩阵。
+- `tools/test-linux-virtio-gpu.ps1 -WorkloadSeconds N` 现在将远端 workload 超时设置为 `max(30, N + 30)` 秒；修复前固定 30 秒会把 60 秒 workload 误报为退出码 124。脚本修复后的单 vCPU 5 秒报告 `.build\windows\linux-venus-final-current5-scriptfix\report.json` 通过，3009 次迭代、`cleanupErrors=[]`。本轮双 vCPU 60 秒尝试未进入 SSH/Vulkan：Ubuntu 在 `raid6` 模块初始化阶段超过 420 秒，不能作为 Venus 协议失败或通过证据。
 - reset 报告 `.build\windows\linux-venus-reset-admin51\report.json`：`resetVerified=true`、`resetVulkanExit=0`、`cleanupErrors=[]`、`passed=true`；该次使用 `-SkipGuestVulkanInfo`，只把 reset 前后的 Vulkan buffer/fill/readback workload 作为重连证据，完整 `vulkaninfo` 由 admin46 报告覆盖。
 - 当前对象生命周期改动后的标准报告 `.build\windows\linux-venus-object-admin52\report.json`：`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`guestVulkanExit=0`、`cleanupErrors=[]`、`passed=true`。
 - 当前对象生命周期改动后的 saved-state 报告 `.build\windows\linux-venus-object-save-admin53\report.json`：`saveRestoreVerified=true`、`saveRestoreVulkanExit=0`、`cleanupErrors=[]`、`passed=true`；恢复日志包含 `VULKANINFO_PASS` 和 `VULKAN_WORKLOAD_PASS`。
