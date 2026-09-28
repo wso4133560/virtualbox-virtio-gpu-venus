@@ -11,7 +11,7 @@
 - 工作目录：`D:\code\virtualbox-virtio-gpu-venus`
 - 分支：`main`
 - 远端：`git@github.com:wso4133560/virtualbox-virtio-gpu-venus.git`
-- 本轮源码验证基于工作树最终 DLL `C443444D3AFA0B5FB9D5A9C428DA057AAA375E3709B720A5A527203A6AE43BDB`；提交哈希以 `git HEAD` 和远端分支为准。
+- 本轮源码验证基于工作树最终 DLL `7CEF43BE69538014B4565304F85FBC57E5B47608C742A3FA907D999887227CB7`；提交哈希以 `git HEAD` 和远端分支为准。
 - 前两个相关提交：`e239d8c9`（Replay recorded Venus command buffers on submit）、`81dc9bf9`（Package current Venus guest evidence）；更早提交 `2976c1c5`（ring wrap-around/reply bounds）、`72421ab1`（zero output handles in Venus creates）。
 - 开始新工作先执行 `git status --short`；交接时应保持工作树干净。
 
@@ -57,7 +57,7 @@ kmk: Failed to create worker threads
 .\tools\test-virtio-gpu.ps1 -TimeoutSeconds 60 -IncludeRegistration
 ```
 
-结果：当前报告 `.build\windows\virtio-gpu-validation.json` 退出码 `0`，58 个测试组通过、`missingGroups=[]`。回归包含 blob resource/Vulkan backing、ring metadata/reply/progress、multi-stream framing/reply cursor、ring 尾部 wrap-around 与 reply 越界、Vulkan transfer/clear/barrier/blit/fill/update、binary/timeline semaphore query/signal/wait、host fence/semaphore/event 生命周期、classic/submit2 wait-signal、对象依赖顺序 save/load，以及从构建产物注册 VBoxDD 的检查。
+结果：当前报告 `.build\windows\virtio-gpu-validation.json` 退出码 `0`，59 个测试组通过、`missingGroups=[]`。回归包含 blob resource/Vulkan backing、ring metadata/reply/progress、multi-stream framing/reply cursor、ring 尾部 wrap-around 与 reply 越界、Vulkan transfer/clear/barrier/blit/fill/update、binary/timeline semaphore/query pool query/signal/wait、host fence/semaphore/event 生命周期、classic/submit2 wait-signal、对象依赖顺序 save/load，以及从构建产物注册 VBoxDD 的检查。
 
 这表示 Windows 用户态传输、设备回调和宿主 Vulkan 路径通过了当前回归边界。
 
@@ -147,13 +147,14 @@ kmk: Failed to create worker threads
 9. `vkSetReplyCommandStreamMESA` 保存 reply resource/offset/size，并初始化 reply cursor。
 10. `vkSeekReplyCommandStreamMESA`（命令类型 `179`）校验并更新 reply cursor；reply 控制命令按当前 cursor 写入共享 reply stream 并推进 4-byte reply slot，拒绝无效 stream/cursor。
 11. `vkExecuteCommandStreamsMESA` 从共享 blob 读取 descriptor/command stream，处理多 stream、显式 reply position 和嵌套 ring 命令，并执行当前支持的 transfer/clear/barrier/blit/fill/update 子集。
-12. ring reply cursor、reply validity、buffer/memory binding、有限 command buffer/fence/binary/timeline semaphore 生命周期状态、classic/`vkQueueSubmit2` wait-signal、`vkGetSemaphoreCounterValue`/`vkWaitSemaphores`/`vkSignalSemaphore`、idle 回复，以及 saved-state version `20` 的 save/load 和一致性检查。
+12. ring reply cursor、reply validity、buffer/memory binding、有限 command buffer/fence/binary/timeline semaphore/query pool 生命周期状态、classic/`vkQueueSubmit2` wait-signal、`vkGetSemaphoreCounterValue`/`vkWaitSemaphores`/`vkSignalSemaphore`、idle 回复，以及 saved-state version `22` 的 save/load 和一致性检查。
 13. 对已支持的 transfer/barrier command stream 保存有界命令字节，在 `vkQueueSubmit`/`vkQueueSubmit2` 中按 command-buffer 顺序重放；Begin/Reset/Free 清理旧记录，saved-state 持久化命令流，修复 Mesa fence feedback slot 在 reset 后未被重新写入的问题。
 14. image object handle 到已绑定 host-visible resource 的统一解析；环命令与 `SUBMIT_3D` 的 image/buffer transfer、clear、barrier、copy、blit 路径不再强制截断 64 位 Vulkan handle，并保留旧 resource ID 回退。
 15. `vkGetDeviceMemoryCommitment`、`vkGetImageMemoryRequirements`、`vkGetImageMemoryRequirements2`、`vkBindImageMemory`、`vkBindImageMemory2` 的有界 framing/reply 和 binding-table 状态更新。
 16. 有界 opaque Vulkan object table 已覆盖 `vkCreate/DestroyShaderModule`、`vkCreate/DestroyPipelineLayout`、`vkCreate/DestroySampler`、`vkCreate/DestroyDescriptorSetLayout` 和 `vkCreate/DestroyDescriptorPool`；后四类已实际创建/销毁宿主 Vulkan 对象，create wire 有界保存并在 saved-state 恢复时重建，创建参数、动态数组、句柄输出、销毁类型匹配和 saved-state 类型校验均已接入。
 17. command buffer 录制阶段只保存已校验的 transfer/barrier/fill 命令，资源执行延迟到 queue submit/replay；这避免异步 memory bind 尚未可见时把合法录制命令误报为 ring fatal。
 18. `vkCreateEvent`/`vkDestroyEvent`/`vkGetEventStatus`/`vkSetEvent`/`vkResetEvent`（命令 42-46）已接入有界 wire framing、真实宿主 `VkEvent` 生命周期和状态回复；事件逻辑状态与 create wire 纳入 saved-state version 21，恢复时重建并重新设置宿主事件。
+19. `vkCreateQueryPool`/`vkDestroyQueryPool`/`vkGetQueryPoolResults`/`vkResetQueryPool`（命令 47-49、171）已接入动态 command-size 校验、真实宿主 `VkQueryPool` 创建/销毁/重置和 `VkResult + array-size + blob` 结果回复；query pool create wire 纳入 saved-state version 22，恢复时按独立 pass 重建宿主句柄。
 
 当前宿主侧主要路径：
 
@@ -266,5 +267,14 @@ git ls-remote origin refs/heads/main
 - 当前开发包 `.build\\windows\\virtualbox-virtio-gpu-venus-event-final.zip` 共 257 个文件，ZIP SHA256 `C7CB338F0C3D04008BBC2C7DAA2D8A2FEC2359374A96416B4B2DA82254858C56`；包校验的 manifest、版本、VirtIO-GPU/Venus 回归和 PE/VMMR0 加载均通过。
 - 客体标准、saved-state 和 reset 报告分别为 `.build\\windows\\linux-venus-event-final-long\\report.json`、`.build\\windows\\linux-venus-event-save5\\report.json`、`.build\\windows\\linux-venus-event-reset5\\report.json`，三者均 `passed=true`、`cleanupErrors=[]`，且 `VBoxSup` 为 `RUNNING`。
 - 仍未完成完整 Venus renderer protocol、所有 Vulkan 对象/query、真实桌面显示/分辨率/cursor 端到端验收、8 小时压力、完整性能矩阵和正式 Windows 安装器；本轮证据不应扩大为这些范围已完成。
+
+## 2026-09-29 query pool dispatcher
+
+- `DevVirtioGPU.cpp` 新增 query pool 命令 47-49、171：`vkCreateQueryPool`、`vkDestroyQueryPool`、`vkGetQueryPoolResults`、`vkResetQueryPool`。创建参数按 `VkQueryPoolCreateInfo` 的 pNext、query type/count、pipeline statistics 和 allocator/output marker 校验；宿主 Vulkan 可用时创建真实 `VkQueryPool`。
+- `vkGetQueryPoolResults` 读取 `dataSize`、array-size、stride 和 flags，限制结果缓冲在 `VIRTIOGPU_MAX_SUBMIT_BYTES` 内，调用宿主 Vulkan 后返回 `VkResult`、64 位 array-size 和按 4-byte 对齐的结果 blob，避免只推进 reply cursor。
+- saved-state version 从 21 升为 22；opaque object 类型校验、host handle 析构和恢复 pass 已包含 query pool。宿主 `tstVirtioGPU` 新增 query pool create/reset/get/destroy 与 save/load handle 检查。
+- 宿主回归 `.build\windows\virtio-gpu-validation.json` 通过 59 组，`missingGroups=[]`，注册检查通过；当前 `VBoxDD.dll` SHA256 为 `7CEF43BE69538014B4565304F85FBC57E5B47608C742A3FA907D999887227CB7`。
+- 当前客体标准报告 `.build\windows\linux-venus-query-final\report.json` 使用同一 runtime 通过 `vulkaninfo` 和 guest workload，`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`vboxSupState=RUNNING`、`cleanupErrors=[]`、`passed=true`；guest 设备为 `Virtio-GPU Venus (AMD Radeon 780M Graphics)`。本轮 query-specific saved-state 脚本重试未生成报告，原因是 VM restore session 在脚本超时后残留，已手动终止临时 VBoxHeadless；宿主 saved-state query handle 检查仍已通过。
+- 当前开发包 `.build\windows\virtualbox-virtio-gpu-venus-query-final.zip` 共 257 个文件，ZIP SHA256 `4FEEB1D9E6F32C1DBC750A82AC13380B4354A5C8376455880CB8E9710E8E3E06`；包内 `VBoxDD.dll` SHA256 为 `7CEF43BE69538014B4565304F85FBC57E5B47608C742A3FA907D999887227CB7`，manifest、版本、VirtIO-GPU/Venus 回归和 PE/VMMR0 加载均通过。完整 Venus renderer protocol、真实桌面显示/分辨率/cursor 端到端验收、8 小时压力、完整性能矩阵和正式 Windows 安装器仍未完成。
 
 只提交本阶段相关文件，保留测试报告在 `.build` 下，不要提交临时 VM 密钥、磁盘或 core dump。

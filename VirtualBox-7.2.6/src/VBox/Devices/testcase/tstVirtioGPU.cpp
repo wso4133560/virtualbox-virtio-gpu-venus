@@ -2825,6 +2825,97 @@ int main(int argc, char **argv)
                                                        abProtocolReply, sizeof(abProtocolReply),
                                                        &cbProtocolReply)
                   && cbProtocolReply == 4 && !virtioGpuR3FindOpaqueObject(pGpu, uEvent));
+    RTTestSub(g_hTest, "Venus query pool lifecycle and result payload");
+    uint8_t abCreateQueryPool[76] = { 0 };
+    uint32_t uCreateQueryPoolType = VIRTIOGPU_VK_CMD_CREATE_QUERY_POOL;
+    uint64_t uQueryDevice = UINT64_C(0x1001), fQueryCreateInfo = 1;
+    uint32_t uQuerySType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+    uint64_t fQueryPNext = 0;
+    uint32_t fQueryFlags = 0, uQueryType = VK_QUERY_TYPE_TIMESTAMP, cQueryCount = 2,
+             fQueryStatistics = 0;
+    uint64_t fQueryAllocator = 0, fQueryOutput = 1;
+    uint64_t uQueryPool = UINT64_C(0x5525);
+    memcpy(abCreateQueryPool + 0, &uCreateQueryPoolType, sizeof(uCreateQueryPoolType));
+    memcpy(abCreateQueryPool + 8, &uQueryDevice, sizeof(uQueryDevice));
+    memcpy(abCreateQueryPool + 16, &fQueryCreateInfo, sizeof(fQueryCreateInfo));
+    memcpy(abCreateQueryPool + 24, &uQuerySType, sizeof(uQuerySType));
+    memcpy(abCreateQueryPool + 28, &fQueryPNext, sizeof(fQueryPNext));
+    memcpy(abCreateQueryPool + 36, &fQueryFlags, sizeof(fQueryFlags));
+    memcpy(abCreateQueryPool + 40, &uQueryType, sizeof(uQueryType));
+    memcpy(abCreateQueryPool + 44, &cQueryCount, sizeof(cQueryCount));
+    memcpy(abCreateQueryPool + 48, &fQueryStatistics, sizeof(fQueryStatistics));
+    memcpy(abCreateQueryPool + 52, &fQueryAllocator, sizeof(fQueryAllocator));
+    memcpy(abCreateQueryPool + 60, &fQueryOutput, sizeof(fQueryOutput));
+    memcpy(abCreateQueryPool + 68, &uQueryPool, sizeof(uQueryPool));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abCreateQueryPool, sizeof(abCreateQueryPool),
+                                                &cbQueueCommand)
+                  && cbQueueCommand == sizeof(abCreateQueryPool)
+                  && virtioGpuR3EncodeVenusProtocolReply(pGpu, abCreateQueryPool,
+                                                          sizeof(abCreateQueryPool), abProtocolReply,
+                                                          sizeof(abProtocolReply), &cbProtocolReply));
+    PVIRTIOGPUOPAQUEOBJECT pQueryPool = virtioGpuR3FindOpaqueObject(pGpu, uQueryPool);
+    RTTESTI_CHECK(pQueryPool && pQueryPool->uType == VIRTIOGPU_VK_CMD_CREATE_QUERY_POOL
+                  && cbProtocolReply == 24);
+    if (fHostOpaqueObjects)
+        RTTESTI_CHECK(pQueryPool && pQueryPool->hQueryPool != VK_NULL_HANDLE);
+    uint8_t abResetQueryPool[32] = { 0 };
+    uint32_t uResetQueryPoolType = VIRTIOGPU_VK_CMD_RESET_QUERY_POOL;
+    uint32_t uQueryFirst = 0, uQueryResetCount = cQueryCount;
+    memcpy(abResetQueryPool + 0, &uResetQueryPoolType, sizeof(uResetQueryPoolType));
+    memcpy(abResetQueryPool + 8, &uQueryDevice, sizeof(uQueryDevice));
+    memcpy(abResetQueryPool + 16, &uQueryPool, sizeof(uQueryPool));
+    memcpy(abResetQueryPool + 24, &uQueryFirst, sizeof(uQueryFirst));
+    memcpy(abResetQueryPool + 28, &uQueryResetCount, sizeof(uQueryResetCount));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abResetQueryPool, sizeof(abResetQueryPool),
+                                                &cbQueueCommand)
+                  && cbQueueCommand == sizeof(abResetQueryPool)
+                  && virtioGpuR3EncodeVenusProtocolReply(pGpu, abResetQueryPool,
+                                                          sizeof(abResetQueryPool), abProtocolReply,
+                                                          sizeof(abProtocolReply), &cbProtocolReply)
+                  && cbProtocolReply == 4);
+    uint8_t abGetQueryResults[60] = { 0 };
+    uint32_t uGetQueryResultsType = VIRTIOGPU_VK_CMD_GET_QUERY_POOL_RESULTS;
+    uint32_t uQueryResultFlags = VK_QUERY_RESULT_64_BIT;
+    uint64_t cbQueryData = sizeof(uint64_t) * 2, cbQueryArray = cbQueryData,
+             uQueryStride = sizeof(uint64_t);
+    memcpy(abGetQueryResults + 0, &uGetQueryResultsType, sizeof(uGetQueryResultsType));
+    memcpy(abGetQueryResults + 8, &uQueryDevice, sizeof(uQueryDevice));
+    memcpy(abGetQueryResults + 16, &uQueryPool, sizeof(uQueryPool));
+    memcpy(abGetQueryResults + 24, &uQueryFirst, sizeof(uQueryFirst));
+    memcpy(abGetQueryResults + 28, &uQueryResetCount, sizeof(uQueryResetCount));
+    memcpy(abGetQueryResults + 32, &cbQueryData, sizeof(cbQueryData));
+    memcpy(abGetQueryResults + 40, &cbQueryArray, sizeof(cbQueryArray));
+    memcpy(abGetQueryResults + 48, &uQueryStride, sizeof(uQueryStride));
+    memcpy(abGetQueryResults + 56, &uQueryResultFlags, sizeof(uQueryResultFlags));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abGetQueryResults, sizeof(abGetQueryResults),
+                                                &cbQueueCommand)
+                  && cbQueueCommand == sizeof(abGetQueryResults)
+                  && virtioGpuR3EncodeVenusProtocolReply(pGpu, abGetQueryResults,
+                                                          sizeof(abGetQueryResults), abProtocolReply,
+                                                          sizeof(abProtocolReply), &cbProtocolReply)
+                  && cbProtocolReply == 32);
+    uint32_t uQueryResultReply = UINT32_MAX, uQueryReplyDataSize = 0;
+    memcpy(&uQueryResultReply, abProtocolReply + 4, sizeof(uQueryResultReply));
+    memcpy(&uQueryReplyDataSize, abProtocolReply + 8, sizeof(uQueryReplyDataSize));
+    RTTESTI_CHECK(uQueryResultReply == VK_NOT_READY && uQueryReplyDataSize == cbQueryData);
+    uint8_t abDestroyQueryPool[32] = { 0 };
+    uint32_t uDestroyQueryPoolType = VIRTIOGPU_VK_CMD_DESTROY_QUERY_POOL;
+    memcpy(abDestroyQueryPool + 0, &uDestroyQueryPoolType, sizeof(uDestroyQueryPoolType));
+    memcpy(abDestroyQueryPool + 8, &uQueryDevice, sizeof(uQueryDevice));
+    memcpy(abDestroyQueryPool + 16, &uQueryPool, sizeof(uQueryPool));
+    bool const fDestroyQuerySize = virtioGpuR3VenusCommandSize(abDestroyQueryPool,
+                                                                sizeof(abDestroyQueryPool),
+                                                                &cbQueueCommand)
+                                && cbQueueCommand == sizeof(abDestroyQueryPool);
+    bool const fDestroyQueryReply = fDestroyQuerySize
+                                 && virtioGpuR3EncodeVenusProtocolReply(pGpu, abDestroyQueryPool,
+                                                                         sizeof(abDestroyQueryPool),
+                                                                         abProtocolReply,
+                                                                         sizeof(abProtocolReply),
+                                                                         &cbProtocolReply);
+    RTTESTI_CHECK(fDestroyQuerySize);
+    RTTESTI_CHECK(fDestroyQueryReply && cbProtocolReply == 4);
+    RTTESTI_CHECK(!virtioGpuR3FindOpaqueObject(pGpu, uQueryPool));
     RTTestSub(g_hTest, "Venus host fence lifecycle");
     uint8_t abCreateFence[64] = { 0 };
     uint32_t uCreateFenceType = VIRTIOGPU_VK_CMD_CREATE_FENCE;
@@ -4060,6 +4151,17 @@ int main(int argc, char **argv)
                   && cbProtocolReply == 8);
     memcpy(&uEventResult, abProtocolReply + 4, sizeof(uEventResult));
     RTTESTI_CHECK(uEventResult == VK_SUCCESS);
+    uint64_t uSavedQueryPool = UINT64_C(0x5526);
+    memcpy(abCreateQueryPool + 68, &uSavedQueryPool, sizeof(uSavedQueryPool));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abCreateQueryPool, sizeof(abCreateQueryPool),
+                                                &cbQueueCommand)
+                  && cbQueueCommand == sizeof(abCreateQueryPool)
+                  && virtioGpuR3EncodeVenusProtocolReply(pGpu, abCreateQueryPool,
+                                                          sizeof(abCreateQueryPool), abProtocolReply,
+                                                          sizeof(abProtocolReply), &cbProtocolReply));
+    PVIRTIOGPUOPAQUEOBJECT pSavedQueryBefore = virtioGpuR3FindOpaqueObject(pGpu, uSavedQueryPool);
+    RTTESTI_CHECK(pSavedQueryBefore && pSavedQueryBefore->uType == VIRTIOGPU_VK_CMD_CREATE_QUERY_POOL
+                  && pSavedQueryBefore->cbCreate == sizeof(abCreateQueryPool));
     tstInitQueue(&pGpu->Virtio, 0);
     tstInitQueue(&pGpu->Virtio, 1);
     tstPost(&pGpu->Virtio, 0, 24, 408);
@@ -4082,10 +4184,13 @@ int main(int argc, char **argv)
     PVIRTIOGPUOPAQUEOBJECT pSavedLayout = virtioGpuR3FindOpaqueObject(pGpu, uSavedLayout);
     PVIRTIOGPUOPAQUEOBJECT pSavedPipeline = virtioGpuR3FindOpaqueObject(pGpu, uSavedPipeline);
     PVIRTIOGPUOPAQUEOBJECT pSavedEvent = virtioGpuR3FindOpaqueObject(pGpu, uSavedEvent);
+    PVIRTIOGPUOPAQUEOBJECT pSavedQuery = virtioGpuR3FindOpaqueObject(pGpu, uSavedQueryPool);
     RTTESTI_CHECK(pSavedSampler && pSavedLayout && pSavedPipeline
                   && pSavedLayout->cbCreate == sizeof(abSavedLayout)
                   && pSavedPipeline->cbCreate == sizeof(abSavedPipeline));
     RTTESTI_CHECK(pSavedEvent && pSavedEvent->fEventSet);
+    RTTESTI_CHECK(pSavedQuery && pSavedQuery->uType == VIRTIOGPU_VK_CMD_CREATE_QUERY_POOL
+                  && pSavedQuery->cbCreate == sizeof(abCreateQueryPool));
     if (fHostOpaqueObjects)
         RTTESTI_CHECK(pSavedEvent->hEvent != VK_NULL_HANDLE);
     if (fHostOpaqueObjects)
@@ -4096,6 +4201,7 @@ int main(int argc, char **argv)
                       && pSavedSampler->hSampler != VK_NULL_HANDLE
                       && pSavedLayout->hDescriptorSetLayout != VK_NULL_HANDLE
                       && pSavedPipeline->hPipelineLayout != VK_NULL_HANDLE);
+        RTTESTI_CHECK(pSavedQuery && pSavedQuery->hQueryPool != VK_NULL_HANDLE);
     }
     RTTESTI_CHECK(pGpu->Virtio.aVirtqueues[0].fAttached && pGpu->Virtio.aVirtqueues[1].fAttached);
     virtioGpuR3VirtqNotified(pDev, &pGpu->Virtio, 0);
