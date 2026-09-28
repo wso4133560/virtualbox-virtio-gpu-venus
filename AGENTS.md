@@ -147,7 +147,7 @@ kmk: Failed to create worker threads
 9. `vkSetReplyCommandStreamMESA` 保存 reply resource/offset/size，并初始化 reply cursor。
 10. `vkSeekReplyCommandStreamMESA`（命令类型 `179`）校验并更新 reply cursor；reply 控制命令按当前 cursor 写入共享 reply stream 并推进 4-byte reply slot，拒绝无效 stream/cursor。
 11. `vkExecuteCommandStreamsMESA` 从共享 blob 读取 descriptor/command stream，处理多 stream、显式 reply position 和嵌套 ring 命令，并执行当前支持的 transfer/clear/barrier/blit/fill/update 子集。
-12. ring reply cursor、reply validity、buffer/memory binding、有限 command buffer/fence/binary/timeline semaphore/query pool/descriptor set 生命周期状态、classic/`vkQueueSubmit2` wait-signal、`vkGetSemaphoreCounterValue`/`vkWaitSemaphores`/`vkSignalSemaphore`、idle 回复，以及 saved-state version `23` 的 save/load 和一致性检查。
+12. ring reply cursor、reply validity、buffer/memory binding、有限 command buffer/fence/binary/timeline semaphore/query pool/descriptor set 生命周期状态、classic/`vkQueueSubmit2` wait-signal、`vkGetSemaphoreCounterValue`/`vkWaitSemaphores`/`vkSignalSemaphore`、idle 回复，以及 saved-state version `24` 的 save/load 和一致性检查。
 13. 对已支持的 transfer/barrier command stream 保存有界命令字节，在 `vkQueueSubmit`/`vkQueueSubmit2` 中按 command-buffer 顺序重放；Begin/Reset/Free 清理旧记录，saved-state 持久化命令流，修复 Mesa fence feedback slot 在 reset 后未被重新写入的问题。
 14. image object handle 到已绑定 host-visible resource 的统一解析；环命令与 `SUBMIT_3D` 的 image/buffer transfer、clear、barrier、copy、blit 路径不再强制截断 64 位 Vulkan handle，并保留旧 resource ID 回退。
 15. `vkGetDeviceMemoryCommitment`、`vkGetImageMemoryRequirements`、`vkGetImageMemoryRequirements2`、`vkBindImageMemory`、`vkBindImageMemory2` 的有界 framing/reply 和 binding-table 状态更新。
@@ -155,7 +155,7 @@ kmk: Failed to create worker threads
 17. command buffer 录制阶段只保存已校验的 transfer/barrier/fill 命令，资源执行延迟到 queue submit/replay；这避免异步 memory bind 尚未可见时把合法录制命令误报为 ring fatal。
 18. `vkCreateEvent`/`vkDestroyEvent`/`vkGetEventStatus`/`vkSetEvent`/`vkResetEvent`（命令 42-46）已接入有界 wire framing、真实宿主 `VkEvent` 生命周期和状态回复；事件逻辑状态与 create wire 纳入 saved-state version 21，恢复时重建并重新设置宿主事件。
 19. `vkCreateQueryPool`/`vkDestroyQueryPool`/`vkGetQueryPoolResults`/`vkResetQueryPool`（命令 47-49、171）已接入动态 command-size 校验、真实宿主 `VkQueryPool` 创建/销毁/重置和 `VkResult + array-size + blob` 结果回复；query pool create wire 纳入 saved-state version 22，恢复时按独立 pass 重建宿主句柄。
-20. `vkAllocateDescriptorSets`/`vkFreeDescriptorSets`/`vkUpdateDescriptorSets`（命令 77-79）已接入严格的单 layout/单输出 descriptor set framing、真实宿主 `VkDescriptorSet` 分配/释放、动态 write/copy framing，以及常见 sampler/image/buffer descriptor 到宿主 `vkUpdateDescriptorSets` 的解码；未知 pNext、texel buffer、数组不匹配和错误 pool 仍拒绝，descriptor update 内容尚未纳入 saved-state 重放。
+20. `vkAllocateDescriptorSets`/`vkFreeDescriptorSets`/`vkUpdateDescriptorSets`（命令 77-79）已接入严格的单 layout/单输出 descriptor set framing、真实宿主 `VkDescriptorSet` 分配/释放、动态 write/copy framing，以及常见 sampler/image/buffer descriptor 到宿主 `vkUpdateDescriptorSets` 的解码；未知 pNext、texel buffer、数组不匹配和错误 pool 仍拒绝，descriptor update wire 已纳入 saved-state 并在依赖对象恢复后重放。
 
 当前宿主侧主要路径：
 
@@ -283,7 +283,7 @@ git ls-remote origin refs/heads/main
 ## 2026-09-29 descriptor set 生命周期
 
 - `DevVirtioGPU.cpp` 新增 Venus descriptor set 命令 77-79：`vkAllocateDescriptorSets` 按单 descriptor pool、单 layout 和单输出 set 做 80-byte framing，宿主 Vulkan 创建真实 `VkDescriptorSet`；`vkFreeDescriptorSets` 释放 opaque set 并校验 pool 归属；`vkUpdateDescriptorSets` 完成动态 write/copy framing，并把常见 sampler/image/buffer descriptor 转换为宿主 `vkUpdateDescriptorSets` 调用。
-- saved-state version 从 22 升为 23；descriptor set 保存其 create wire 和宿主 descriptor pool 依赖，恢复 pass 在 descriptor pool/layout 后重建 set。`tstVirtioGPU` 覆盖分配、零更新、直接 save/reset/load 后句柄重建和释放。
+- saved-state version 从 22 升为 24；descriptor set 保存其 create wire 和宿主 descriptor pool 依赖，descriptor update wire 也保存并在依赖对象恢复后重放。`tstVirtioGPU` 覆盖分配、零更新、直接 save/reset/load 后句柄重建和释放。
 - 重新编译 `DevVirtioGPU.cpp`、`tstVirtioGPU.cpp` 并链接后，`.build\windows\virtio-gpu-validation.json` 通过 59 组，`missingGroups=[]`，注册检查通过；当前 `VBoxDD.dll` SHA256 为 `7CEF43BE69538014B4565304F85FBC57E5B47608C742A3FA907D999887227CB7`。
 - 当前客体报告 `.build\windows\linux-venus-descriptor-set-save\report.json` 使用同一 runtime、运行中的 `VBoxSup` 通过 guest `vulkaninfo`、15 秒 workload 和 saved-state restore：`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、初始 workload `10244` 次、`saveRestoreVerified=true`、`saveRestoreVulkanExit=0`、`cleanupErrors=[]`、`passed=true`。
 - 当前开发包 `.build\windows\virtualbox-virtio-gpu-venus-descriptor-set-final.zip` 共 257 个文件，ZIP SHA256 `9BF51963186CE224F67B68C7D5367B46D73BC88D446D1233D952ADB154403244`；包内 `VBoxDD.dll` SHA256 为 `7CEF43BE69538014B4565304F85FBC57E5B47608C742A3FA907D999887227CB7`，manifest、版本、VirtIO-GPU/Venus 回归和 PE/VMMR0 加载均通过。完整 descriptor write/copy saved-state 重放、完整 Venus renderer protocol、真实桌面显示/分辨率/cursor 端到端验收、8 小时压力、完整性能矩阵和正式 Windows 安装器仍未完成。
@@ -291,8 +291,15 @@ git ls-remote origin refs/heads/main
 ## 2026-09-29 descriptor update framing
 
 - `vkUpdateDescriptorSets` 现在按真实数组大小解析 write/copy payload；常见 sampler、combined/sampled/storage image、input attachment、uniform/storage buffer 及 dynamic buffer descriptor 会转换为宿主结构并调用 `vkUpdateDescriptorSets`。未知 pNext、texel buffer、数组计数不一致、无效 set/resource handle 会拒绝。
-- `vkFreeDescriptorSets` 在释放前校验 set 的 descriptor pool 归属；`tstVirtioGPU` 新增截断 update 和错误 pool 负向检查。descriptor update 内容仍未写入 saved-state，恢复后只重建 descriptor set 身份。
+- `vkFreeDescriptorSets` 在释放前校验 set 的 descriptor pool 归属；`tstVirtioGPU` 新增截断 update 和错误 pool 负向检查。非空 descriptor update wire 按 slot 保存，并在 saved-state 恢复完成 descriptor pool/layout/set 依赖后重放；释放 descriptor pool/layout/set 时清理缓存，避免恢复旧句柄。
 - 当前 VBoxDD 重新链接后宿主回归 `.build\windows\virtio-gpu-validation.json` 通过 59 组，`missingGroups=[]`；当前客体报告 `.build\windows\linux-venus-descriptor-update-save\report.json` 使用同一 runtime 通过 `vulkaninfo`、15 秒 workload（10211 次）和 saved-state restore：`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`saveRestoreVerified=true`、`saveRestoreVulkanExit=0`、`vboxSupState=RUNNING`、`cleanupErrors=[]`、`passed=true`。
 - 当前开发包 `.build\windows\virtualbox-virtio-gpu-venus-descriptor-update-final.zip` 共 257 个文件，ZIP SHA256 `B713CE4954C7BC91967593F87B77CCC90ED6DB204217BD1BDCAB9465E694EBA4`；包内 `VBoxDD.dll` SHA256 为 `7CEF43BE69538014B4565304F85FBC57E5B47608C742A3FA907D999887227CB7`，包校验通过。完整 descriptor update saved-state 重放、完整 Venus renderer protocol、真实桌面显示/分辨率/cursor 端到端验收、8 小时压力、完整性能矩阵和正式 Windows 安装器仍未完成。
+
+## v24 当前修正
+
+- 上方 descriptor set/update 的 v23 记录是历史阶段；当前 saved-state version 为 24，非空 descriptor update wire 已保存，并在 descriptor pool/layout/set 依赖恢复后重放。
+- 当前客体报告为 `.build\windows\linux-venus-descriptor-update-save-v24\report.json`：guest Vulkan、15 秒 workload（10646 次）和 saved-state restore 均通过，`vboxSupState=RUNNING`、`cleanupErrors=[]`、`passed=true`。
+- 当前开发包为 `.build\windows\virtualbox-virtio-gpu-venus-descriptor-update-v24-positive-final.zip`，共 257 个文件，ZIP SHA256 `77372E9F2225877DC2D3054F347FCB960540B7E4B3EF2CB93A2D3B72BC94A9F9`；包内 `VBoxDD.dll` SHA256 为 `7CEF43BE69538014B4565304F85FBC57E5B47608C742A3FA907D999887227CB7`，包校验通过。
+- 宿主 `tstVirtioGPU` 已构造真实 sampler descriptor layout/pool/set 和非空 `vkUpdateDescriptorSets` wire，并验证 save/reset/load 后宿主句柄恢复与 update 重放；当前 guest workload 仍未单独覆盖非空 descriptor payload。完整 Venus renderer protocol、真实桌面显示/分辨率/cursor 端到端验收、8 小时压力、完整性能矩阵和正式 Windows 安装器仍未完成。
 
 只提交本阶段相关文件，保留测试报告在 `.build` 下，不要提交临时 VM 密钥、磁盘或 core dump。

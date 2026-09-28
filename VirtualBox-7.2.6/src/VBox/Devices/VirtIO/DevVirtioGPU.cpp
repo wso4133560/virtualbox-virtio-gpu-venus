@@ -30,8 +30,8 @@
 # error "VirtIO-GPU currently runs entirely in ring 3."
 #endif
 
-/* Version 23 also preserves host-backed VkDescriptorSet object identities. */
-#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(23)
+/* Version 24 also preserves descriptor update command streams. */
+#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(24)
 #define VIRTIOGPU_MAX_RESOURCES 256
 #define VIRTIOGPU_MAX_BUFFER_BINDINGS 512
 #define VIRTIOGPU_MAX_COMMAND_BUFFERS 512
@@ -39,6 +39,7 @@
 #define VIRTIOGPU_MAX_SEMAPHORES 512
 #define VIRTIOGPU_MAX_OPAQUE_OBJECTS 1024
 #define VIRTIOGPU_MAX_OPAQUE_CREATE_BYTES (UINT32_C(256) * _1K)
+#define VIRTIOGPU_MAX_DESCRIPTOR_UPDATES 64
 #define VIRTIOGPU_MAX_COMMAND_STREAM_COMMANDS 64
 #define VIRTIOGPU_MAX_CONTEXTS 64
 #define VIRTIOGPU_MAX_CONTEXT_RESOURCES 64
@@ -349,6 +350,12 @@ typedef struct VIRTIOGPUOPAQUEOBJECT
 } VIRTIOGPUOPAQUEOBJECT;
 typedef VIRTIOGPUOPAQUEOBJECT *PVIRTIOGPUOPAQUEOBJECT;
 
+typedef struct VIRTIOGPUDESCRIPTORUPDATE
+{
+    uint32_t cb;
+    uint8_t *pb;
+} VIRTIOGPUDESCRIPTORUPDATE;
+
 typedef struct VIRTIOGPU
 {
     VIRTIOCORE      Virtio;  /* Must stay first for the common transport. */
@@ -361,6 +368,7 @@ typedef struct VIRTIOGPU
     VIRTIOGPUFENCESTATE aFences[VIRTIOGPU_MAX_FENCES];
     VIRTIOGPUSEMAPHORESTATE aSemaphores[VIRTIOGPU_MAX_SEMAPHORES];
     VIRTIOGPUOPAQUEOBJECT aOpaqueObjects[VIRTIOGPU_MAX_OPAQUE_OBJECTS];
+    VIRTIOGPUDESCRIPTORUPDATE aDescriptorUpdates[VIRTIOGPU_MAX_DESCRIPTOR_UPDATES];
     VIRTIOGPUSCANOUT aScanouts[VIRTIOGPU_MAX_SCANOUTS];
     uint64_t cbAllocated;
     uint8_t *pbSharedMemory;
@@ -412,6 +420,38 @@ static int virtioGpuR3VulkanResourceSync(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pR
 static int virtioGpuR3VulkanResourceReadbackImage(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes);
 static int virtioGpuR3VulkanResourceMemoryOp(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE pRes, bool fInvalidate);
 #endif
+
+static void virtioGpuR3ClearDescriptorUpdates(PVIRTIOGPU pThis)
+{
+    if (!pThis)
+        return;
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aDescriptorUpdates); ++i)
+    {
+        RTMemFree(pThis->aDescriptorUpdates[i].pb);
+        RT_ZERO(pThis->aDescriptorUpdates[i]);
+    }
+}
+
+static bool virtioGpuR3StoreDescriptorUpdate(PVIRTIOGPU pThis, const uint8_t *pb, size_t cb,
+                                             uint32_t cWrites, uint32_t cCopies)
+{
+    if (!pThis || !pb || !cb || cb > VIRTIOGPU_MAX_OPAQUE_CREATE_BYTES)
+        return false;
+    if (!cWrites && !cCopies)
+        return true;
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aDescriptorUpdates); ++i)
+        if (!pThis->aDescriptorUpdates[i].pb)
+        {
+            uint8_t *pbCopy = (uint8_t *)RTMemAlloc(cb);
+            if (!pbCopy)
+                return false;
+            memcpy(pbCopy, pb, cb);
+            pThis->aDescriptorUpdates[i].pb = pbCopy;
+            pThis->aDescriptorUpdates[i].cb = (uint32_t)cb;
+            return true;
+        }
+    return false;
+}
 
 static DECLCALLBACK(int) virtioGpuR3DevCapRead(PPDMDEVINS pDevIns, uint32_t offCap, void *pvBuf, uint32_t cbRead)
 {
@@ -605,6 +645,10 @@ static bool virtioGpuR3ReleaseOpaqueObject(PVIRTIOGPU pThis, uint64_t uObject,
     PVIRTIOGPUOPAQUEOBJECT pObject = virtioGpuR3FindOpaqueObject(pThis, uObject);
     if (!pObject || pObject->uType != uType)
         return false;
+    if (uType == VIRTIOGPU_VK_CMD_ALLOCATE_DESCRIPTOR_SETS
+        || uType == VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_POOL
+        || uType == VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_SET_LAYOUT)
+        virtioGpuR3ClearDescriptorUpdates(pThis);
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     virtioGpuR3DestroyOpaqueHostObject(pThis, pObject);
 #endif
@@ -4043,7 +4087,7 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                 return false;
             memcpy(&cSets, pb + 24, sizeof(cSets));
             if (cSets > 64 || !virtioGpuR3VenusReadU64(pb, cb, 16, &uPool)
-                || !uPool || cEncoded > cSets || cEncoded > (cb - 36) / sizeof(uint64_t))
+                || !uPool || cEncoded != cSets || cEncoded > (cb - 36) / sizeof(uint64_t))
                 return false;
             for (uint64_t i = 0; i < cEncoded; ++i)
             {
@@ -4068,14 +4112,19 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
         case VIRTIOGPU_VK_CMD_UPDATE_DESCRIPTOR_SETS:
         {
             size_t cbCommand = 0;
+            uint32_t cWrites = 0, cCopies = 0;
             if (!virtioGpuR3VenusDescriptorUpdateCommandSize(pb, cb, &cbCommand)
                 || cbCommand != cb)
                 return false;
+            memcpy(&cWrites, pb + 16, sizeof(cWrites));
+            memcpy(&cCopies, pb + 28, sizeof(cCopies));
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
             if (pThis->hVkDevice != VK_NULL_HANDLE
                 && !virtioGpuR3ApplyVenusDescriptorUpdates(pThis, pb, cb))
                 return false;
 #endif
+            if (!virtioGpuR3StoreDescriptorUpdate(pThis, pb, cb, cWrites, cCopies))
+                return false;
             if (!virtioGpuR3VenusPutU32(&Enc, uType))
                 return false;
             break;
@@ -6329,6 +6378,7 @@ static void virtioGpuR3FreeResources(PVIRTIOGPU pThis)
         RTMemFree(pThis->aOpaqueObjects[i].pbCreate);
     }
     RT_ZERO(pThis->aOpaqueObjects);
+    virtioGpuR3ClearDescriptorUpdates(pThis);
     pThis->cbAllocated = 0;
     pThis->offSharedMemoryNext = 0;
 }
@@ -11673,6 +11723,21 @@ static DECLCALLBACK(int) virtioGpuR3SaveExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
         }
         if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutBool(pSSM, pObject->fEventSet);
     }
+    uint32_t cDescriptorUpdates = 0;
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aDescriptorUpdates); ++i)
+        if (pThis->aDescriptorUpdates[i].pb)
+            ++cDescriptorUpdates;
+    if (RT_SUCCESS(rc))
+        rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, cDescriptorUpdates);
+    for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aDescriptorUpdates); ++i)
+        if (pThis->aDescriptorUpdates[i].pb)
+        {
+            VIRTIOGPUDESCRIPTORUPDATE const *pUpdate = &pThis->aDescriptorUpdates[i];
+            if (!pUpdate->cb || pUpdate->cb > VIRTIOGPU_MAX_OPAQUE_CREATE_BYTES)
+                rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, pUpdate->cb);
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutMem(pSSM, pUpdate->pb, pUpdate->cb);
+        }
     for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aScanouts); ++i)
         rc = pDevIns->pHlpR3->pfnSSMPutMem(pSSM, &pThis->aScanouts[i], sizeof(pThis->aScanouts[i]));
     if (RT_SUCCESS(rc))
@@ -12038,6 +12103,35 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
         if (RT_SUCCESS(rc) && !fValid)
             rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
     }
+    uint32_t cDescriptorUpdates = 0;
+    if (RT_SUCCESS(rc))
+        rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &cDescriptorUpdates);
+    if (RT_SUCCESS(rc) && cDescriptorUpdates > VIRTIOGPU_MAX_DESCRIPTOR_UPDATES)
+        rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
+    for (unsigned i = 0; RT_SUCCESS(rc) && i < cDescriptorUpdates; ++i)
+    {
+        uint32_t cbUpdate = 0;
+        rc = pDevIns->pHlpR3->pfnSSMGetU32(pSSM, &cbUpdate);
+        if (RT_SUCCESS(rc) && (!cbUpdate || cbUpdate > VIRTIOGPU_MAX_OPAQUE_CREATE_BYTES))
+            rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
+        if (RT_SUCCESS(rc))
+        {
+            uint8_t *pbUpdate = (uint8_t *)RTMemAlloc(cbUpdate);
+            if (!pbUpdate)
+                rc = VERR_NO_MEMORY;
+            else
+            {
+                rc = pDevIns->pHlpR3->pfnSSMGetMem(pSSM, pbUpdate, cbUpdate);
+                if (RT_SUCCESS(rc))
+                {
+                    pThis->aDescriptorUpdates[i].cb = cbUpdate;
+                    pThis->aDescriptorUpdates[i].pb = pbUpdate;
+                }
+                else
+                    RTMemFree(pbUpdate);
+            }
+        }
+    }
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     /* Table slots can be reused, so their order does not describe object
      * dependencies.  Restore samplers before layouts with immutable samplers,
@@ -12074,6 +12168,17 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
 # endif
         }
 #endif
+    for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aDescriptorUpdates); ++i)
+    {
+        VIRTIOGPUDESCRIPTORUPDATE const *pUpdate = &pThis->aDescriptorUpdates[i];
+        if (!pUpdate->pb)
+            continue;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+        if (pThis->hVkDevice != VK_NULL_HANDLE
+            && !virtioGpuR3ApplyVenusDescriptorUpdates(pThis, pUpdate->pb, pUpdate->cb))
+            rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
+#endif
+    }
     for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aScanouts); ++i)
         rc = pDevIns->pHlpR3->pfnSSMGetMem(pSSM, &pThis->aScanouts[i], sizeof(pThis->aScanouts[i]));
     if (RT_SUCCESS(rc))
