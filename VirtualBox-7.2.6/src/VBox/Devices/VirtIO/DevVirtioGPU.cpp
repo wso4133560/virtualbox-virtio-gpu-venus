@@ -30,9 +30,8 @@
 # error "VirtIO-GPU currently runs entirely in ring 3."
 #endif
 
-/* Version 20 adds the bounded create commands needed to rebuild host Vulkan
- * objects after a saved-state restore. */
-#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(20)
+/* Version 21 also preserves the logical state of host-backed VkEvent objects. */
+#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(21)
 #define VIRTIOGPU_MAX_RESOURCES 256
 #define VIRTIOGPU_MAX_BUFFER_BINDINGS 512
 #define VIRTIOGPU_MAX_COMMAND_BUFFERS 512
@@ -126,6 +125,11 @@
 #define VIRTIOGPU_VK_CMD_CREATE_FENCE UINT32_C(35)
 #define VIRTIOGPU_VK_CMD_CREATE_SEMAPHORE UINT32_C(40)
 #define VIRTIOGPU_VK_CMD_DESTROY_SEMAPHORE UINT32_C(41)
+#define VIRTIOGPU_VK_CMD_CREATE_EVENT UINT32_C(42)
+#define VIRTIOGPU_VK_CMD_DESTROY_EVENT UINT32_C(43)
+#define VIRTIOGPU_VK_CMD_GET_EVENT_STATUS UINT32_C(44)
+#define VIRTIOGPU_VK_CMD_SET_EVENT UINT32_C(45)
+#define VIRTIOGPU_VK_CMD_RESET_EVENT UINT32_C(46)
 #define VIRTIOGPU_VK_CMD_GET_SEMAPHORE_COUNTER_VALUE UINT32_C(172)
 #define VIRTIOGPU_VK_CMD_WAIT_SEMAPHORES UINT32_C(173)
 #define VIRTIOGPU_VK_CMD_SIGNAL_SEMAPHORE UINT32_C(174)
@@ -318,6 +322,7 @@ typedef struct VIRTIOGPUOPAQUEOBJECT
     uint32_t uType;
     uint32_t cbCreate;
     uint8_t *pbCreate;
+    bool fEventSet;
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     VkImage hImage;
     VkImageView hImageView;
@@ -326,6 +331,7 @@ typedef struct VIRTIOGPUOPAQUEOBJECT
     VkSampler hSampler;
     VkDescriptorSetLayout hDescriptorSetLayout;
     VkDescriptorPool hDescriptorPool;
+    VkEvent hEvent;
 #endif
 } VIRTIOGPUOPAQUEOBJECT;
 typedef VIRTIOGPUOPAQUEOBJECT *PVIRTIOGPUOPAQUEOBJECT;
@@ -1319,6 +1325,11 @@ static void virtioGpuR3DestroyOpaqueHostObject(PVIRTIOGPU pThis,
                                                           "vkDestroyDescriptorPool");
         if (pfn) pfn(pThis->hVkDevice, pObject->hDescriptorPool, NULL);
     }
+    if (pObject->hEvent != VK_NULL_HANDLE)
+    {
+        PFN_vkDestroyEvent pfn = VK_OPAQUE_PROC(PFN_vkDestroyEvent, "vkDestroyEvent");
+        if (pfn) pfn(pThis->hVkDevice, pObject->hEvent, NULL);
+    }
     pObject->hShaderModule = VK_NULL_HANDLE;
     pObject->hImage = VK_NULL_HANDLE;
     pObject->hImageView = VK_NULL_HANDLE;
@@ -1326,6 +1337,7 @@ static void virtioGpuR3DestroyOpaqueHostObject(PVIRTIOGPU pThis,
     pObject->hSampler = VK_NULL_HANDLE;
     pObject->hDescriptorSetLayout = VK_NULL_HANDLE;
     pObject->hDescriptorPool = VK_NULL_HANDLE;
+    pObject->hEvent = VK_NULL_HANDLE;
 # undef VK_OPAQUE_PROC
 }
 
@@ -1617,6 +1629,19 @@ static bool virtioGpuR3CreateOpaqueHostObject(PVIRTIOGPU pThis,
                             == VK_SUCCESS;
             RTMemFree(paSizes);
             return fSuccess;
+        }
+        case VIRTIOGPU_VK_CMD_CREATE_EVENT:
+        {
+            uint64_t fInfo = 0, fPnext = 0;
+            uint32_t uSType = 0, fFlags = 0;
+            if (!readU64(16, &fInfo) || !fInfo || !readU32(24, &uSType)
+                || uSType != VK_STRUCTURE_TYPE_EVENT_CREATE_INFO
+                || !readU64(28, &fPnext) || fPnext || !readU32(36, &fFlags))
+                return false;
+            VkEventCreateInfo const Info = { VK_STRUCTURE_TYPE_EVENT_CREATE_INFO, NULL,
+                                             (VkEventCreateFlags)fFlags };
+            PFN_vkCreateEvent pfn = VK_OPAQUE_PROC(PFN_vkCreateEvent, "vkCreateEvent");
+            return pfn && pfn(pThis->hVkDevice, &Info, NULL, &pObject->hEvent) == VK_SUCCESS;
         }
         default:
             break;
@@ -2179,7 +2204,15 @@ static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pc
         case VIRTIOGPU_VK_CMD_CREATE_FENCE:
             *pcbCommand = 64;
             return cb >= *pcbCommand;
+        case VIRTIOGPU_VK_CMD_CREATE_EVENT:
+            *pcbCommand = 64;
+            return cb >= *pcbCommand;
         case VIRTIOGPU_VK_CMD_GET_FENCE_STATUS:
+            *pcbCommand = 24;
+            return cb >= *pcbCommand;
+        case VIRTIOGPU_VK_CMD_GET_EVENT_STATUS:
+        case VIRTIOGPU_VK_CMD_SET_EVENT:
+        case VIRTIOGPU_VK_CMD_RESET_EVENT:
             *pcbCommand = 24;
             return cb >= *pcbCommand;
         case VIRTIOGPU_VK_CMD_RESET_COMMAND_BUFFER:
@@ -2193,6 +2226,7 @@ static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pc
         case VIRTIOGPU_VK_CMD_DESTROY_SAMPLER:
         case VIRTIOGPU_VK_CMD_DESTROY_DESCRIPTOR_SET_LAYOUT:
         case VIRTIOGPU_VK_CMD_DESTROY_DESCRIPTOR_POOL:
+        case VIRTIOGPU_VK_CMD_DESTROY_EVENT:
         case VIRTIOGPU_VK_CMD_FREE_MEMORY:
             *pcbCommand = 32;
             return cb >= *pcbCommand;
@@ -3159,6 +3193,7 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
         case VIRTIOGPU_VK_CMD_ALLOCATE_MEMORY:
         case VIRTIOGPU_VK_CMD_CREATE_FENCE:
         case VIRTIOGPU_VK_CMD_CREATE_SEMAPHORE:
+        case VIRTIOGPU_VK_CMD_CREATE_EVENT:
         case VIRTIOGPU_VK_CMD_CREATE_SHADER_MODULE:
         case VIRTIOGPU_VK_CMD_CREATE_PIPELINE_LAYOUT:
         case VIRTIOGPU_VK_CMD_CREATE_SAMPLER:
@@ -3198,7 +3233,8 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                     || uType == VIRTIOGPU_VK_CMD_CREATE_PIPELINE_LAYOUT
                     || uType == VIRTIOGPU_VK_CMD_CREATE_SAMPLER
                     || uType == VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_SET_LAYOUT
-                    || uType == VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_POOL))
+                    || uType == VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_POOL
+                    || uType == VIRTIOGPU_VK_CMD_CREATE_EVENT))
             {
                 pOpaque = virtioGpuR3GetOpaqueObject(pThis, uId, uType);
                 if (!pOpaque || pOpaque->cbCreate)
@@ -3556,6 +3592,7 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
         case VIRTIOGPU_VK_CMD_DESTROY_SAMPLER:
         case VIRTIOGPU_VK_CMD_DESTROY_DESCRIPTOR_SET_LAYOUT:
         case VIRTIOGPU_VK_CMD_DESTROY_DESCRIPTOR_POOL:
+        case VIRTIOGPU_VK_CMD_DESTROY_EVENT:
         {
             uint32_t uObjectType = VIRTIOGPU_VK_CMD_CREATE_PIPELINE_LAYOUT;
             if (uType == VIRTIOGPU_VK_CMD_DESTROY_SHADER_MODULE)
@@ -3568,9 +3605,65 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                 uObjectType = VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_SET_LAYOUT;
             else if (uType == VIRTIOGPU_VK_CMD_DESTROY_DESCRIPTOR_POOL)
                 uObjectType = VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_POOL;
+            else if (uType == VIRTIOGPU_VK_CMD_DESTROY_EVENT)
+                uObjectType = VIRTIOGPU_VK_CMD_CREATE_EVENT;
             if (!virtioGpuR3VenusReadU64(pb, cb, 16, &uId)
                 || !virtioGpuR3ReleaseOpaqueObject(pThis, uId, uObjectType)
                 || !virtioGpuR3VenusPutU32(&Enc, uType))
+                return false;
+            break;
+        }
+        case VIRTIOGPU_VK_CMD_GET_EVENT_STATUS:
+        case VIRTIOGPU_VK_CMD_SET_EVENT:
+        case VIRTIOGPU_VK_CMD_RESET_EVENT:
+        {
+            if (!virtioGpuR3VenusReadU64(pb, cb, 16, &uId))
+                return false;
+            PVIRTIOGPUOPAQUEOBJECT pEvent = virtioGpuR3FindOpaqueObject(pThis, uId);
+            if (!pEvent || pEvent->uType != VIRTIOGPU_VK_CMD_CREATE_EVENT)
+                return false;
+            VkResult rcVk = VK_SUCCESS;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+            PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr = virtioGpuR3GetVenusDeviceProcAddr(pThis);
+            if (pEvent->hEvent != VK_NULL_HANDLE && pfnGetDeviceProcAddr)
+            {
+                if (uType == VIRTIOGPU_VK_CMD_GET_EVENT_STATUS)
+                {
+                    PFN_vkGetEventStatus pfn = (PFN_vkGetEventStatus)pfnGetDeviceProcAddr(
+                        pThis->hVkDevice, "vkGetEventStatus");
+                    rcVk = pfn ? pfn(pThis->hVkDevice, pEvent->hEvent) : VK_ERROR_INITIALIZATION_FAILED;
+                    pEvent->fEventSet = rcVk == VK_EVENT_SET;
+                }
+                else if (uType == VIRTIOGPU_VK_CMD_SET_EVENT)
+                {
+                    PFN_vkSetEvent pfn = (PFN_vkSetEvent)pfnGetDeviceProcAddr(
+                        pThis->hVkDevice, "vkSetEvent");
+                    rcVk = pfn ? pfn(pThis->hVkDevice, pEvent->hEvent) : VK_ERROR_INITIALIZATION_FAILED;
+                    if (rcVk == VK_SUCCESS)
+                        pEvent->fEventSet = true;
+                }
+                else
+                {
+                    PFN_vkResetEvent pfn = (PFN_vkResetEvent)pfnGetDeviceProcAddr(
+                        pThis->hVkDevice, "vkResetEvent");
+                    rcVk = pfn ? pfn(pThis->hVkDevice, pEvent->hEvent) : VK_ERROR_INITIALIZATION_FAILED;
+                    if (rcVk == VK_SUCCESS)
+                        pEvent->fEventSet = false;
+                }
+            }
+            else
+#endif
+            {
+                if (uType == VIRTIOGPU_VK_CMD_GET_EVENT_STATUS)
+                    rcVk = pEvent->fEventSet ? VK_EVENT_SET : VK_EVENT_RESET;
+                else
+                {
+                    pEvent->fEventSet = uType == VIRTIOGPU_VK_CMD_SET_EVENT;
+                    rcVk = VK_SUCCESS;
+                }
+            }
+            if (!virtioGpuR3VenusPutU32(&Enc, uType)
+                || !virtioGpuR3VenusPutResult(&Enc, rcVk))
                 return false;
             break;
         }
@@ -10904,6 +10997,7 @@ static DECLCALLBACK(int) virtioGpuR3SaveExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
             else
                 rc = pDevIns->pHlpR3->pfnSSMPutMem(pSSM, pObject->pbCreate, pObject->cbCreate);
         }
+        if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutBool(pSSM, pObject->fEventSet);
     }
     for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aScanouts); ++i)
         rc = pDevIns->pHlpR3->pfnSSMPutMem(pSSM, &pThis->aScanouts[i], sizeof(pThis->aScanouts[i]));
@@ -11252,6 +11346,7 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
                 }
             }
         }
+        if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetBool(pSSM, &pObject->fEventSet);
         bool fValid = pObject->uObject == 0 ? pObject->uType == 0
                                             : (pObject->uType == VIRTIOGPU_VK_CMD_CREATE_IMAGE
                                                || pObject->uType == VIRTIOGPU_VK_CMD_CREATE_IMAGE_VIEW
@@ -11259,7 +11354,8 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
                                                || pObject->uType == VIRTIOGPU_VK_CMD_CREATE_PIPELINE_LAYOUT
                                                || pObject->uType == VIRTIOGPU_VK_CMD_CREATE_SAMPLER
                                                || pObject->uType == VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_SET_LAYOUT
-                                               || pObject->uType == VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_POOL);
+                                               || pObject->uType == VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_POOL
+                                               || pObject->uType == VIRTIOGPU_VK_CMD_CREATE_EVENT);
         for (unsigned j = 0; RT_SUCCESS(rc) && fValid && pObject->uObject && j < i; ++j)
             if (pThis->aOpaqueObjects[j].uObject == pObject->uObject)
                 fValid = false;
@@ -11274,7 +11370,8 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
         for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aOpaqueObjects); ++i)
         {
             PVIRTIOGPUOPAQUEOBJECT pObject = &pThis->aOpaqueObjects[i];
-            unsigned const uObjectPass = pObject->uType == VIRTIOGPU_VK_CMD_CREATE_SAMPLER ? 0
+            unsigned const uObjectPass = pObject->uType == VIRTIOGPU_VK_CMD_CREATE_SAMPLER
+                                             || pObject->uType == VIRTIOGPU_VK_CMD_CREATE_EVENT ? 0
                                        : pObject->uType == VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_SET_LAYOUT ? 1
                                        : pObject->uType == VIRTIOGPU_VK_CMD_CREATE_IMAGE ? 2
                                        : pObject->uType == VIRTIOGPU_VK_CMD_CREATE_IMAGE_VIEW ? 3
@@ -11285,6 +11382,18 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
                 && !virtioGpuR3CreateOpaqueHostObject(pThis, pObject, pObject->pbCreate,
                                                        pObject->cbCreate))
                 rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
+# ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+            if (RT_SUCCESS(rc) && pObject->uObject
+                && pObject->uType == VIRTIOGPU_VK_CMD_CREATE_EVENT
+                && pObject->fEventSet && pObject->hEvent != VK_NULL_HANDLE)
+            {
+                PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr = virtioGpuR3GetVenusDeviceProcAddr(pThis);
+                PFN_vkSetEvent pfnSetEvent = pfnGetDeviceProcAddr
+                    ? (PFN_vkSetEvent)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkSetEvent") : NULL;
+                if (!pfnSetEvent || pfnSetEvent(pThis->hVkDevice, pObject->hEvent) != VK_SUCCESS)
+                    rc = VERR_SSM_LOAD_CONFIG_MISMATCH;
+            }
+# endif
         }
 #endif
     for (unsigned i = 0; RT_SUCCESS(rc) && i < RT_ELEMENTS(pThis->aScanouts); ++i)

@@ -2757,6 +2757,74 @@ int main(int argc, char **argv)
                                                            sizeof(abProtocolReply), &cbProtocolReply)
                       && cbProtocolReply == 4 && !virtioGpuR3FindSemaphore(pGpu, uSemaphore));
     }
+    RTTestSub(g_hTest, "Venus event lifecycle and state replies");
+    uint8_t abCreateEvent[64] = { 0 };
+    uint32_t uCreateEventType = VIRTIOGPU_VK_CMD_CREATE_EVENT;
+    uint64_t uEventDevice = UINT64_C(0x1001), fEventCreateInfo = 1;
+    uint32_t uEventSType = VK_STRUCTURE_TYPE_EVENT_CREATE_INFO, fEventFlags = 0;
+    uint64_t fEventPNext = 0, fEventAllocator = 0, fEventOutput = 1;
+    uint64_t uEvent = UINT64_C(0x5524);
+    memcpy(abCreateEvent + 0, &uCreateEventType, sizeof(uCreateEventType));
+    memcpy(abCreateEvent + 8, &uEventDevice, sizeof(uEventDevice));
+    memcpy(abCreateEvent + 16, &fEventCreateInfo, sizeof(fEventCreateInfo));
+    memcpy(abCreateEvent + 24, &uEventSType, sizeof(uEventSType));
+    memcpy(abCreateEvent + 28, &fEventPNext, sizeof(fEventPNext));
+    memcpy(abCreateEvent + 36, &fEventFlags, sizeof(fEventFlags));
+    memcpy(abCreateEvent + 40, &fEventAllocator, sizeof(fEventAllocator));
+    memcpy(abCreateEvent + 48, &fEventOutput, sizeof(fEventOutput));
+    memcpy(abCreateEvent + 56, &uEvent, sizeof(uEvent));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abCreateEvent, sizeof(abCreateEvent),
+                                                       abProtocolReply, sizeof(abProtocolReply),
+                                                       &cbProtocolReply));
+    PVIRTIOGPUOPAQUEOBJECT pEvent = virtioGpuR3FindOpaqueObject(pGpu, uEvent);
+    RTTESTI_CHECK(pEvent && pEvent->uType == VIRTIOGPU_VK_CMD_CREATE_EVENT
+                  && !pEvent->fEventSet && cbProtocolReply == 24);
+    if (fHostOpaqueObjects)
+        RTTESTI_CHECK(pEvent && pEvent->hEvent != VK_NULL_HANDLE);
+    uint8_t abEventOp[24] = { 0 };
+    uint32_t uEventStatusType = VIRTIOGPU_VK_CMD_GET_EVENT_STATUS;
+    memcpy(abEventOp + 0, &uEventStatusType, sizeof(uEventStatusType));
+    memcpy(abEventOp + 8, &uEventDevice, sizeof(uEventDevice));
+    memcpy(abEventOp + 16, &uEvent, sizeof(uEvent));
+    uint32_t uEventResult = UINT32_MAX;
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abEventOp, sizeof(abEventOp),
+                                                       abProtocolReply, sizeof(abProtocolReply),
+                                                       &cbProtocolReply)
+                  && cbProtocolReply == 8);
+    memcpy(&uEventResult, abProtocolReply + 4, sizeof(uEventResult));
+    RTTESTI_CHECK(uEventResult == VK_EVENT_RESET);
+    uint32_t uEventSetType = VIRTIOGPU_VK_CMD_SET_EVENT;
+    memcpy(abEventOp + 0, &uEventSetType, sizeof(uEventSetType));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abEventOp, sizeof(abEventOp),
+                                                       abProtocolReply, sizeof(abProtocolReply),
+                                                       &cbProtocolReply)
+                  && cbProtocolReply == 8);
+    memcpy(&uEventResult, abProtocolReply + 4, sizeof(uEventResult));
+    RTTESTI_CHECK(uEventResult == VK_SUCCESS);
+    memcpy(abEventOp + 0, &uEventStatusType, sizeof(uEventStatusType));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abEventOp, sizeof(abEventOp),
+                                                       abProtocolReply, sizeof(abProtocolReply),
+                                                       &cbProtocolReply)
+                  && cbProtocolReply == 8);
+    memcpy(&uEventResult, abProtocolReply + 4, sizeof(uEventResult));
+    RTTESTI_CHECK(uEventResult == VK_EVENT_SET);
+    uint32_t uEventResetType = VIRTIOGPU_VK_CMD_RESET_EVENT;
+    memcpy(abEventOp + 0, &uEventResetType, sizeof(uEventResetType));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abEventOp, sizeof(abEventOp),
+                                                       abProtocolReply, sizeof(abProtocolReply),
+                                                       &cbProtocolReply)
+                  && cbProtocolReply == 8);
+    memcpy(&uEventResult, abProtocolReply + 4, sizeof(uEventResult));
+    RTTESTI_CHECK(uEventResult == VK_SUCCESS);
+    uint8_t abDestroyEvent[32] = { 0 };
+    uint32_t uDestroyEventType = VIRTIOGPU_VK_CMD_DESTROY_EVENT;
+    memcpy(abDestroyEvent + 0, &uDestroyEventType, sizeof(uDestroyEventType));
+    memcpy(abDestroyEvent + 8, &uEventDevice, sizeof(uEventDevice));
+    memcpy(abDestroyEvent + 16, &uEvent, sizeof(uEvent));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abDestroyEvent, sizeof(abDestroyEvent),
+                                                       abProtocolReply, sizeof(abProtocolReply),
+                                                       &cbProtocolReply)
+                  && cbProtocolReply == 4 && !virtioGpuR3FindOpaqueObject(pGpu, uEvent));
     RTTestSub(g_hTest, "Venus host fence lifecycle");
     uint8_t abCreateFence[64] = { 0 };
     uint32_t uCreateFenceType = VIRTIOGPU_VK_CMD_CREATE_FENCE;
@@ -3979,6 +4047,19 @@ int main(int argc, char **argv)
                   && virtioGpuR3FindOpaqueObject(pGpu, uSavedDescriptorPoolObject)
                   && virtioGpuR3FindOpaqueObject(pGpu, uSavedDescriptorPoolObject)->cbCreate
                      == sizeof(abCreateDescriptorPool));
+    uint64_t uSavedEvent = UINT64_C(0x5525);
+    memcpy(abCreateEvent + 56, &uSavedEvent, sizeof(uSavedEvent));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abCreateEvent, sizeof(abCreateEvent),
+                                                       abProtocolReply, sizeof(abProtocolReply),
+                                                       &cbProtocolReply));
+    memcpy(abEventOp + 0, &uEventSetType, sizeof(uEventSetType));
+    memcpy(abEventOp + 16, &uSavedEvent, sizeof(uSavedEvent));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abEventOp, sizeof(abEventOp),
+                                                       abProtocolReply, sizeof(abProtocolReply),
+                                                       &cbProtocolReply)
+                  && cbProtocolReply == 8);
+    memcpy(&uEventResult, abProtocolReply + 4, sizeof(uEventResult));
+    RTTESTI_CHECK(uEventResult == VK_SUCCESS);
     tstInitQueue(&pGpu->Virtio, 0);
     tstInitQueue(&pGpu->Virtio, 1);
     tstPost(&pGpu->Virtio, 0, 24, 408);
@@ -4000,9 +4081,13 @@ int main(int argc, char **argv)
     PVIRTIOGPUOPAQUEOBJECT pSavedSampler = virtioGpuR3FindOpaqueObject(pGpu, uSavedSampler);
     PVIRTIOGPUOPAQUEOBJECT pSavedLayout = virtioGpuR3FindOpaqueObject(pGpu, uSavedLayout);
     PVIRTIOGPUOPAQUEOBJECT pSavedPipeline = virtioGpuR3FindOpaqueObject(pGpu, uSavedPipeline);
+    PVIRTIOGPUOPAQUEOBJECT pSavedEvent = virtioGpuR3FindOpaqueObject(pGpu, uSavedEvent);
     RTTESTI_CHECK(pSavedSampler && pSavedLayout && pSavedPipeline
                   && pSavedLayout->cbCreate == sizeof(abSavedLayout)
                   && pSavedPipeline->cbCreate == sizeof(abSavedPipeline));
+    RTTESTI_CHECK(pSavedEvent && pSavedEvent->fEventSet);
+    if (fHostOpaqueObjects)
+        RTTESTI_CHECK(pSavedEvent->hEvent != VK_NULL_HANDLE);
     if (fHostOpaqueObjects)
     {
         PVIRTIOGPUOPAQUEOBJECT pSavedPool = virtioGpuR3FindOpaqueObject(pGpu, uSavedDescriptorPoolObject);
