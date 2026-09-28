@@ -2682,6 +2682,16 @@ int main(int argc, char **argv)
                                                           sizeof(abUpdateDescriptorSets), abProtocolReply,
                                                           sizeof(abProtocolReply), &cbProtocolReply)
                   && cbProtocolReply == 4);
+    uint32_t cMalformedWrites = 1;
+    uint64_t cMalformedWritesEncoded = 1;
+    memcpy(abUpdateDescriptorSets + 16, &cMalformedWrites, sizeof(cMalformedWrites));
+    memcpy(abUpdateDescriptorSets + 20, &cMalformedWritesEncoded, sizeof(cMalformedWritesEncoded));
+    RTTESTI_CHECK(!virtioGpuR3VenusCommandSize(abUpdateDescriptorSets,
+                                                sizeof(abUpdateDescriptorSets), &cbQueueCommand));
+    cMalformedWrites = 0;
+    cMalformedWritesEncoded = 0;
+    memcpy(abUpdateDescriptorSets + 16, &cMalformedWrites, sizeof(cMalformedWrites));
+    memcpy(abUpdateDescriptorSets + 20, &cMalformedWritesEncoded, sizeof(cMalformedWritesEncoded));
     static TSTSSM DescriptorSetSsm;
     RT_ZERO(DescriptorSetSsm);
     PSSMHANDLE pDescriptorSetSsm = (PSSMHANDLE)&DescriptorSetSsm;
@@ -2711,6 +2721,12 @@ int main(int argc, char **argv)
     memcpy(abFreeDescriptorSets + 24, &cFreeDescriptorSets, sizeof(cFreeDescriptorSets));
     memcpy(abFreeDescriptorSets + 28, &cFreeDescriptorSetsEncoded, sizeof(cFreeDescriptorSetsEncoded));
     memcpy(abFreeDescriptorSets + 36, &uDescriptorSetObject, sizeof(uDescriptorSetObject));
+    uint64_t uWrongDescriptorPool = UINT64_C(0xdeadbeef);
+    memcpy(abFreeDescriptorSets + 16, &uWrongDescriptorPool, sizeof(uWrongDescriptorPool));
+    RTTESTI_CHECK(!virtioGpuR3EncodeVenusProtocolReply(pGpu, abFreeDescriptorSets,
+                                                        sizeof(abFreeDescriptorSets), abProtocolReply,
+                                                        sizeof(abProtocolReply), &cbProtocolReply));
+    memcpy(abFreeDescriptorSets + 16, &uDescriptorPoolObject, sizeof(uDescriptorPoolObject));
     RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abFreeDescriptorSets,
                                                sizeof(abFreeDescriptorSets), &cbQueueCommand)
                   && cbQueueCommand == sizeof(abFreeDescriptorSets)

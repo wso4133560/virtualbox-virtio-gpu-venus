@@ -1725,6 +1725,286 @@ static bool virtioGpuR3CreateOpaqueHostObject(PVIRTIOGPU pThis,
 }
 #endif
 
+typedef struct VIRTIOGPUVENUSDESCRIPTORWRITEWIRE
+{
+    uint64_t uDstSet;
+    uint32_t uDstBinding;
+    uint32_t uDstArrayElement;
+    uint32_t cDescriptors;
+    uint32_t uDescriptorType;
+    uint64_t cImageInfo;
+    uint64_t cBufferInfo;
+    uint64_t cTexelBufferView;
+    size_t offImageInfo;
+    size_t offBufferInfo;
+    size_t offTexelBufferView;
+    size_t offNext;
+} VIRTIOGPUVENUSDESCRIPTORWRITEWIRE;
+
+static bool virtioGpuR3VenusReadDescriptorWrite(const uint8_t *pb, size_t cb, size_t off,
+                                                VIRTIOGPUVENUSDESCRIPTORWRITEWIRE *pWrite)
+{
+    if (!pb || !pWrite || off > cb || cb - off < 60)
+        return false;
+    uint32_t uSType = 0;
+    uint64_t fPnext = 0;
+    memcpy(&uSType, pb + off, sizeof(uSType));
+    if (uSType != VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET
+        || !virtioGpuR3ReadU64(pb, cb, off + 4, &fPnext) || fPnext
+        || !virtioGpuR3ReadU64(pb, cb, off + 12, &pWrite->uDstSet))
+        return false;
+    memcpy(&pWrite->uDstBinding, pb + off + 20, sizeof(pWrite->uDstBinding));
+    memcpy(&pWrite->uDstArrayElement, pb + off + 24, sizeof(pWrite->uDstArrayElement));
+    memcpy(&pWrite->cDescriptors, pb + off + 28, sizeof(pWrite->cDescriptors));
+    memcpy(&pWrite->uDescriptorType, pb + off + 32, sizeof(pWrite->uDescriptorType));
+    if (pWrite->cDescriptors > 64)
+        return false;
+    size_t offCur = off + 36;
+    uint64_t *paCounts[3] = { &pWrite->cImageInfo, &pWrite->cBufferInfo,
+                              &pWrite->cTexelBufferView };
+    size_t *paOffsets[3] = { &pWrite->offImageInfo, &pWrite->offBufferInfo,
+                             &pWrite->offTexelBufferView };
+    size_t const aEntrySizes[3] = { 20, 24, 8 };
+    for (unsigned i = 0; i < 3; ++i)
+    {
+        if (!virtioGpuR3ReadU64(pb, cb, offCur, paCounts[i])
+            || *paCounts[i] > pWrite->cDescriptors || *paCounts[i] > 64)
+            return false;
+        offCur += sizeof(uint64_t);
+        *paOffsets[i] = offCur;
+        if (*paCounts[i] > (cb - offCur) / aEntrySizes[i])
+            return false;
+        offCur += (size_t)*paCounts[i] * aEntrySizes[i];
+    }
+    pWrite->offNext = offCur;
+    return true;
+}
+
+static bool virtioGpuR3VenusDescriptorUpdateCommandSize(const uint8_t *pb, size_t cb,
+                                                         size_t *pcbCommand)
+{
+    if (!pb || !pcbCommand || cb < 40)
+        return false;
+    uint32_t cWrites = 0, cCopies = 0;
+    uint64_t cWritesEncoded = 0, cCopiesEncoded = 0;
+    memcpy(&cWrites, pb + 16, sizeof(cWrites));
+    memcpy(&cCopies, pb + 28, sizeof(cCopies));
+    if (cWrites > 64 || cCopies > 64
+        || !virtioGpuR3ReadU64(pb, cb, 20, &cWritesEncoded)
+        || !virtioGpuR3ReadU64(pb, cb, 32, &cCopiesEncoded)
+        || cWritesEncoded != cWrites || cCopiesEncoded != cCopies)
+        return false;
+    size_t off = 40;
+    for (uint64_t i = 0; i < cWritesEncoded; ++i)
+    {
+        VIRTIOGPUVENUSDESCRIPTORWRITEWIRE Write = {};
+        if (!virtioGpuR3VenusReadDescriptorWrite(pb, cb, off, &Write))
+            return false;
+        off = Write.offNext;
+    }
+    for (uint64_t i = 0; i < cCopiesEncoded; ++i)
+    {
+        if (off > cb || cb - off < 48)
+            return false;
+        uint32_t uSType = 0;
+        uint64_t fPnext = 0;
+        memcpy(&uSType, pb + off, sizeof(uSType));
+        if (uSType != VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET
+            || !virtioGpuR3ReadU64(pb, cb, off + 4, &fPnext) || fPnext)
+            return false;
+        uint32_t cDescriptors = 0;
+        memcpy(&cDescriptors, pb + off + 44, sizeof(cDescriptors));
+        if (cDescriptors > 64)
+            return false;
+        off += 48;
+    }
+    *pcbCommand = off;
+    return cb >= off;
+}
+
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+static bool virtioGpuR3ApplyVenusDescriptorUpdates(PVIRTIOGPU pThis, const uint8_t *pb, size_t cb)
+{
+    size_t cbCommand = 0;
+    if (!pThis || !virtioGpuR3VenusDescriptorUpdateCommandSize(pb, cb, &cbCommand)
+        || cbCommand != cb)
+        return false;
+    uint32_t cWrites = 0, cCopies = 0;
+    uint64_t cWritesEncoded = 0, cCopiesEncoded = 0;
+    memcpy(&cWrites, pb + 16, sizeof(cWrites));
+    memcpy(&cCopies, pb + 28, sizeof(cCopies));
+    virtioGpuR3ReadU64(pb, cb, 20, &cWritesEncoded);
+    virtioGpuR3ReadU64(pb, cb, 32, &cCopiesEncoded);
+    VkWriteDescriptorSet aWrites[64] = {};
+    VkCopyDescriptorSet aCopies[64] = {};
+    VkDescriptorImageInfo *apaImageInfo[64] = {};
+    VkDescriptorBufferInfo *apaBufferInfo[64] = {};
+    size_t off = 40;
+    bool fSuccess = true;
+    for (uint64_t i = 0; fSuccess && i < cWritesEncoded; ++i)
+    {
+        VIRTIOGPUVENUSDESCRIPTORWRITEWIRE Wire = {};
+        if (!virtioGpuR3VenusReadDescriptorWrite(pb, cb, off, &Wire))
+        {
+            fSuccess = false;
+            break;
+        }
+        PVIRTIOGPUOPAQUEOBJECT pSet = virtioGpuR3FindOpaqueObject(pThis, Wire.uDstSet);
+        if (!pSet || pSet->uType != VIRTIOGPU_VK_CMD_ALLOCATE_DESCRIPTOR_SETS
+            || pSet->hDescriptorSet == VK_NULL_HANDLE)
+        {
+            fSuccess = false;
+            break;
+        }
+        VkWriteDescriptorSet *pWrite = &aWrites[i];
+        pWrite->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        pWrite->dstSet = pSet->hDescriptorSet;
+        pWrite->dstBinding = Wire.uDstBinding;
+        pWrite->dstArrayElement = Wire.uDstArrayElement;
+        pWrite->descriptorCount = Wire.cDescriptors;
+        pWrite->descriptorType = (VkDescriptorType)Wire.uDescriptorType;
+        bool fImage = Wire.uDescriptorType == VK_DESCRIPTOR_TYPE_SAMPLER
+                   || Wire.uDescriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+                   || Wire.uDescriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
+                   || Wire.uDescriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+                   || Wire.uDescriptorType == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+        bool fBuffer = Wire.uDescriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+                    || Wire.uDescriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
+                    || Wire.uDescriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
+                    || Wire.uDescriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+        if ((!fImage && !fBuffer) || (fImage && (Wire.cBufferInfo || Wire.cTexelBufferView))
+            || (fBuffer && (Wire.cImageInfo || Wire.cTexelBufferView))
+            || (Wire.cDescriptors && ((fImage && Wire.cImageInfo != Wire.cDescriptors)
+                                      || (fBuffer && Wire.cBufferInfo != Wire.cDescriptors))))
+        {
+            fSuccess = false;
+            break;
+        }
+        if (fImage && Wire.cImageInfo)
+        {
+            apaImageInfo[i] = (VkDescriptorImageInfo *)RTMemAllocZ(
+                sizeof(VkDescriptorImageInfo) * (size_t)Wire.cImageInfo);
+            if (!apaImageInfo[i])
+            {
+                fSuccess = false;
+                break;
+            }
+            size_t offImage = Wire.offImageInfo;
+            for (uint64_t j = 0; j < Wire.cImageInfo; ++j)
+            {
+                uint64_t uSampler = 0, uImageView = 0;
+                uint32_t uLayout = 0;
+                virtioGpuR3ReadU64(pb, cb, offImage, &uSampler);
+                virtioGpuR3ReadU64(pb, cb, offImage + 8, &uImageView);
+                memcpy(&uLayout, pb + offImage + 16, sizeof(uLayout));
+                if (uSampler)
+                {
+                    PVIRTIOGPUOPAQUEOBJECT pSampler = virtioGpuR3FindOpaqueObject(pThis, uSampler);
+                    if (!pSampler || pSampler->uType != VIRTIOGPU_VK_CMD_CREATE_SAMPLER
+                        || pSampler->hSampler == VK_NULL_HANDLE)
+                    {
+                        fSuccess = false;
+                        break;
+                    }
+                    apaImageInfo[i][j].sampler = pSampler->hSampler;
+                }
+                if (uImageView)
+                {
+                    PVIRTIOGPUOPAQUEOBJECT pView = virtioGpuR3FindOpaqueObject(pThis, uImageView);
+                    if (!pView || pView->uType != VIRTIOGPU_VK_CMD_CREATE_IMAGE_VIEW
+                        || pView->hImageView == VK_NULL_HANDLE)
+                    {
+                        fSuccess = false;
+                        break;
+                    }
+                    apaImageInfo[i][j].imageView = pView->hImageView;
+                }
+                apaImageInfo[i][j].imageLayout = (VkImageLayout)uLayout;
+                offImage += 20;
+            }
+            pWrite->pImageInfo = apaImageInfo[i];
+        }
+        if (fBuffer && Wire.cBufferInfo)
+        {
+            apaBufferInfo[i] = (VkDescriptorBufferInfo *)RTMemAllocZ(
+                sizeof(VkDescriptorBufferInfo) * (size_t)Wire.cBufferInfo);
+            if (!apaBufferInfo[i])
+            {
+                fSuccess = false;
+                break;
+            }
+            size_t offBuffer = Wire.offBufferInfo;
+            for (uint64_t j = 0; j < Wire.cBufferInfo; ++j)
+            {
+                uint64_t uBuffer = 0;
+                virtioGpuR3ReadU64(pb, cb, offBuffer, &uBuffer);
+                virtioGpuR3ReadU64(pb, cb, offBuffer + 8, &apaBufferInfo[i][j].offset);
+                virtioGpuR3ReadU64(pb, cb, offBuffer + 16, &apaBufferInfo[i][j].range);
+                PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResourceByVkObject(pThis, uBuffer);
+                if (!pRes || pRes->hVkBuffer == VK_NULL_HANDLE)
+                {
+                    fSuccess = false;
+                    break;
+                }
+                apaBufferInfo[i][j].buffer = pRes->hVkBuffer;
+                offBuffer += 24;
+            }
+            pWrite->pBufferInfo = apaBufferInfo[i];
+        }
+        off = Wire.offNext;
+    }
+    for (uint64_t i = 0; fSuccess && i < cCopiesEncoded; ++i)
+    {
+        uint32_t uSType = 0;
+        uint64_t fPnext = 0, uSrcSet = 0, uDstSet = 0;
+        uint32_t uSrcBinding = 0, uSrcArrayElement = 0, uDstBinding = 0, uDstArrayElement = 0;
+        uint32_t cDescriptors = 0;
+        memcpy(&uSType, pb + off, sizeof(uSType));
+        virtioGpuR3ReadU64(pb, cb, off + 4, &fPnext);
+        virtioGpuR3ReadU64(pb, cb, off + 12, &uSrcSet);
+        memcpy(&uSrcBinding, pb + off + 20, sizeof(uSrcBinding));
+        memcpy(&uSrcArrayElement, pb + off + 24, sizeof(uSrcArrayElement));
+        virtioGpuR3ReadU64(pb, cb, off + 28, &uDstSet);
+        memcpy(&uDstBinding, pb + off + 36, sizeof(uDstBinding));
+        memcpy(&uDstArrayElement, pb + off + 40, sizeof(uDstArrayElement));
+        memcpy(&cDescriptors, pb + off + 44, sizeof(cDescriptors));
+        PVIRTIOGPUOPAQUEOBJECT pSrc = virtioGpuR3FindOpaqueObject(pThis, uSrcSet);
+        PVIRTIOGPUOPAQUEOBJECT pDst = virtioGpuR3FindOpaqueObject(pThis, uDstSet);
+        if (uSType != VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET || fPnext
+            || !pSrc || !pDst
+            || pSrc->uType != VIRTIOGPU_VK_CMD_ALLOCATE_DESCRIPTOR_SETS
+            || pDst->uType != VIRTIOGPU_VK_CMD_ALLOCATE_DESCRIPTOR_SETS
+            || pSrc->hDescriptorSet == VK_NULL_HANDLE || pDst->hDescriptorSet == VK_NULL_HANDLE)
+        {
+            fSuccess = false;
+            break;
+        }
+        aCopies[i] = { VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET, NULL, pSrc->hDescriptorSet,
+                       uSrcBinding, uSrcArrayElement, pDst->hDescriptorSet, uDstBinding,
+                       uDstArrayElement, cDescriptors };
+        off += 48;
+    }
+    if (fSuccess && pThis->hVkDevice != VK_NULL_HANDLE)
+    {
+        PFN_vkGetDeviceProcAddr pfnGet = virtioGpuR3GetVenusDeviceProcAddr(pThis);
+        PFN_vkUpdateDescriptorSets pfn = pfnGet
+            ? (PFN_vkUpdateDescriptorSets)pfnGet(pThis->hVkDevice, "vkUpdateDescriptorSets") : NULL;
+        if (!pfn)
+            fSuccess = false;
+        else
+            pfn(pThis->hVkDevice, (uint32_t)cWritesEncoded, aWrites,
+                (uint32_t)cCopiesEncoded, aCopies);
+    }
+    for (unsigned i = 0; i < RT_ELEMENTS(apaImageInfo); ++i)
+    {
+        RTMemFree(apaImageInfo[i]);
+        RTMemFree(apaBufferInfo[i]);
+    }
+    RT_NOREF(cWrites, cCopies);
+    return fSuccess;
+}
+#endif
+
 static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pcbCommand)
 {
     uint32_t uType = 0;
@@ -2155,11 +2435,7 @@ static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pc
             *pcbCommand = 80;
             return cb >= *pcbCommand;
         case VIRTIOGPU_VK_CMD_UPDATE_DESCRIPTOR_SETS:
-            /* Zero-write/copy updates are fully framed; non-empty payloads are
-             * rejected by the reply dispatcher until descriptor payload decoding
-             * is implemented. */
-            *pcbCommand = 40;
-            return cb >= *pcbCommand;
+            return virtioGpuR3VenusDescriptorUpdateCommandSize(pb, cb, pcbCommand);
         case VIRTIOGPU_VK_CMD_CREATE_BUFFER:
             /* device, VkBufferCreateInfo (null pNext and no queue-family
              * indices), allocator marker, and output buffer handle. */
@@ -3762,15 +4038,24 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
         case VIRTIOGPU_VK_CMD_FREE_DESCRIPTOR_SETS:
         {
             uint32_t cSets = 0;
-            uint64_t cEncoded = 0;
+            uint64_t cEncoded = 0, uPool = 0;
             if (cb < 36 || !virtioGpuR3VenusReadU64(pb, cb, 28, &cEncoded))
                 return false;
             memcpy(&cSets, pb + 24, sizeof(cSets));
-            if (cSets > 64 || cEncoded > cSets || cEncoded > (cb - 36) / sizeof(uint64_t))
+            if (cSets > 64 || !virtioGpuR3VenusReadU64(pb, cb, 16, &uPool)
+                || !uPool || cEncoded > cSets || cEncoded > (cb - 36) / sizeof(uint64_t))
                 return false;
             for (uint64_t i = 0; i < cEncoded; ++i)
             {
-                if (!virtioGpuR3VenusReadU64(pb, cb, 36 + (size_t)i * sizeof(uint64_t), &uId)
+                if (!virtioGpuR3VenusReadU64(pb, cb, 36 + (size_t)i * sizeof(uint64_t), &uId))
+                    return false;
+                PVIRTIOGPUOPAQUEOBJECT pSet = virtioGpuR3FindOpaqueObject(pThis, uId);
+                PVIRTIOGPUOPAQUEOBJECT pPool = virtioGpuR3FindOpaqueObject(pThis, uPool);
+                if (!pSet || pSet->uType != VIRTIOGPU_VK_CMD_ALLOCATE_DESCRIPTOR_SETS
+                    || !pPool || pPool->uType != VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_POOL
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                    || pSet->hDescriptorSetPool != pPool->hDescriptorPool
+#endif
                     || !virtioGpuR3ReleaseOpaqueObject(pThis, uId,
                                                        VIRTIOGPU_VK_CMD_ALLOCATE_DESCRIPTOR_SETS))
                     return false;
@@ -3782,15 +4067,15 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
         }
         case VIRTIOGPU_VK_CMD_UPDATE_DESCRIPTOR_SETS:
         {
-            uint32_t cWrites = 0, cCopies = 0;
-            uint64_t cWritesEncoded = 0, cCopiesEncoded = 0;
-            if (cb < 40 || !virtioGpuR3VenusReadU64(pb, cb, 20, &cWritesEncoded)
-                || !virtioGpuR3VenusReadU64(pb, cb, 32, &cCopiesEncoded))
+            size_t cbCommand = 0;
+            if (!virtioGpuR3VenusDescriptorUpdateCommandSize(pb, cb, &cbCommand)
+                || cbCommand != cb)
                 return false;
-            memcpy(&cWrites, pb + 16, sizeof(cWrites));
-            memcpy(&cCopies, pb + 28, sizeof(cCopies));
-            if (cWrites || cCopies || cWritesEncoded || cCopiesEncoded)
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+            if (pThis->hVkDevice != VK_NULL_HANDLE
+                && !virtioGpuR3ApplyVenusDescriptorUpdates(pThis, pb, cb))
                 return false;
+#endif
             if (!virtioGpuR3VenusPutU32(&Enc, uType))
                 return false;
             break;
