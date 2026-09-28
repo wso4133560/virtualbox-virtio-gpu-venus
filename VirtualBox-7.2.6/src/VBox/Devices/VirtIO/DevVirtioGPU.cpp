@@ -58,6 +58,9 @@
 #define VIRTIOGPU_VK_CMD_COPY_IMAGE_TO_BUFFER2 UINT32_C(210)
 #define VIRTIOGPU_VK_CMD_PIPELINE_BARRIER2 UINT32_C(204)
 #define VIRTIOGPU_VK_CMD_BLIT_IMAGE2 UINT32_C(211)
+#define VIRTIOGPU_VK_CMD_RESET_QUERY_POOL_CMD UINT32_C(129)
+#define VIRTIOGPU_VK_CMD_WRITE_TIMESTAMP UINT32_C(130)
+#define VIRTIOGPU_VK_CMD_WRITE_TIMESTAMP2 UINT32_C(205)
 #define VIRTIOGPU_VK_CMD_SET_REPLY_STREAM UINT32_C(178)
 #define VIRTIOGPU_VK_CMD_SEEK_REPLY_STREAM UINT32_C(179)
 #define VIRTIOGPU_VK_CMD_EXECUTE_STREAMS UINT32_C(180)
@@ -9093,6 +9096,96 @@ static void virtioGpuR3FillEdid(uint8_t *pbEdid)
 }
 
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+/* Execute the query commands that are emitted inside a command-buffer stream.
+ * The guest command buffer is a protocol identity, so the bounded host submit
+ * command buffer is used for the actual timestamp operation and waited on
+ * before the command is reported complete. */
+static bool virtioGpuR3ExecuteVenusQueryCommand(PVIRTIOGPU pThis, uint32_t uType,
+                                                const uint8_t *pb, size_t cb)
+{
+    if (!pThis || !pb || cb < 8)
+        return false;
+    uint64_t uQueryPool = 0;
+    uint32_t uQuery = 0;
+    if (uType == VIRTIOGPU_VK_CMD_RESET_QUERY_POOL_CMD)
+    {
+        if (cb != 32 || !virtioGpuR3VenusReadU64(pb, cb, 16, &uQueryPool))
+            return false;
+        uint32_t uFirst = 0, cQueries = 0;
+        memcpy(&uFirst, pb + 24, sizeof(uFirst));
+        memcpy(&cQueries, pb + 28, sizeof(cQueries));
+        PVIRTIOGPUOPAQUEOBJECT pPool = virtioGpuR3FindOpaqueObject(pThis, uQueryPool);
+        PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr = virtioGpuR3GetVenusDeviceProcAddr(pThis);
+        PFN_vkResetQueryPool pfn = pfnGetDeviceProcAddr
+            ? (PFN_vkResetQueryPool)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkResetQueryPool") : NULL;
+        return pPool && pPool->uType == VIRTIOGPU_VK_CMD_CREATE_QUERY_POOL
+            && pPool->hQueryPool != VK_NULL_HANDLE && pfn
+            && (pfn(pThis->hVkDevice, pPool->hQueryPool, uFirst, cQueries), true);
+    }
+    bool const fModern = uType == VIRTIOGPU_VK_CMD_WRITE_TIMESTAMP2;
+    if ((uType != VIRTIOGPU_VK_CMD_WRITE_TIMESTAMP && !fModern)
+        || cb != (size_t)(fModern ? 36 : 32))
+        return false;
+    uint64_t uStage = 0;
+    if (!virtioGpuR3VenusReadU64(pb, cb, fModern ? 16 : 12, &uStage)
+        || !virtioGpuR3VenusReadU64(pb, cb, fModern ? 24 : 20, &uQueryPool))
+        return false;
+    memcpy(&uQuery, pb + (fModern ? 32 : 28), sizeof(uQuery));
+    PVIRTIOGPUOPAQUEOBJECT pPool = virtioGpuR3FindOpaqueObject(pThis, uQueryPool);
+    if (!pPool || pPool->uType != VIRTIOGPU_VK_CMD_CREATE_QUERY_POOL
+        || pPool->hQueryPool == VK_NULL_HANDLE)
+        return false;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr = virtioGpuR3GetVenusDeviceProcAddr(pThis);
+    if (!pfnGetDeviceProcAddr || !pThis->hVkSubmitCommandBuffer || !pThis->hVkSubmitFence)
+        return false;
+# define VK_QUERY_CMD_PROC(type, name) (type)pfnGetDeviceProcAddr(pThis->hVkDevice, name)
+    PFN_vkResetCommandBuffer pfnResetCommandBuffer = VK_QUERY_CMD_PROC(PFN_vkResetCommandBuffer,
+                                                                        "vkResetCommandBuffer");
+    PFN_vkBeginCommandBuffer pfnBeginCommandBuffer = VK_QUERY_CMD_PROC(PFN_vkBeginCommandBuffer,
+                                                                         "vkBeginCommandBuffer");
+    PFN_vkEndCommandBuffer pfnEndCommandBuffer = VK_QUERY_CMD_PROC(PFN_vkEndCommandBuffer,
+                                                                     "vkEndCommandBuffer");
+    PFN_vkResetFences pfnResetFences = VK_QUERY_CMD_PROC(PFN_vkResetFences, "vkResetFences");
+    PFN_vkQueueSubmit pfnQueueSubmit = VK_QUERY_CMD_PROC(PFN_vkQueueSubmit, "vkQueueSubmit");
+    PFN_vkWaitForFences pfnWaitForFences = VK_QUERY_CMD_PROC(PFN_vkWaitForFences, "vkWaitForFences");
+    if (!pfnResetCommandBuffer || !pfnBeginCommandBuffer || !pfnEndCommandBuffer
+        || !pfnResetFences || !pfnQueueSubmit || !pfnWaitForFences)
+        return false;
+    VkCommandBufferBeginInfo BeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
+                                           VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, NULL };
+    VkSubmitInfo SubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, 0, NULL, NULL, 1,
+                                &pThis->hVkSubmitCommandBuffer, 0, NULL };
+    if (pfnResetFences(pThis->hVkDevice, 1, &pThis->hVkSubmitFence) != VK_SUCCESS
+        || pfnResetCommandBuffer(pThis->hVkSubmitCommandBuffer, 0) != VK_SUCCESS
+        || pfnBeginCommandBuffer(pThis->hVkSubmitCommandBuffer, &BeginInfo) != VK_SUCCESS)
+        return false;
+    if (fModern)
+    {
+        PFN_vkCmdWriteTimestamp2 pfnCmdWriteTimestamp2 = VK_QUERY_CMD_PROC(PFN_vkCmdWriteTimestamp2,
+                                                                              "vkCmdWriteTimestamp2");
+        if (!pfnCmdWriteTimestamp2)
+            return false;
+        pfnCmdWriteTimestamp2(pThis->hVkSubmitCommandBuffer, (VkPipelineStageFlags2)uStage,
+                              pPool->hQueryPool, uQuery);
+    }
+    else
+    {
+        PFN_vkCmdWriteTimestamp pfnCmdWriteTimestamp = VK_QUERY_CMD_PROC(PFN_vkCmdWriteTimestamp,
+                                                                           "vkCmdWriteTimestamp");
+        if (!pfnCmdWriteTimestamp)
+            return false;
+        VkPipelineStageFlagBits const enmStage = uStage
+            ? (VkPipelineStageFlagBits)uStage : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+        pfnCmdWriteTimestamp(pThis->hVkSubmitCommandBuffer, enmStage, pPool->hQueryPool, uQuery);
+    }
+    bool const fSuccess = pfnEndCommandBuffer(pThis->hVkSubmitCommandBuffer) == VK_SUCCESS
+                       && pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, pThis->hVkSubmitFence) == VK_SUCCESS
+                       && pfnWaitForFences(pThis->hVkDevice, 1, &pThis->hVkSubmitFence, VK_TRUE,
+                                           UINT64_C(1000000000)) == VK_SUCCESS;
+# undef VK_QUERY_CMD_PROC
+    return fSuccess;
+}
+
 /* Execute one bounded Vulkan command stream descriptor.  The legacy submit
  * path has the same decoders, but it also carries a context resource list;
  * ring descriptors already identify their backing blobs, so this path checks
@@ -9131,6 +9224,11 @@ static bool virtioGpuR3ExecuteVenusCommandStream(PVIRTIOGPU pThis, const uint8_t
             return true;
         }
     }
+
+    if (uType == VIRTIOGPU_VK_CMD_RESET_QUERY_POOL_CMD
+        || uType == VIRTIOGPU_VK_CMD_WRITE_TIMESTAMP
+        || uType == VIRTIOGPU_VK_CMD_WRITE_TIMESTAMP2)
+        return virtioGpuR3ExecuteVenusQueryCommand(pThis, uType, pb, cb);
 
     if (uType == VIRTIOGPU_VK_CMD_FILL_BUFFER)
     {

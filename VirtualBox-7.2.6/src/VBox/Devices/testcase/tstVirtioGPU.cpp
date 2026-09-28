@@ -2898,6 +2898,43 @@ int main(int argc, char **argv)
     memcpy(&uQueryResultReply, abProtocolReply + 4, sizeof(uQueryResultReply));
     memcpy(&uQueryReplyDataSize, abProtocolReply + 8, sizeof(uQueryReplyDataSize));
     RTTESTI_CHECK(uQueryResultReply == VK_NOT_READY && uQueryReplyDataSize == cbQueryData);
+    uint8_t abStreamResetQuery[32] = { 0 };
+    uint32_t uStreamResetQueryType = VIRTIOGPU_VK_CMD_RESET_QUERY_POOL_CMD;
+    uint64_t uStreamCommandBuffer = UINT64_C(0x7810);
+    memcpy(abStreamResetQuery + 0, &uStreamResetQueryType, sizeof(uStreamResetQueryType));
+    memcpy(abStreamResetQuery + 8, &uStreamCommandBuffer, sizeof(uStreamCommandBuffer));
+    memcpy(abStreamResetQuery + 16, &uQueryPool, sizeof(uQueryPool));
+    memcpy(abStreamResetQuery + 24, &uQueryFirst, sizeof(uQueryFirst));
+    memcpy(abStreamResetQuery + 28, &uQueryResetCount, sizeof(uQueryResetCount));
+    RTTESTI_CHECK(virtioGpuR3ExecuteVenusCommandStream(pGpu, abStreamResetQuery,
+                                                       sizeof(abStreamResetQuery)));
+    uint8_t abStreamTimestamp[32] = { 0 };
+    uint32_t uStreamTimestampType = VIRTIOGPU_VK_CMD_WRITE_TIMESTAMP;
+    uint32_t uStreamTimestampStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    uint32_t uStreamTimestampQuery = 0;
+    memcpy(abStreamTimestamp + 0, &uStreamTimestampType, sizeof(uStreamTimestampType));
+    memcpy(abStreamTimestamp + 8, &uStreamCommandBuffer, sizeof(uStreamCommandBuffer));
+    memcpy(abStreamTimestamp + 16, &uStreamTimestampStage, sizeof(uStreamTimestampStage));
+    memcpy(abStreamTimestamp + 20, &uQueryPool, sizeof(uQueryPool));
+    memcpy(abStreamTimestamp + 28, &uStreamTimestampQuery, sizeof(uStreamTimestampQuery));
+    RTTESTI_CHECK(virtioGpuR3ExecuteVenusCommandStream(pGpu, abStreamTimestamp,
+                                                       sizeof(abStreamTimestamp)));
+    uint8_t abGetTimestampResult[60] = { 0 };
+    uint32_t uTimestampResultCount = 1;
+    uint64_t cbTimestampData = sizeof(uint64_t), cbTimestampArray = cbTimestampData;
+    memcpy(abGetTimestampResult, abGetQueryResults, sizeof(abGetTimestampResult));
+    memcpy(abGetTimestampResult + 28, &uTimestampResultCount, sizeof(uTimestampResultCount));
+    memcpy(abGetTimestampResult + 32, &cbTimestampData, sizeof(cbTimestampData));
+    memcpy(abGetTimestampResult + 40, &cbTimestampArray, sizeof(cbTimestampArray));
+    RTTESTI_CHECK(virtioGpuR3EncodeVenusProtocolReply(pGpu, abGetTimestampResult,
+                                                        sizeof(abGetTimestampResult), abProtocolReply,
+                                                        sizeof(abProtocolReply), &cbProtocolReply)
+                  && cbProtocolReply == 24);
+    uint32_t uTimestampResultReply = UINT32_MAX;
+    uint64_t uTimestampValue = 0;
+    memcpy(&uTimestampResultReply, abProtocolReply + 4, sizeof(uTimestampResultReply));
+    memcpy(&uTimestampValue, abProtocolReply + 16, sizeof(uTimestampValue));
+    RTTESTI_CHECK(uTimestampResultReply == VK_SUCCESS && uTimestampValue != 0);
     uint8_t abDestroyQueryPool[32] = { 0 };
     uint32_t uDestroyQueryPoolType = VIRTIOGPU_VK_CMD_DESTROY_QUERY_POOL;
     memcpy(abDestroyQueryPool + 0, &uDestroyQueryPoolType, sizeof(uDestroyQueryPoolType));
