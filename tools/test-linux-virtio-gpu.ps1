@@ -13,6 +13,7 @@ param(
     [ValidateSet('ich9', 'piix3')][string]$Chipset = 'ich9',
     [switch]$VerifyGuestVulkan,
     [switch]$RunVulkanWorkload,
+    [ValidateRange(0, 3600)][int]$WorkloadSeconds = 0,
     [switch]$SkipGuestVulkanInfo,
     [switch]$VerifyReset,
     [switch]$VerifySaveRestore,
@@ -109,6 +110,7 @@ $guestVulkanExit = $null
 $guestVulkanDevice = $null
 $guestVulkanWorkloadVerified = $false
 $guestVulkanWorkloadExit = $null
+$guestVulkanWorkloadIterations = $null
 $saveRestoreVerified = $false
 $saveRestoreVulkanExit = $null
 $resetVerified = $false
@@ -280,6 +282,10 @@ echo VIRTIO_GUEST_END
     if ($GpuBackend -eq 'venus' -and -not $hostVisible) { throw 'Linux rejected the Venus host-visible shared-memory region. Inspect guest.log.' }
     if ($VerifyGuestVulkan)
     {
+        if ($WorkloadSeconds -gt 0 -and -not $RunVulkanWorkload)
+        {
+            throw '-WorkloadSeconds requires -RunVulkanWorkload.'
+        }
         $phase = 'guest-vulkan'
         $guestVulkanProbe = @'
 set -o pipefail
@@ -316,10 +322,18 @@ cat >/tmp/virtio-vulkan-smoke.c <<'EOF'
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static int fail(const char *where, VkResult rc)
 {
     fprintf(stderr, "VULKAN_WORKLOAD_FAIL %s rc=%d\n", where, (int)rc);
+    return 1;
+}
+
+static int fail_iteration(const char *where, VkResult rc, unsigned long long iteration)
+{
+    fprintf(stderr, "VULKAN_WORKLOAD_FAIL %s rc=%d iteration=%llu\n",
+            where, (int)rc, iteration);
     return 1;
 }
 
@@ -335,6 +349,8 @@ int main(void)
     VkCommandBuffer command = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
     VkResult rc;
+    const unsigned workload_seconds = __WORKLOAD_SECONDS__;
+    unsigned long long iterations = 0;
     uint32_t count = 0, family = UINT32_MAX, type = UINT32_MAX;
     VkPhysicalDeviceMemoryProperties memory_properties;
     VkMemoryRequirements requirements;
@@ -466,22 +482,32 @@ int main(void)
         .commandBufferCount = 1,
         .pCommandBuffers = &command,
     };
-    rc = vkQueueSubmit(queue, 1, &submit, fence);
-    if (rc != VK_SUCCESS) return fail("vkQueueSubmit", rc);
-    rc = vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_C(10000000000));
-    if (rc != VK_SUCCESS) return fail("vkWaitForFences", rc);
-    if (!coherent) {
-        VkMappedMemoryRange range = { VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, NULL, memory, 0, 4096 };
-        rc = vkInvalidateMappedMemoryRanges(device, 1, &range);
-        if (rc != VK_SUCCESS) return fail("vkInvalidateMappedMemoryRanges", rc);
-    }
-    uint32_t *words = mapped;
-    for (unsigned i = 0; i < 1024; ++i)
-        if (words[i] != UINT32_C(0xa5a5a5a5)) {
-            fprintf(stderr, "VULKAN_WORKLOAD_FAIL data[%u]=0x%08x\n", i, words[i]);
-            return 1;
+    time_t const start = time(NULL);
+    do {
+        if (iterations) {
+            rc = vkResetFences(device, 1, &fence);
+            if (rc != VK_SUCCESS) return fail("vkResetFences", rc);
         }
-    printf("VULKAN_WORKLOAD_PASS family=%u memoryType=%u coherent=%u\n", family, type, coherent);
+        rc = vkQueueSubmit(queue, 1, &submit, fence);
+        if (rc != VK_SUCCESS) return fail("vkQueueSubmit", rc);
+        rc = vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_C(10000000000));
+        if (rc != VK_SUCCESS) return fail_iteration("vkWaitForFences", rc, iterations);
+        if (!coherent) {
+            VkMappedMemoryRange range = { VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, NULL, memory, 0, 4096 };
+            rc = vkInvalidateMappedMemoryRanges(device, 1, &range);
+            if (rc != VK_SUCCESS) return fail("vkInvalidateMappedMemoryRanges", rc);
+        }
+        uint32_t *words = mapped;
+        for (unsigned i = 0; i < 1024; ++i)
+            if (words[i] != UINT32_C(0xa5a5a5a5)) {
+                fprintf(stderr, "VULKAN_WORKLOAD_FAIL data[%u]=0x%08x iteration=%llu\n",
+                        i, words[i], iterations);
+                return 1;
+            }
+        ++iterations;
+    } while (workload_seconds && (unsigned long)(time(NULL) - start) < workload_seconds);
+    printf("VULKAN_WORKLOAD_PASS family=%u memoryType=%u coherent=%u iterations=%llu seconds=%u\n",
+           family, type, coherent, iterations, workload_seconds);
     vkDestroyFence(device, fence, NULL);
     vkFreeCommandBuffers(device, pool, 1, &command);
     vkDestroyCommandPool(device, pool, NULL);
@@ -507,6 +533,7 @@ exit "$workload_rc"
 '@
         $guestVulkanProbe = $guestVulkanProbe.Replace('__RUN_VULKAN_WORKLOAD__', $(if ($RunVulkanWorkload) { '1' } else { '0' }))
         $guestVulkanProbe = $guestVulkanProbe.Replace('__SKIP_VULKANINFO__', $(if ($SkipGuestVulkanInfo) { '1' } else { '0' }))
+        $guestVulkanProbe = $guestVulkanProbe.Replace('__WORKLOAD_SECONDS__', $WorkloadSeconds.ToString([Globalization.CultureInfo]::InvariantCulture))
         $guestVulkanProbe = $guestVulkanProbe.Replace('__VULKAN_PACKAGES__', $(if ($RunVulkanWorkload) { 'mesa-vulkan-drivers vulkan-tools strace build-essential libvulkan-dev' } else { 'mesa-vulkan-drivers vulkan-tools strace' }))
         $guestVulkanPath = Join-Path $reportDir 'guest-vulkan-probe.sh'
         [IO.File]::WriteAllText($guestVulkanPath, $guestVulkanProbe.Replace("`r`n", "`n") + "`n", $utf8)
@@ -525,6 +552,8 @@ exit "$workload_rc"
         $guestVulkanWorkloadExit = 0
         $workloadExitMatch = [regex]::Match($guestVulkanText, '(?im)^vulkan_workload_exit=(\d+)\s*$')
         if ($workloadExitMatch.Success) { $guestVulkanWorkloadExit = [int]$workloadExitMatch.Groups[1].Value }
+        $workloadIterationsMatch = [regex]::Match($guestVulkanText, '(?im)^VULKAN_WORKLOAD_PASS.*\biterations=(\d+)\b')
+        if ($workloadIterationsMatch.Success) { $guestVulkanWorkloadIterations = [uint64]$workloadIterationsMatch.Groups[1].Value }
         $guestVulkanWorkloadVerified = -not $RunVulkanWorkload -or ($guestVulkanText -match '(?m)^VULKAN_WORKLOAD_PASS$' -and $guestVulkanWorkloadExit -eq 0)
         $deviceMatch = [regex]::Match($guestVulkanText, '(?im)^\s*deviceName\s*=\s*(.+?)\s*$')
         if ($deviceMatch.Success) { $guestVulkanDevice = $deviceMatch.Groups[1].Value.Trim() }
@@ -715,7 +744,8 @@ exit "$workload_rc"
             vboxSupState = $vboxSupState; vboxSupWin32Exit = $vboxSupWin32Exit
             guestVulkanVerified = $guestVulkanVerified; guestVulkanExit = $guestVulkanExit
             guestVulkanDevice = $guestVulkanDevice; guestVulkanWorkloadVerified = $guestVulkanWorkloadVerified
-            guestVulkanWorkloadExit = $guestVulkanWorkloadExit; saveRestoreVerified = $saveRestoreVerified
+            guestVulkanWorkloadExit = $guestVulkanWorkloadExit; guestVulkanWorkloadIterations = $guestVulkanWorkloadIterations
+            workloadSeconds = $WorkloadSeconds; saveRestoreVerified = $saveRestoreVerified
             saveRestoreVulkanExit = $saveRestoreVulkanExit; resetVerified = $resetVerified
             resetVulkanExit = $resetVulkanExit; phase = $phase; failure = $failure
             cleanupErrors = @($cleanupErrors)
