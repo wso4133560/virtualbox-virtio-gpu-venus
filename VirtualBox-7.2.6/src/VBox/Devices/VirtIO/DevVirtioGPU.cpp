@@ -146,6 +146,8 @@
 #define VIRTIOGPU_VK_CMD_WAIT_FOR_FENCES UINT32_C(39)
 #define VIRTIOGPU_VK_CMD_CREATE_BUFFER UINT32_C(50)
 #define VIRTIOGPU_VK_CMD_DESTROY_BUFFER UINT32_C(51)
+#define VIRTIOGPU_VK_CMD_CREATE_BUFFER_VIEW UINT32_C(52)
+#define VIRTIOGPU_VK_CMD_DESTROY_BUFFER_VIEW UINT32_C(53)
 #define VIRTIOGPU_VK_CMD_DESTROY_FENCE UINT32_C(36)
 #define VIRTIOGPU_VK_CMD_ALLOCATE_COMMAND_BUFFERS UINT32_C(88)
 #define VIRTIOGPU_VK_CMD_FREE_COMMAND_BUFFERS UINT32_C(89)
@@ -340,6 +342,7 @@ typedef struct VIRTIOGPUOPAQUEOBJECT
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     VkImage hImage;
     VkImageView hImageView;
+    VkBufferView hBufferView;
     VkShaderModule hShaderModule;
     VkPipelineLayout hPipelineLayout;
     VkSampler hSampler;
@@ -1353,6 +1356,11 @@ static void virtioGpuR3DestroyOpaqueHostObject(PVIRTIOGPU pThis,
         PFN_vkDestroyImageView pfn = VK_OPAQUE_PROC(PFN_vkDestroyImageView, "vkDestroyImageView");
         if (pfn) pfn(pThis->hVkDevice, pObject->hImageView, NULL);
     }
+    if (pObject->hBufferView != VK_NULL_HANDLE)
+    {
+        PFN_vkDestroyBufferView pfn = VK_OPAQUE_PROC(PFN_vkDestroyBufferView, "vkDestroyBufferView");
+        if (pfn) pfn(pThis->hVkDevice, pObject->hBufferView, NULL);
+    }
     if (pObject->hImage != VK_NULL_HANDLE)
     {
         PFN_vkDestroyImage pfn = VK_OPAQUE_PROC(PFN_vkDestroyImage, "vkDestroyImage");
@@ -1404,6 +1412,7 @@ static void virtioGpuR3DestroyOpaqueHostObject(PVIRTIOGPU pThis,
     pObject->hShaderModule = VK_NULL_HANDLE;
     pObject->hImage = VK_NULL_HANDLE;
     pObject->hImageView = VK_NULL_HANDLE;
+    pObject->hBufferView = VK_NULL_HANDLE;
     pObject->hPipelineLayout = VK_NULL_HANDLE;
     pObject->hSampler = VK_NULL_HANDLE;
     pObject->hDescriptorSetLayout = VK_NULL_HANDLE;
@@ -1571,6 +1580,33 @@ static bool virtioGpuR3CreateOpaqueHostObject(PVIRTIOGPU pThis,
                                            Components, Range };
             PFN_vkCreateImageView pfn = VK_OPAQUE_PROC(PFN_vkCreateImageView, "vkCreateImageView");
             return pfn && pfn(pThis->hVkDevice, &Info, NULL, &pObject->hImageView) == VK_SUCCESS;
+        }
+        case VIRTIOGPU_VK_CMD_CREATE_BUFFER_VIEW:
+        {
+            uint64_t fInfo = 0, fPnext = 0, uBuffer = 0, fAllocator = 0, fOutput = 0;
+            uint32_t uSType = 0, fFlags = 0, uFormat = 0;
+            uint64_t offBuffer = 0, cbRange = 0;
+            if (!readU64(16, &fInfo) || fInfo != 1 || !readU32(24, &uSType)
+                || uSType != VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO
+                || !readU64(28, &fPnext) || fPnext || !readU32(36, &fFlags)
+                || !readU64(40, &uBuffer) || !readU32(48, &uFormat)
+                || !readU64(52, &offBuffer) || !readU64(60, &cbRange)
+                || !readU64(68, &fAllocator) || fAllocator
+                || !readU64(76, &fOutput) || fOutput != 1
+                || !cbRange)
+                return false;
+            PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResourceByVkBuffer(pThis, uBuffer);
+            if (!pRes || !pRes->fVulkanBuffer || pRes->hVkBuffer == VK_NULL_HANDLE)
+                return false;
+            VkBufferViewCreateInfo Info = { VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO };
+            Info.pNext = NULL;
+            Info.flags = (VkBufferViewCreateFlags)fFlags;
+            Info.buffer = pRes->hVkBuffer;
+            Info.format = (VkFormat)uFormat;
+            Info.offset = offBuffer;
+            Info.range = cbRange;
+            PFN_vkCreateBufferView pfn = VK_OPAQUE_PROC(PFN_vkCreateBufferView, "vkCreateBufferView");
+            return pfn && pfn(pThis->hVkDevice, &Info, NULL, &pObject->hBufferView) == VK_SUCCESS;
         }
         case VIRTIOGPU_VK_CMD_CREATE_SHADER_MODULE:
         {
@@ -2541,6 +2577,21 @@ static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pc
              * indices), allocator marker, and output buffer handle. */
             *pcbCommand = 92;
             return cb >= *pcbCommand;
+        case VIRTIOGPU_VK_CMD_CREATE_BUFFER_VIEW:
+        {
+            uint64_t fInfo = 0, fPnext = 0, fAllocator = 0, fOutput = 0;
+            uint32_t uSType = 0;
+            if (!virtioGpuR3ReadU64(pb, cb, 16, &fInfo) || fInfo != 1 || cb < 84
+                || !virtioGpuR3ReadU64(pb, cb, 28, &fPnext) || fPnext
+                || !virtioGpuR3ReadU64(pb, cb, 68, &fAllocator) || fAllocator
+                || !virtioGpuR3ReadU64(pb, cb, 76, &fOutput) || fOutput > 1)
+                return false;
+            memcpy(&uSType, pb + 24, sizeof(uSType));
+            if (uSType != VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO)
+                return false;
+            *pcbCommand = 84 + (fOutput ? sizeof(uint64_t) : 0);
+            return cb >= *pcbCommand;
+        }
         case VIRTIOGPU_VK_CMD_ALLOCATE_MEMORY:
             /* device, VkMemoryAllocateInfo (null pNext), allocator marker,
              * and output device-memory handle. */
@@ -2715,6 +2766,7 @@ static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pc
             *pcbCommand = 24;
             return cb >= *pcbCommand;
         case VIRTIOGPU_VK_CMD_DESTROY_BUFFER:
+        case VIRTIOGPU_VK_CMD_DESTROY_BUFFER_VIEW:
         case VIRTIOGPU_VK_CMD_DESTROY_FENCE:
         case VIRTIOGPU_VK_CMD_DESTROY_SEMAPHORE:
         case VIRTIOGPU_VK_CMD_DESTROY_SHADER_MODULE:
@@ -3699,6 +3751,7 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
         case VIRTIOGPU_VK_CMD_CREATE_COMMAND_POOL:
         case VIRTIOGPU_VK_CMD_CREATE_IMAGE:
         case VIRTIOGPU_VK_CMD_CREATE_IMAGE_VIEW:
+        case VIRTIOGPU_VK_CMD_CREATE_BUFFER_VIEW:
         case VIRTIOGPU_VK_CMD_CREATE_BUFFER:
         case VIRTIOGPU_VK_CMD_ALLOCATE_MEMORY:
         case VIRTIOGPU_VK_CMD_CREATE_FENCE:
@@ -3740,6 +3793,7 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
             if (fOutputId && fOutput
                 && (uType == VIRTIOGPU_VK_CMD_CREATE_IMAGE
                     || uType == VIRTIOGPU_VK_CMD_CREATE_IMAGE_VIEW
+                    || uType == VIRTIOGPU_VK_CMD_CREATE_BUFFER_VIEW
                     || uType == VIRTIOGPU_VK_CMD_CREATE_SHADER_MODULE
                     || uType == VIRTIOGPU_VK_CMD_CREATE_PIPELINE_LAYOUT
                     || uType == VIRTIOGPU_VK_CMD_CREATE_SAMPLER
@@ -4199,6 +4253,7 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
         }
         case VIRTIOGPU_VK_CMD_DESTROY_SHADER_MODULE:
         case VIRTIOGPU_VK_CMD_DESTROY_IMAGE_VIEW:
+        case VIRTIOGPU_VK_CMD_DESTROY_BUFFER_VIEW:
         case VIRTIOGPU_VK_CMD_DESTROY_PIPELINE_LAYOUT:
         case VIRTIOGPU_VK_CMD_DESTROY_SAMPLER:
         case VIRTIOGPU_VK_CMD_DESTROY_DESCRIPTOR_SET_LAYOUT:
@@ -4211,6 +4266,8 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                 uObjectType = VIRTIOGPU_VK_CMD_CREATE_SHADER_MODULE;
             else if (uType == VIRTIOGPU_VK_CMD_DESTROY_IMAGE_VIEW)
                 uObjectType = VIRTIOGPU_VK_CMD_CREATE_IMAGE_VIEW;
+            else if (uType == VIRTIOGPU_VK_CMD_DESTROY_BUFFER_VIEW)
+                uObjectType = VIRTIOGPU_VK_CMD_CREATE_BUFFER_VIEW;
             else if (uType == VIRTIOGPU_VK_CMD_DESTROY_SAMPLER)
                 uObjectType = VIRTIOGPU_VK_CMD_CREATE_SAMPLER;
             else if (uType == VIRTIOGPU_VK_CMD_DESTROY_DESCRIPTOR_SET_LAYOUT)
@@ -6987,7 +7044,9 @@ static int virtioGpuR3VulkanResourceCreate(PVIRTIOGPU pThis, PVIRTIOGPURESOURCE 
     VkBufferCreateInfo BufferInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, pRes->cbPixels,
                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
                                       | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
-                                      | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                                       | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT
+                                       | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT
+                                       | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
                                       VK_SHARING_MODE_EXCLUSIVE, 0, NULL };
     VkMemoryRequirements MemReq;
     RT_ZERO(MemReq);
@@ -12176,7 +12235,8 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
         if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetBool(pSSM, &pObject->fEventSet);
         bool fValid = pObject->uObject == 0 ? pObject->uType == 0
                                             : (pObject->uType == VIRTIOGPU_VK_CMD_CREATE_IMAGE
-                                               || pObject->uType == VIRTIOGPU_VK_CMD_CREATE_IMAGE_VIEW
+                                                || pObject->uType == VIRTIOGPU_VK_CMD_CREATE_IMAGE_VIEW
+                                               || pObject->uType == VIRTIOGPU_VK_CMD_CREATE_BUFFER_VIEW
                                                || pObject->uType == VIRTIOGPU_VK_CMD_CREATE_SHADER_MODULE
                                                || pObject->uType == VIRTIOGPU_VK_CMD_CREATE_PIPELINE_LAYOUT
                                                || pObject->uType == VIRTIOGPU_VK_CMD_CREATE_SAMPLER
@@ -12234,7 +12294,8 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
                                        : pObject->uType == VIRTIOGPU_VK_CMD_CREATE_DESCRIPTOR_SET_LAYOUT ? 1
                                        : pObject->uType == VIRTIOGPU_VK_CMD_ALLOCATE_DESCRIPTOR_SETS ? 3
                                        : pObject->uType == VIRTIOGPU_VK_CMD_CREATE_IMAGE ? 2
-                                       : pObject->uType == VIRTIOGPU_VK_CMD_CREATE_IMAGE_VIEW ? 3
+                                       : (pObject->uType == VIRTIOGPU_VK_CMD_CREATE_IMAGE_VIEW
+                                          || pObject->uType == VIRTIOGPU_VK_CMD_CREATE_BUFFER_VIEW) ? 3
                                        : pObject->uType == VIRTIOGPU_VK_CMD_CREATE_PIPELINE_LAYOUT ? 4 : 2;
             if (uObjectPass != uPassObjects)
                 continue;

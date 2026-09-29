@@ -348,3 +348,14 @@ git ls-remote origin refs/heads/main
 - 双 vCPU 30 秒 saved-state 重试 `.build\windows\linux-venus-final-cpu2-ssm-reset30-fix1\report.json` 在恢复阶段仍记录旧对象命令失败，作为本次修复前的对照证据；修复后的双 vCPU save/reset 两次重试均卡在 Ubuntu 早期启动、尚未进入 SSH/Vulkan 阶段，已清理临时 VM，不能把它们当作新的协议失败结论。
 - 当前开发运行时包 `.build\windows\virtualbox-virtio-gpu-venus-object-cleanup-final.zip` 共 280 个文件；包内 `VBoxDD.dll` SHA256 为 `B2531B16C29D4AC528AC85521CB01361EB6447F134151CC78BFEF0AB40B2FDE1`。manifest、版本、VirtIO-GPU/Venus 回归和 PE/VMMR0 加载均通过。ZIP 自身哈希在交付时单独记录，避免把自引用哈希写入包内文档。
 - 完整 Venus renderer protocol、所有 Vulkan object/query、真实桌面 framebuffer/cursor/任意分辨率端到端验收、8 小时压力、完整性能矩阵和正式 Windows 安装器仍未完成。本阶段证明的是当前 object namespace cleanup 后的宿主回归和单 vCPU saved-state 边界，并保留上一版 DLL 的双 vCPU workload 证据。
+
+## 2026-09-29 buffer view 对象与当前客体验收
+
+- `DevVirtioGPU.cpp` 新增 Venus `vkCreateBufferView`/`vkDestroyBufferView`（命令 52/53）：严格校验 92/32-byte framing、`VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO`、null pNext/allocator 和输出 marker；通过已绑定的 host Vulkan buffer 创建真实 `VkBufferView`，并在销毁、`DESTROY_DEVICE`、saved-state restore 中维护句柄生命周期。
+- 宿主资源的 host `VkBuffer` usage 增加 uniform/storage texel-buffer flags，使 buffer view 的格式化访问满足 Vulkan usage 前置条件；没有引入独立未绑定 buffer。
+- `tstVirtioGPU` 新增 `Venus buffer view lifecycle`：创建与销毁均通过 command-size、reply、opaque object type 和非空 host handle 检查。
+- 当前宿主回归 `.build/windows/virtio-gpu-validation.json` 通过 62 组，`missingGroups=[]`，`-IncludeRegistration` 通过；新增组为 `Venus buffer view lifecycle`。当前 `VBoxDD.dll` SHA256 为 `8BD332E26B2EB85228D90F3EB3EA82C108774B638551209A73A75147C3B4A4F3`。标准 kBuild 仍触发已知 stdout pipe/worker-thread 错误，已用 `.dep` 中相同 `cl`/`link` 命令完成当前产物。
+- 当前 runtime 的重复 guest workload 报告 `.build/windows/linux-venus-buffer-view-cpu1-workload-repeat/report.json` 通过 `vulkaninfo` 和 5 秒 workload（2997 次），`guestVulkanWorkloadExit=0`、`cleanupErrors=[]`、`passed=true`。
+- 当前 runtime 的完整 guest saved-state 报告 `.build/windows/linux-venus-buffer-view-cpu1-save5-final-pass/report.json` 通过 `guestVulkanVerified=true`、初始 workload 3526 次、`saveRestoreVerified=true`、恢复 Vulkan exit 0、`vboxSupState=RUNNING`、`cleanupErrors=[]`、`passed=true`；日志包含 `VULKANINFO_PASS`/`VULKAN_WORKLOAD_PASS`，无 ring rejection/stuck。
+- 一次先行 workload 重试在第 1024 次附近出现 `QUEUE_SUBMIT` ring rejection，随后独立重复与 saved-state 运行通过；该单次时序失败不作为稳定性结论。
+- 当前开发运行时包 `.build/windows/virtualbox-virtio-gpu-venus-buffer-view-final.zip` 共 286 个文件；包内 `VBoxDD.dll` SHA256 为 `8BD332E26B2EB85228D90F3EB3EA82C108774B638551209A73A75147C3B4A4F3`，manifest、版本、VirtIO-GPU/Venus 回归和 PE/VMMR0 加载均通过。ZIP 自身 SHA256 在交付记录中单独给出，避免包内文档自引用。完整 Venus renderer protocol、完整桌面 framebuffer/cursor/任意分辨率、8 小时压力、性能矩阵和正式 Windows 安装器仍未完成。

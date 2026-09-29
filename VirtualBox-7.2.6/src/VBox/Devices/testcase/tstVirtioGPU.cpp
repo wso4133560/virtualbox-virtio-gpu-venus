@@ -2318,6 +2318,55 @@ int main(int argc, char **argv)
     memcpy(&fBufferMemoryTypes, abProtocolReply + 28, sizeof(fBufferMemoryTypes));
     RTTESTI_CHECK(cbProtocolReply == 32 && cbBufferRequirements != 0
                   && uBufferRequirementsAlignment != 0 && fBufferMemoryTypes != 0);
+    RTTestSub(g_hTest, "Venus buffer view lifecycle");
+    uint8_t abCreateBufferView[92] = { 0 };
+    uint32_t uCreateBufferViewType = VIRTIOGPU_VK_CMD_CREATE_BUFFER_VIEW;
+    uint64_t uBufferView = UINT64_C(0x6003), fCreateBufferViewInfo = 1;
+    uint32_t uBufferViewSType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO;
+    uint32_t uBufferViewFlags = 0, uBufferViewFormat = VK_FORMAT_R32_UINT;
+    uint64_t uBufferViewOffset = 0, uBufferViewRange = 16;
+    uint64_t fBufferViewAllocator = 0, fBufferViewOutput = 1;
+    memcpy(abCreateBufferView + 0, &uCreateBufferViewType, sizeof(uCreateBufferViewType));
+    memcpy(abCreateBufferView + 8, &uGetQueueDevice, sizeof(uGetQueueDevice));
+    memcpy(abCreateBufferView + 16, &fCreateBufferViewInfo, sizeof(fCreateBufferViewInfo));
+    memcpy(abCreateBufferView + 24, &uBufferViewSType, sizeof(uBufferViewSType));
+    memcpy(abCreateBufferView + 36, &uBufferViewFlags, sizeof(uBufferViewFlags));
+    memcpy(abCreateBufferView + 40, &uCreatedBuffer, sizeof(uCreatedBuffer));
+    memcpy(abCreateBufferView + 48, &uBufferViewFormat, sizeof(uBufferViewFormat));
+    memcpy(abCreateBufferView + 52, &uBufferViewOffset, sizeof(uBufferViewOffset));
+    memcpy(abCreateBufferView + 60, &uBufferViewRange, sizeof(uBufferViewRange));
+    memcpy(abCreateBufferView + 68, &fBufferViewAllocator, sizeof(fBufferViewAllocator));
+    memcpy(abCreateBufferView + 76, &fBufferViewOutput, sizeof(fBufferViewOutput));
+    memcpy(abCreateBufferView + 84, &uBufferView, sizeof(uBufferView));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abCreateBufferView, sizeof(abCreateBufferView),
+                                               &cbQueueCommand)
+                  && cbQueueCommand == sizeof(abCreateBufferView)
+                  && virtioGpuR3EncodeVenusProtocolReply(pGpu, abCreateBufferView,
+                                                          sizeof(abCreateBufferView), abProtocolReply,
+                                                          sizeof(abProtocolReply), &cbProtocolReply));
+    uint64_t uCreatedBufferView = 0;
+    uint32_t uCreateBufferViewReplyType = 0, uCreateBufferViewReplyResult = UINT32_MAX;
+    memcpy(&uCreateBufferViewReplyType, abProtocolReply + 0, sizeof(uCreateBufferViewReplyType));
+    memcpy(&uCreateBufferViewReplyResult, abProtocolReply + 4, sizeof(uCreateBufferViewReplyResult));
+    memcpy(&uCreatedBufferView, abProtocolReply + 16, sizeof(uCreatedBufferView));
+    PVIRTIOGPUOPAQUEOBJECT pBufferView = virtioGpuR3FindOpaqueObject(pGpu, uCreatedBufferView);
+    RTTESTI_CHECK(cbProtocolReply == 24 && uCreateBufferViewReplyType == uCreateBufferViewType
+                  && uCreateBufferViewReplyResult == VK_SUCCESS && uCreatedBufferView == uBufferView
+                  && pBufferView && pBufferView->uType == VIRTIOGPU_VK_CMD_CREATE_BUFFER_VIEW
+                  && pBufferView->hBufferView != VK_NULL_HANDLE);
+    uint8_t abDestroyBufferView[32] = { 0 };
+    uint32_t uDestroyBufferViewType = VIRTIOGPU_VK_CMD_DESTROY_BUFFER_VIEW;
+    memcpy(abDestroyBufferView + 0, &uDestroyBufferViewType, sizeof(uDestroyBufferViewType));
+    memcpy(abDestroyBufferView + 8, &uGetQueueDevice, sizeof(uGetQueueDevice));
+    memcpy(abDestroyBufferView + 16, &uCreatedBufferView, sizeof(uCreatedBufferView));
+    memcpy(abDestroyBufferView + 24, &fBufferViewAllocator, sizeof(fBufferViewAllocator));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abDestroyBufferView, sizeof(abDestroyBufferView),
+                                               &cbQueueCommand)
+                  && cbQueueCommand == sizeof(abDestroyBufferView)
+                  && virtioGpuR3EncodeVenusProtocolReply(pGpu, abDestroyBufferView,
+                                                          sizeof(abDestroyBufferView), abProtocolReply,
+                                                          sizeof(abProtocolReply), &cbProtocolReply)
+                  && cbProtocolReply == 4 && !virtioGpuR3FindOpaqueObject(pGpu, uCreatedBufferView));
     uint8_t abDestroyBuffer[32] = { 0 };
     uint32_t uDestroyBufferType = VIRTIOGPU_VK_CMD_DESTROY_BUFFER;
     uint64_t fDestroyBufferAllocator = 0;
