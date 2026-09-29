@@ -336,3 +336,15 @@ git ls-remote origin refs/heads/main
 - 完整 Venus renderer protocol、所有 Vulkan 对象/查询、真实桌面 framebuffer/cursor/任意分辨率端到端验收、8 小时压力、完整性能矩阵和正式 Windows 安装器仍未完成。
 
 只提交本阶段相关文件，保留测试报告在 `.build` 下，不要提交临时 VM 密钥、磁盘或 core dump。
+
+## 2026-09-29 guest device 对象命名空间清理
+
+- `DESTROY_DEVICE` 现在清理当前 guest 进程产生的全部宿主对象状态：descriptor set 在 descriptor pool 前释放，随后清理其余 opaque Vulkan object、fence、semaphore、command buffer command stream、descriptor update wire 和 buffer binding，并清空 resource 表中的 guest Vulkan memory/buffer 关联。Mesa 的 non-dispatchable id 来自进程内地址；如果不在 device 销毁时清理，第二次 `vulkaninfo` 或 saved-state restore 可能把旧 id 误认为仍有效对象。
+- `CREATE_BUFFER`/`CREATE_IMAGE` 的严格 framing/binding 校验保留；新增诊断日志只在校验失败时记录 pNext、size、输出 id 和已有 binding，便于定位真实 guest command，而不会改变成功路径。
+- 当前 `VBoxDD.dll` 与 `release/obj/VBoxDD/VBoxDD.dll` 的 SHA256 均为 `B2531B16C29D4AC528AC85521CB01361EB6447F134151CC78BFEF0AB40B2FDE1`。标准 kBuild 在完成编译后仍会触发已知的 Windows stdout pipe/worker-thread 错误；使用 `.dep` 中的 `cl`/`link` 行完成了相同源码的增量编译和链接。
+- 当前宿主回归 `.build\windows\virtio-gpu-validation.json` 通过 61 组，`missingGroups=[]`，退出码 0，包含 registration 检查；`tstVirtioGPU: SUCCESS` 已验证。
+- 上一版 DLL 的双 vCPU 客体报告 `.build\windows\linux-venus-final-cpu2-createbuffer5-debug3\report.json`：guest ready、DRM/host-visible、`vulkaninfo` 和 5 秒 workload 全部通过，workload 2573 次，`passed=true`、`cleanupErrors=[]`；它保留为多 vCPU 运行证据，不与本次 DLL 哈希混写。
+- 当前 DLL 的单 vCPU saved-state 报告 `.build\windows\linux-venus-object-cleanup-cpu1-save5-final\report\report.json`：初始 workload 3429 次，恢复 workload 3049 次，restore 后 Vulkan exit 0，`saveRestoreVerified=true`、`passed=true`、`cleanupErrors=[]`；初始和恢复日志均包含 `VULKANINFO_PASS` 与 `VULKAN_WORKLOAD_PASS`。
+- 双 vCPU 30 秒 saved-state 重试 `.build\windows\linux-venus-final-cpu2-ssm-reset30-fix1\report.json` 在恢复阶段仍记录旧对象命令失败，作为本次修复前的对照证据；修复后的双 vCPU save/reset 两次重试均卡在 Ubuntu 早期启动、尚未进入 SSH/Vulkan 阶段，已清理临时 VM，不能把它们当作新的协议失败结论。
+- 当前开发运行时包 `.build\windows\virtualbox-virtio-gpu-venus-object-cleanup-final.zip` 共 280 个文件；包内 `VBoxDD.dll` SHA256 为 `B2531B16C29D4AC528AC85521CB01361EB6447F134151CC78BFEF0AB40B2FDE1`。manifest、版本、VirtIO-GPU/Venus 回归和 PE/VMMR0 加载均通过。ZIP 自身哈希在交付时单独记录，避免把自引用哈希写入包内文档。
+- 完整 Venus renderer protocol、所有 Vulkan object/query、真实桌面 framebuffer/cursor/任意分辨率端到端验收、8 小时压力、完整性能矩阵和正式 Windows 安装器仍未完成。本阶段证明的是当前 object namespace cleanup 后的宿主回归和单 vCPU saved-state 边界，并保留上一版 DLL 的双 vCPU workload 证据。

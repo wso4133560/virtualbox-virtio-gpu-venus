@@ -1415,6 +1415,59 @@ static void virtioGpuR3DestroyOpaqueHostObject(PVIRTIOGPU pThis,
 # undef VK_OPAQUE_PROC
 }
 
+static void virtioGpuR3ResetVenusGuestObjects(PVIRTIOGPU pThis)
+{
+    if (!pThis)
+        return;
+
+    /* Mesa derives non-dispatchable ids from process-local addresses.  Once
+     * a guest VkDevice is destroyed, every id in these tables belongs to a
+     * dead process and must not collide with the next process after restore
+     * or a second Vulkan probe.  Descriptor sets are released before their
+     * pools so the host destroy order remains valid. */
+    for (unsigned pass = 0; pass < 2; ++pass)
+        for (unsigned i = 0; i < RT_ELEMENTS(pThis->aOpaqueObjects); ++i)
+        {
+            PVIRTIOGPUOPAQUEOBJECT pObject = &pThis->aOpaqueObjects[i];
+            bool const fDescriptorSet = pObject->uType == VIRTIOGPU_VK_CMD_ALLOCATE_DESCRIPTOR_SETS;
+            if (!pObject->uObject || fDescriptorSet != (pass == 0))
+                continue;
+            virtioGpuR3DestroyOpaqueHostObject(pThis, pObject);
+            RTMemFree(pObject->pbCreate);
+            RT_ZERO(*pObject);
+        }
+
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aFences); ++i)
+        if (pThis->aFences[i].uFence)
+        {
+            virtioGpuR3DestroyFenceHost(pThis, &pThis->aFences[i]);
+            RT_ZERO(pThis->aFences[i]);
+        }
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aSemaphores); ++i)
+        if (pThis->aSemaphores[i].uSemaphore)
+        {
+            virtioGpuR3DestroySemaphoreHost(pThis, &pThis->aSemaphores[i]);
+            RT_ZERO(pThis->aSemaphores[i]);
+        }
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aCommandBuffers); ++i)
+        if (pThis->aCommandBuffers[i].uCommandBuffer)
+        {
+            virtioGpuR3ClearCommandBufferCommands(&pThis->aCommandBuffers[i]);
+            RT_ZERO(pThis->aCommandBuffers[i]);
+        }
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aBufferBindings); ++i)
+        RT_ZERO(pThis->aBufferBindings[i]);
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aResources); ++i)
+    {
+        /* Keep the VirtIO resource and its host backing, but drop guest
+         * Vulkan ids that belong to the destroyed device. */
+        pThis->aResources[i].uVkMemoryObjectId = 0;
+        pThis->aResources[i].uVkBufferObjectId = 0;
+        pThis->aResources[i].offVkBufferMemory = 0;
+    }
+    virtioGpuR3ClearDescriptorUpdates(pThis);
+}
+
 static bool virtioGpuR3OpaqueCopyCreate(PVIRTIOGPUOPAQUEOBJECT pObject,
                                         const uint8_t *pb, size_t cb)
 {
@@ -3716,13 +3769,25 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
             if (fOutputId && fOutput && uType == VIRTIOGPU_VK_CMD_CREATE_BUFFER)
             {
                 uint64_t cbBuffer = 0, fPnext = 0;
-                if (!virtioGpuR3ReadU64(pb, cb, 28, &fPnext) || fPnext
-                    || !virtioGpuR3ReadU64(pb, cb, 40, &cbBuffer)
-                    || !cbBuffer || cbBuffer > VIRTIOGPU_MAX_RESOURCE_BYTES)
+                bool const fPnextRead = virtioGpuR3ReadU64(pb, cb, 28, &fPnext);
+                bool const fSizeRead = virtioGpuR3ReadU64(pb, cb, 40, &cbBuffer);
+                if (!fPnextRead || fPnext
+                    || !fSizeRead || !cbBuffer || cbBuffer > VIRTIOGPU_MAX_RESOURCE_BYTES)
+                {
+                    LogRelMax(128, ("virtio-gpu: Venus create-buffer validation failed "
+                                    "output=%RTbool id=%RX64 pnext-read=%RTbool pnext=%RX64 "
+                                    "size-read=%RTbool size=%RX64 command-size=%zu\n",
+                                    fOutput, uId, fPnextRead, fPnext, fSizeRead, cbBuffer, cb));
                     return false;
+                }
                 PVIRTIOGPUBUFFERBINDING pBinding = virtioGpuR3GetBufferBinding(pThis, uId);
                 if (!pBinding || pBinding->cbBuffer)
+                {
+                    LogRelMax(128, ("virtio-gpu: Venus create-buffer binding validation failed "
+                                    "output=%RTbool id=%RX64 binding=%p existing-size=%RX64\n",
+                                    fOutput, uId, pBinding, pBinding ? pBinding->cbBuffer : 0));
                     return false;
+                }
                 pBinding->cbBuffer = cbBuffer;
             }
             if (fOutputId && fOutput && uType == VIRTIOGPU_VK_CMD_CREATE_IMAGE)
@@ -4750,6 +4815,8 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
         case VIRTIOGPU_VK_CMD_DESTROY_INSTANCE:
         case VIRTIOGPU_VK_CMD_DESTROY_DEVICE:
         case VIRTIOGPU_VK_CMD_DESTROY_COMMAND_POOL:
+            if (uType == VIRTIOGPU_VK_CMD_DESTROY_DEVICE)
+                virtioGpuR3ResetVenusGuestObjects(pThis);
             if (!virtioGpuR3VenusPutU32(&Enc, uType))
                 return false;
             break;
