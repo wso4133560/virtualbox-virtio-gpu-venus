@@ -359,3 +359,13 @@ git ls-remote origin refs/heads/main
 - 当前 runtime 的完整 guest saved-state 报告 `.build/windows/linux-venus-buffer-view-cpu1-save5-final-pass/report.json` 通过 `guestVulkanVerified=true`、初始 workload 3526 次、`saveRestoreVerified=true`、恢复 Vulkan exit 0、`vboxSupState=RUNNING`、`cleanupErrors=[]`、`passed=true`；日志包含 `VULKANINFO_PASS`/`VULKAN_WORKLOAD_PASS`，无 ring rejection/stuck。
 - 一次先行 workload 重试在第 1024 次附近出现 `QUEUE_SUBMIT` ring rejection，随后独立重复与 saved-state 运行通过；该单次时序失败不作为稳定性结论。
 - 当前开发运行时包 `.build/windows/virtualbox-virtio-gpu-venus-buffer-view-final.zip` 共 286 个文件；包内 `VBoxDD.dll` SHA256 为 `8BD332E26B2EB85228D90F3EB3EA82C108774B638551209A73A75147C3B4A4F3`，manifest、版本、VirtIO-GPU/Venus 回归和 PE/VMMR0 加载均通过。ZIP 自身 SHA256 在交付记录中单独给出，避免包内文档自引用。完整 Venus renderer protocol、完整桌面 framebuffer/cursor/任意分辨率、8 小时压力、性能矩阵和正式 Windows 安装器仍未完成。
+
+## 2026-09-29 query result copy
+
+- `DevVirtioGPU.cpp` 新增 command stream 命令 `vkCmdCopyQueryPoolResults`（Venus type `131`）：严格校验 60-byte framing、query pool/目标 buffer、query result flags、stride 和 binding/resource 边界；宿主 Vulkan 路径使用专用 submit command buffer、fence 等待和非一致性内存 invalidate，把结果写回 guest-visible resource。
+- `tstVirtioGPU` 在 query pool lifecycle 中新增 type `131` 的完整长度和截断负向检查；宿主回归 `.build\windows\virtio-gpu-validation.json` 通过 62 组，`missingGroups=[]`，`-IncludeRegistration` 通过。
+- 当前运行时 `VBoxDD.dll` SHA256 为 `CAED131731C4CE80ACB85DC1B3DE323FEA77B07FDC214414294DA46D9F94FE59`；标准 kBuild 仍可能在编译完成后报告 stdout pipe/worker-thread 错误，本轮使用对应 `.dep` 的 `cl`/`link` 命令完成并同步了 `bin` 运行时产物。
+- 当前 DLL 的客体报告 `.build\windows\linux-venus-query-copy30-current\report.json` 通过 `vulkaninfo` 和 30 秒 host-visible workload（21022 次），`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`vboxSupState=RUNNING`、`cleanupErrors=[]`、`passed=true`；日志包含 `VULKANINFO_PASS`/`VULKAN_WORKLOAD_PASS`，无 `stuck`、`expired ring` 或 `ring command rejected`。
+- 同一 DLL 的 saved-state 组合运行已完成初始与恢复 workload（3181/3580 次，两个日志均有 `VULKANINFO_PASS` 与 `VULKAN_WORKLOAD_PASS`），但 reset 阶段在 SSH 重连等待中未完成，本轮不把 reset 计为通过；临时 VM 已手动关闭并删除。既有历史 reset 报告仍保留为独立证据。
+- 新运行时包应以本轮 `package-windows-runtime.ps1` 产物和 `validate-windows-runtime-package.ps1` 结果为准；完整 Venus renderer protocol、query copy 客体专用 workload、真实桌面 framebuffer/cursor/任意分辨率端到端验收、8 小时压力、完整性能矩阵和正式 Windows 安装器仍未完成。
+- 本轮可分发包 `.build\windows\virtualbox-virtio-gpu-venus-query-copy-final.zip`：286 个 manifest 文件，ZIP SHA256 `E9E0E758443240FB6F56B3639324CF8F80656671353B100183B732B7EB7A939C`；包内 `bin\VBoxDD.dll` 与当前产物哈希一致，包验收四项均通过。

@@ -61,6 +61,7 @@
 #define VIRTIOGPU_VK_CMD_BLIT_IMAGE2 UINT32_C(211)
 #define VIRTIOGPU_VK_CMD_RESET_QUERY_POOL_CMD UINT32_C(129)
 #define VIRTIOGPU_VK_CMD_WRITE_TIMESTAMP UINT32_C(130)
+#define VIRTIOGPU_VK_CMD_COPY_QUERY_POOL_RESULTS_CMD UINT32_C(131)
 #define VIRTIOGPU_VK_CMD_WRITE_TIMESTAMP2 UINT32_C(205)
 #define VIRTIOGPU_VK_CMD_SET_REPLY_STREAM UINT32_C(178)
 #define VIRTIOGPU_VK_CMD_SEEK_REPLY_STREAM UINT32_C(179)
@@ -2759,6 +2760,11 @@ static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pc
              * and result flags.  The output blob is carried only in the reply. */
             *pcbCommand = 60;
             return cb >= *pcbCommand;
+        case VIRTIOGPU_VK_CMD_COPY_QUERY_POOL_RESULTS_CMD:
+            /* command buffer, query pool, first/count, destination buffer,
+             * destination offset/stride and result flags. */
+            *pcbCommand = 60;
+            return cb >= *pcbCommand;
         case VIRTIOGPU_VK_CMD_RESET_QUERY_POOL:
             *pcbCommand = 32;
             return cb >= *pcbCommand;
@@ -4574,10 +4580,17 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
             {
                 PVIRTIOGPUFENCESTATE pFence = virtioGpuR3FindFence(pThis, uId);
                 if (!pFence)
+                {
+                    LogRelMax(32, ("virtio-gpu: Venus queue-submit rejected unknown fence id=%RX64\n", uId));
                     return false;
+                }
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
                 if (!virtioGpuR3CompleteFenceHost(pThis, pFence))
+                {
+                    LogRelMax(32, ("virtio-gpu: Venus queue-submit fence completion failed id=%RX64 host=%p\n",
+                                   uId, (void *)pFence->hVkFence));
                     return false;
+                }
 #endif
                 pFence->fSignaled = true;
             }
@@ -9797,6 +9810,100 @@ static bool virtioGpuR3ExecuteVenusQueryCommand(PVIRTIOGPU pThis, uint32_t uType
     return fSuccess;
 }
 
+/* Execute vkCmdCopyQueryPoolResults on the bounded host submit command
+ * buffer.  The result is copied back into the guest-visible resource after
+ * the fence completes so both BAR-backed blobs and ordinary host-visible
+ * buffers observe the same data. */
+static bool virtioGpuR3ExecuteVenusCopyQueryPoolResults(PVIRTIOGPU pThis,
+                                                         const uint8_t *pb,
+                                                         size_t cb)
+{
+    if (!pThis || !pb || cb != 60 || !pThis->hVkSubmitCommandBuffer
+        || !pThis->hVkSubmitFence || pThis->hVkDevice == VK_NULL_HANDLE
+        || pThis->hVkQueue == VK_NULL_HANDLE)
+        return false;
+    uint64_t uCommandBuffer = 0, uQueryPool = 0, uDstBuffer = 0;
+    uint64_t offDst = 0, stride = 0;
+    uint32_t uFirstQuery = 0, cQueries = 0, fFlags = 0;
+    memcpy(&uCommandBuffer, pb + 8, sizeof(uCommandBuffer));
+    memcpy(&uQueryPool, pb + 16, sizeof(uQueryPool));
+    memcpy(&uFirstQuery, pb + 24, sizeof(uFirstQuery));
+    memcpy(&cQueries, pb + 28, sizeof(cQueries));
+    memcpy(&uDstBuffer, pb + 32, sizeof(uDstBuffer));
+    memcpy(&offDst, pb + 40, sizeof(offDst));
+    memcpy(&stride, pb + 48, sizeof(stride));
+    memcpy(&fFlags, pb + 56, sizeof(fFlags));
+    if (!uCommandBuffer || !uQueryPool || !uDstBuffer || !cQueries || cQueries > 256
+        || (fFlags & ~(VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT
+                       | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT | VK_QUERY_RESULT_PARTIAL_BIT))
+        || !stride)
+        return false;
+    PVIRTIOGPUOPAQUEOBJECT pPool = virtioGpuR3FindOpaqueObject(pThis, uQueryPool);
+    if (!pPool || pPool->uType != VIRTIOGPU_VK_CMD_CREATE_QUERY_POOL
+        || pPool->hQueryPool == VK_NULL_HANDLE)
+        return false;
+    PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResourceByVkObject(pThis, uDstBuffer);
+    PVIRTIOGPUBUFFERBINDING pBinding = virtioGpuR3FindBufferBinding(pThis, uDstBuffer);
+    if (!pRes)
+        pRes = virtioGpuR3ResolveUnboundBufferResource(pThis, uDstBuffer);
+    if (!pRes || !pRes->fVulkanBuffer || pRes->hVkBuffer == VK_NULL_HANDLE
+        || !pRes->pvVkMapped)
+        return false;
+    uint64_t const cbValue = (fFlags & VK_QUERY_RESULT_64_BIT) ? sizeof(uint64_t) : sizeof(uint32_t);
+    uint64_t const cbItem = cbValue
+                          + ((fFlags & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) ? cbValue : 0);
+    if (stride < cbItem || cQueries - 1 > (UINT64_MAX - cbItem) / stride)
+        return false;
+    uint64_t const cbWrite = (uint64_t)(cQueries - 1) * stride + cbItem;
+    if (pBinding)
+    {
+        if (offDst > pBinding->cbBuffer || cbWrite > pBinding->cbBuffer - offDst
+            || pBinding->offMemory > UINT64_MAX - offDst)
+            return false;
+        offDst += pBinding->offMemory;
+    }
+    if (offDst > pRes->cbPixels || cbWrite > pRes->cbPixels - offDst)
+        return false;
+    PFN_vkGetDeviceProcAddr pfnGetDeviceProcAddr = virtioGpuR3GetVenusDeviceProcAddr(pThis);
+    PFN_vkResetCommandBuffer pfnResetCommandBuffer = pfnGetDeviceProcAddr
+        ? (PFN_vkResetCommandBuffer)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkResetCommandBuffer") : NULL;
+    PFN_vkBeginCommandBuffer pfnBeginCommandBuffer = pfnGetDeviceProcAddr
+        ? (PFN_vkBeginCommandBuffer)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkBeginCommandBuffer") : NULL;
+    PFN_vkEndCommandBuffer pfnEndCommandBuffer = pfnGetDeviceProcAddr
+        ? (PFN_vkEndCommandBuffer)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkEndCommandBuffer") : NULL;
+    PFN_vkResetFences pfnResetFences = pfnGetDeviceProcAddr
+        ? (PFN_vkResetFences)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkResetFences") : NULL;
+    PFN_vkQueueSubmit pfnQueueSubmit = pfnGetDeviceProcAddr
+        ? (PFN_vkQueueSubmit)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkQueueSubmit") : NULL;
+    PFN_vkWaitForFences pfnWaitForFences = pfnGetDeviceProcAddr
+        ? (PFN_vkWaitForFences)pfnGetDeviceProcAddr(pThis->hVkDevice, "vkWaitForFences") : NULL;
+    PFN_vkCmdCopyQueryPoolResults pfnCmdCopy = pfnGetDeviceProcAddr
+        ? (PFN_vkCmdCopyQueryPoolResults)pfnGetDeviceProcAddr(pThis->hVkDevice,
+                                                               "vkCmdCopyQueryPoolResults") : NULL;
+    if (!pfnResetCommandBuffer || !pfnBeginCommandBuffer || !pfnEndCommandBuffer
+        || !pfnResetFences || !pfnQueueSubmit || !pfnWaitForFences || !pfnCmdCopy)
+        return false;
+    VkCommandBufferBeginInfo const BeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
+                                                  VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, NULL };
+    VkSubmitInfo const SubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, 0, NULL, NULL, 1,
+                                      &pThis->hVkSubmitCommandBuffer, 0, NULL };
+    if (pfnResetFences(pThis->hVkDevice, 1, &pThis->hVkSubmitFence) != VK_SUCCESS
+        || pfnResetCommandBuffer(pThis->hVkSubmitCommandBuffer, 0) != VK_SUCCESS
+        || pfnBeginCommandBuffer(pThis->hVkSubmitCommandBuffer, &BeginInfo) != VK_SUCCESS)
+        return false;
+    pfnCmdCopy(pThis->hVkSubmitCommandBuffer, pPool->hQueryPool, uFirstQuery, cQueries,
+               pRes->hVkBuffer, offDst, stride, (VkQueryResultFlags)fFlags);
+    if (pfnEndCommandBuffer(pThis->hVkSubmitCommandBuffer) != VK_SUCCESS
+        || pfnQueueSubmit(pThis->hVkQueue, 1, &SubmitInfo, pThis->hVkSubmitFence) != VK_SUCCESS
+        || pfnWaitForFences(pThis->hVkDevice, 1, &pThis->hVkSubmitFence, VK_TRUE,
+                            UINT64_C(1000000000)) != VK_SUCCESS)
+        return false;
+    if (RT_FAILURE(virtioGpuR3VulkanResourceMemoryOp(pThis, pRes, true)))
+        return false;
+    memcpy(pRes->pbPixels + offDst, (uint8_t *)pRes->pvVkMapped + offDst, (size_t)cbWrite);
+    return true;
+}
+
 /* Execute one bounded Vulkan command stream descriptor.  The legacy submit
  * path has the same decoders, but it also carries a context resource list;
  * ring descriptors already identify their backing blobs, so this path checks
@@ -9840,6 +9947,8 @@ static bool virtioGpuR3ExecuteVenusCommandStream(PVIRTIOGPU pThis, const uint8_t
         || uType == VIRTIOGPU_VK_CMD_WRITE_TIMESTAMP
         || uType == VIRTIOGPU_VK_CMD_WRITE_TIMESTAMP2)
         return virtioGpuR3ExecuteVenusQueryCommand(pThis, uType, pb, cb);
+    if (uType == VIRTIOGPU_VK_CMD_COPY_QUERY_POOL_RESULTS_CMD)
+        return virtioGpuR3ExecuteVenusCopyQueryPoolResults(pThis, pb, cb);
 
     if (uType == VIRTIOGPU_VK_CMD_FILL_BUFFER)
     {

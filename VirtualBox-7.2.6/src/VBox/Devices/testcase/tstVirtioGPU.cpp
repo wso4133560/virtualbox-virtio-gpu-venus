@@ -3188,6 +3188,25 @@ int main(int argc, char **argv)
     memcpy(&uQueryResultReply, abProtocolReply + 4, sizeof(uQueryResultReply));
     memcpy(&uQueryReplyDataSize, abProtocolReply + 8, sizeof(uQueryReplyDataSize));
     RTTESTI_CHECK(uQueryResultReply == VK_NOT_READY && uQueryReplyDataSize == cbQueryData);
+    uint8_t abCopyQueryResults[60] = { 0 };
+    uint32_t uCopyQueryResultsType = VIRTIOGPU_VK_CMD_COPY_QUERY_POOL_RESULTS_CMD;
+    uint64_t uCopyQueryCommandBuffer = UINT64_C(0x7811), uCopyQueryDstBuffer = UINT64_C(0x8811);
+    uint64_t uCopyQueryDstOffset = 16, uCopyQueryStride = sizeof(uint64_t);
+    memcpy(abCopyQueryResults + 0, &uCopyQueryResultsType, sizeof(uCopyQueryResultsType));
+    memcpy(abCopyQueryResults + 8, &uCopyQueryCommandBuffer, sizeof(uCopyQueryCommandBuffer));
+    memcpy(abCopyQueryResults + 16, &uQueryPool, sizeof(uQueryPool));
+    memcpy(abCopyQueryResults + 24, &uQueryFirst, sizeof(uQueryFirst));
+    memcpy(abCopyQueryResults + 28, &uQueryResetCount, sizeof(uQueryResetCount));
+    memcpy(abCopyQueryResults + 32, &uCopyQueryDstBuffer, sizeof(uCopyQueryDstBuffer));
+    memcpy(abCopyQueryResults + 40, &uCopyQueryDstOffset, sizeof(uCopyQueryDstOffset));
+    memcpy(abCopyQueryResults + 48, &uCopyQueryStride, sizeof(uCopyQueryStride));
+    memcpy(abCopyQueryResults + 56, &uQueryResultFlags, sizeof(uQueryResultFlags));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abCopyQueryResults, sizeof(abCopyQueryResults),
+                                                &cbQueueCommand)
+                  && cbQueueCommand == sizeof(abCopyQueryResults)
+                  && !virtioGpuR3VenusCommandSize(abCopyQueryResults,
+                                                   sizeof(abCopyQueryResults) - 1,
+                                                   &cbQueueCommand));
     uint8_t abStreamResetQuery[32] = { 0 };
     uint32_t uStreamResetQueryType = VIRTIOGPU_VK_CMD_RESET_QUERY_POOL_CMD;
     uint64_t uStreamCommandBuffer = UINT64_C(0x7810);
