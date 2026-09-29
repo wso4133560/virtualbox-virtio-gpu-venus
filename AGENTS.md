@@ -369,3 +369,4 @@ git ls-remote origin refs/heads/main
 - 同一 DLL 的 saved-state 组合运行已完成初始与恢复 workload（3181/3580 次，两个日志均有 `VULKANINFO_PASS` 与 `VULKAN_WORKLOAD_PASS`），但 reset 阶段在 SSH 重连等待中未完成，本轮不把 reset 计为通过；临时 VM 已手动关闭并删除。既有历史 reset 报告仍保留为独立证据。
 - 新运行时包应以本轮 `package-windows-runtime.ps1` 产物和 `validate-windows-runtime-package.ps1` 结果为准；完整 Venus renderer protocol、query copy 客体专用 workload、真实桌面 framebuffer/cursor/任意分辨率端到端验收、8 小时压力、完整性能矩阵和正式 Windows 安装器仍未完成。
 - 本轮可分发包 `.build\windows\virtualbox-virtio-gpu-venus-query-copy-final.zip`：286 个 manifest 文件，ZIP SHA256 `E9E0E758443240FB6F56B3639324CF8F80656671353B100183B732B7EB7A939C`；包内 `bin\VBoxDD.dll` 与当前产物哈希一致，包验收四项均通过。
+- 同一 DLL 的独立 reset 报告 `.build\windows\linux-venus-query-copy-reset-current\report.json` 通过：`guestVulkanVerified=true`、初始 workload 3213 次、`resetVerified=true`、`resetVulkanExit=0`、`vboxSupState=RUNNING`、`cleanupErrors=[]`、`passed=true`。
