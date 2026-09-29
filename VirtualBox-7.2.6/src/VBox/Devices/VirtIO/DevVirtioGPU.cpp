@@ -391,6 +391,7 @@ typedef struct VIRTIOGPU
     uint64_t offSharedMemoryNext;
     VIRTIOGPUBACKEND enmBackend;
     VIRTIOGPUBACKEND enmActiveBackend;
+    bool fVenusResetPending;
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     RTLDRMOD hVulkan;
     PFN_vkGetInstanceProcAddr pfnVkGetInstanceProcAddr;
@@ -1175,14 +1176,49 @@ static bool virtioGpuR3SignalVenusFenceFeedback(PVIRTIOGPU pThis, uint64_t uFenc
     PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResourceByVkObject(pThis, uFence + 1);
     if (!pRes)
         pRes = virtioGpuR3ResolveUnboundBufferResource(pThis, uFence + 1);
-    if (!pRes || !pRes->pbPixels || pRes->cbPixels < sizeof(uint32_t))
+    PVIRTIOGPUBUFFERBINDING const pBinding = virtioGpuR3FindBufferBinding(pThis, uFence + 1);
+    uint64_t offFeedback = pBinding ? pBinding->offMemory : 0;
+    /* The feedback buffer is suballocated into 8-byte slots.  Its private
+     * command buffer is serialized as an ordinary FILL_BUFFER command, so
+     * recover that slot offset instead of assuming that the first slot is
+     * still active. */
+    uint64_t const offFeedbackBase = offFeedback;
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aCommandBuffers); ++i)
+    {
+        VIRTIOGPUCOMMANDBUFFERSTATE const *pState = &pThis->aCommandBuffers[i];
+        for (uint32_t j = 0; j < pState->cCommands; ++j)
+        {
+            uint8_t const *pbCommand = pState->aCommands[j].pb;
+            size_t const cbCommand = pState->aCommands[j].cb;
+            uint32_t uType = 0;
+            uint64_t uBuffer = 0, offCommand = 0, cbCommandBuffer = 0;
+            uint32_t uData = 0;
+            if (!pbCommand || cbCommand != 44)
+                continue;
+            memcpy(&uType, pbCommand, sizeof(uType));
+            memcpy(&uBuffer, pbCommand + 16, sizeof(uBuffer));
+            memcpy(&offCommand, pbCommand + 24, sizeof(offCommand));
+            memcpy(&cbCommandBuffer, pbCommand + 32, sizeof(cbCommandBuffer));
+            memcpy(&uData, pbCommand + 40, sizeof(uData));
+            if (uType != VIRTIOGPU_VK_CMD_FILL_BUFFER || uBuffer != uFence + 1
+                || cbCommandBuffer != sizeof(uint32_t) || uData != VK_SUCCESS
+                || offCommand > UINT64_MAX - offFeedbackBase)
+                continue;
+            offFeedback = offFeedbackBase + offCommand;
+        }
+    }
+    if (!pRes || !pRes->pbPixels || pRes->cbPixels < sizeof(uint32_t)
+        || offFeedback > pRes->cbPixels - sizeof(uint32_t))
         return false;
     uint32_t const uStatus = VK_SUCCESS;
-    memcpy(pRes->pbPixels, &uStatus, sizeof(uStatus));
+    /* Feedback is polled by Mesa through the shared BAR.  Use the same
+     * ordered 32-bit store as ring status publication so a cached host
+     * mapping cannot leave the guest polling an old VK_NOT_READY value. */
+    ASMAtomicWriteU32((volatile uint32_t *)(pRes->pbPixels + offFeedback), uStatus);
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     if (pRes->fVulkanBuffer && pRes->pvVkMapped)
     {
-        memcpy(pRes->pvVkMapped, &uStatus, sizeof(uStatus));
+        ASMAtomicWriteU32((volatile uint32_t *)((uint8_t *)pRes->pvVkMapped + offFeedback), uStatus);
         if (RT_FAILURE(virtioGpuR3VulkanResourceMemoryOp(pThis, pRes, false)))
             return false;
     }
@@ -1624,6 +1660,7 @@ static void virtioGpuR3ResetVenusGuestObjects(PVIRTIOGPU pThis)
             virtioGpuR3ClearCommandBufferCommands(&pThis->aCommandBuffers[i]);
             RT_ZERO(pThis->aCommandBuffers[i]);
         }
+    RT_ZERO(pThis->aContexts);
     for (unsigned i = 0; i < RT_ELEMENTS(pThis->aBufferBindings); ++i)
         RT_ZERO(pThis->aBufferBindings[i]);
     for (unsigned i = 0; i < RT_ELEMENTS(pThis->aResources); ++i)
@@ -1634,6 +1671,10 @@ static void virtioGpuR3ResetVenusGuestObjects(PVIRTIOGPU pThis)
         pThis->aResources[i].uVkBufferObjectId = 0;
         pThis->aResources[i].offVkBufferMemory = 0;
     }
+    /* The destroy command is itself carried by the active ring.  Defer ring
+     * table cleanup until the next poll so the current handler can publish
+     * its reply through the still-live ring metadata. */
+    pThis->fVenusResetPending = true;
     virtioGpuR3ClearDescriptorUpdates(pThis);
 }
 
@@ -2937,7 +2978,8 @@ static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pc
             *pcbCommand = 32;
             return cb >= *pcbCommand;
         case VIRTIOGPU_VK_CMD_RESET_COMMAND_BUFFER:
-            *pcbCommand = 24;
+            /* command type/flags, command buffer and reset flags */
+            *pcbCommand = 20;
             return cb >= *pcbCommand;
         case VIRTIOGPU_VK_CMD_DESTROY_BUFFER:
         case VIRTIOGPU_VK_CMD_DESTROY_BUFFER_VIEW:
@@ -6239,6 +6281,12 @@ static bool virtioGpuR3HandleVenusRingCommand(PVIRTIOGPU pThis, const uint8_t *p
         pRing->cbBuffer = cbBuffer;
         pRing->offExtra = offExtra;
         pRing->cbExtra = cbExtra;
+        /* vn_ring_create() clears the shared layout before publishing the
+         * create command.  Repeat the protocol-visible initialization here
+         * so a saved resource reused by a new ring cannot retain stale
+         * producer/consumer cursors. */
+        virtioGpuR3RingStoreU32(pThis, pRing, pRing->offHead, 0);
+        virtioGpuR3RingStoreU32(pThis, pRing, pRing->offTail, 0);
         virtioGpuR3RingStoreU32(pThis, pRing, pRing->offStatus,
                                 VIRTIOGPU_VK_RING_STATUS_IDLE | VIRTIOGPU_VK_RING_STATUS_ALIVE);
     }
@@ -6778,6 +6826,11 @@ static DECLCALLBACK(void) virtioGpuR3VenusPoll(PPDMDEVINS pDevIns, TMTIMERHANDLE
     if (pThis->Virtio.fDeviceStatus & VIRTIO_STATUS_DRIVER_OK)
     {
         virtioGpuR3ProcessVenusRings(pThis);
+        if (pThis->fVenusResetPending)
+        {
+            RT_ZERO(pThis->aRings);
+            pThis->fVenusResetPending = false;
+        }
         for (unsigned i = 0; i < RT_ELEMENTS(pThis->aRings); ++i)
         {
             PVIRTIOGPURING pRing = &pThis->aRings[i];
@@ -6857,6 +6910,7 @@ static void virtioGpuR3FreeResources(PVIRTIOGPU pThis)
     virtioGpuR3ResetScanouts(pThis);
     RT_ZERO(pThis->aContexts);
     RT_ZERO(pThis->aRings);
+    pThis->fVenusResetPending = false;
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     for (unsigned i = 0; i < RT_ELEMENTS(pThis->aBufferBindings); ++i)
         virtioGpuR3DestroyBufferBindingHost(pThis, &pThis->aBufferBindings[i]);
@@ -12308,6 +12362,34 @@ static DECLCALLBACK(int) virtioGpuR3SaveExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
         if (pfnDeviceWaitIdle && pfnDeviceWaitIdle(pThis->hVkDevice) != VK_SUCCESS)
             return VERR_SSM_LOAD_CONFIG_MISMATCH;
     }
+    /* Save is normally requested after the guest process has exited, but the
+     * final DESTROY_DEVICE carrier can still be waiting in the shared ring.
+     * Drain a bounded number of poll turns so saved state cannot retain a
+     * half-consumed command buffer or deferred ring reset. */
+    for (unsigned i = 0; i < 32; ++i)
+    {
+        virtioGpuR3ProcessVenusRings(pThis);
+        if (pThis->fVenusResetPending)
+        {
+            RT_ZERO(pThis->aRings);
+            pThis->fVenusResetPending = false;
+        }
+        bool fBusy = false;
+        for (unsigned j = 0; j < RT_ELEMENTS(pThis->aRings); ++j)
+            if (pThis->aRings[j].fUsed)
+            {
+                uint32_t uHead = 0, uTail = 0;
+                if (virtioGpuR3RingLoadU32(pThis, &pThis->aRings[j], pThis->aRings[j].offHead, &uHead)
+                    && virtioGpuR3RingLoadU32(pThis, &pThis->aRings[j], pThis->aRings[j].offTail, &uTail)
+                    && uHead != uTail)
+                {
+                    fBusy = true;
+                    break;
+                }
+            }
+        if (!fBusy)
+            break;
+    }
 #endif
     int rc = pDevIns->pHlpR3->pfnSSMPutU32(pSSM, pThis->Config.fEventsRead);
     if (RT_SUCCESS(rc))
@@ -13033,13 +13115,6 @@ static DECLCALLBACK(void) virtioGpuR3Reset(PPDMDEVINS pDevIns)
      * host resources as part of reset so a subsequent guest init cannot reuse
      * stale fences, semaphores, bindings or ring metadata. */
     virtioGpuR3FreeResources(pThis);
-#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
-    /* The shared BAR is guest-owned memory and survives the host-side table
-     * reset.  Clear it as part of device reset so a new ring cannot consume
-     * stale head/tail words or command bytes from the previous guest. */
-    if (pThis->pbSharedMemory)
-        RT_BZERO(pThis->pbSharedMemory, VIRTIOGPU_SHARED_MEMORY_BYTES);
-#endif
 }
 
 static DECLCALLBACK(int) virtioGpuR3Destruct(PPDMDEVINS pDevIns)
