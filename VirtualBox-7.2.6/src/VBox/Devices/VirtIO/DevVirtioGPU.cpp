@@ -2760,10 +2760,19 @@ static bool virtioGpuR3VenusCommandSize(const uint8_t *pb, size_t cb, size_t *pc
              * and result flags.  The output blob is carried only in the reply. */
             *pcbCommand = 60;
             return cb >= *pcbCommand;
+        case VIRTIOGPU_VK_CMD_RESET_QUERY_POOL_CMD:
+        case VIRTIOGPU_VK_CMD_WRITE_TIMESTAMP:
+            /* command buffer, query pool/stage and query index. */
+            *pcbCommand = 32;
+            return cb >= *pcbCommand;
         case VIRTIOGPU_VK_CMD_COPY_QUERY_POOL_RESULTS_CMD:
             /* command buffer, query pool, first/count, destination buffer,
              * destination offset/stride and result flags. */
             *pcbCommand = 60;
+            return cb >= *pcbCommand;
+        case VIRTIOGPU_VK_CMD_WRITE_TIMESTAMP2:
+            /* command buffer, 64-bit stage mask, query pool and query index. */
+            *pcbCommand = 36;
             return cb >= *pcbCommand;
         case VIRTIOGPU_VK_CMD_RESET_QUERY_POOL:
             *pcbCommand = 32;
@@ -4824,6 +4833,10 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
         case VIRTIOGPU_VK_CMD_FILL_BUFFER:
         case VIRTIOGPU_VK_CMD_PIPELINE_BARRIER:
         case VIRTIOGPU_VK_CMD_PIPELINE_BARRIER2:
+        case VIRTIOGPU_VK_CMD_RESET_QUERY_POOL_CMD:
+        case VIRTIOGPU_VK_CMD_WRITE_TIMESTAMP:
+        case VIRTIOGPU_VK_CMD_COPY_QUERY_POOL_RESULTS_CMD:
+        case VIRTIOGPU_VK_CMD_WRITE_TIMESTAMP2:
             if (!virtioGpuR3ExecuteVenusCommandStream(pThis, pb, cb)
                 || !virtioGpuR3VenusPutU32(&Enc, uType))
                 return false;
@@ -9751,9 +9764,20 @@ static bool virtioGpuR3ExecuteVenusQueryCommand(PVIRTIOGPU pThis, uint32_t uType
         || cb != (size_t)(fModern ? 36 : 32))
         return false;
     uint64_t uStage = 0;
-    if (!virtioGpuR3VenusReadU64(pb, cb, fModern ? 16 : 12, &uStage)
-        || !virtioGpuR3VenusReadU64(pb, cb, fModern ? 24 : 20, &uQueryPool))
-        return false;
+    if (fModern)
+    {
+        if (!virtioGpuR3VenusReadU64(pb, cb, 16, &uStage)
+            || !virtioGpuR3VenusReadU64(pb, cb, 24, &uQueryPool))
+            return false;
+    }
+    else
+    {
+        uint32_t uStage32 = 0;
+        if (cb < 32 || !virtioGpuR3VenusReadU64(pb, cb, 20, &uQueryPool))
+            return false;
+        memcpy(&uStage32, pb + 16, sizeof(uStage32));
+        uStage = uStage32;
+    }
     memcpy(&uQuery, pb + (fModern ? 32 : 28), sizeof(uQuery));
     PVIRTIOGPUOPAQUEOBJECT pPool = virtioGpuR3FindOpaqueObject(pThis, uQueryPool);
     if (!pPool || pPool->uType != VIRTIOGPU_VK_CMD_CREATE_QUERY_POOL
@@ -9779,10 +9803,24 @@ static bool virtioGpuR3ExecuteVenusQueryCommand(PVIRTIOGPU pThis, uint32_t uType
                                            VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, NULL };
     VkSubmitInfo SubmitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, 0, NULL, NULL, 1,
                                 &pThis->hVkSubmitCommandBuffer, 0, NULL };
-    if (pfnResetFences(pThis->hVkDevice, 1, &pThis->hVkSubmitFence) != VK_SUCCESS
-        || pfnResetCommandBuffer(pThis->hVkSubmitCommandBuffer, 0) != VK_SUCCESS
-        || pfnBeginCommandBuffer(pThis->hVkSubmitCommandBuffer, &BeginInfo) != VK_SUCCESS)
+    VkResult vkrc = pfnResetFences(pThis->hVkDevice, 1, &pThis->hVkSubmitFence);
+    if (vkrc != VK_SUCCESS)
+    {
+        LogRelMax(32, ("virtio-gpu: Venus timestamp reset fence failed rc=%d\n", vkrc));
         return false;
+    }
+    vkrc = pfnResetCommandBuffer(pThis->hVkSubmitCommandBuffer, 0);
+    if (vkrc != VK_SUCCESS)
+    {
+        LogRelMax(32, ("virtio-gpu: Venus timestamp reset command buffer failed rc=%d\n", vkrc));
+        return false;
+    }
+    vkrc = pfnBeginCommandBuffer(pThis->hVkSubmitCommandBuffer, &BeginInfo);
+    if (vkrc != VK_SUCCESS)
+    {
+        LogRelMax(32, ("virtio-gpu: Venus timestamp begin command buffer failed rc=%d\n", vkrc));
+        return false;
+    }
     if (fModern)
     {
         PFN_vkCmdWriteTimestamp2 pfnCmdWriteTimestamp2 = VK_QUERY_CMD_PROC(PFN_vkCmdWriteTimestamp2,

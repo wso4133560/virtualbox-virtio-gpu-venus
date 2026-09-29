@@ -3207,6 +3207,24 @@ int main(int argc, char **argv)
                   && !virtioGpuR3VenusCommandSize(abCopyQueryResults,
                                                    sizeof(abCopyQueryResults) - 1,
                                                    &cbQueueCommand));
+    uint8_t abWriteTimestamp[32] = { 0 };
+    uint32_t uWriteTimestampType = VIRTIOGPU_VK_CMD_WRITE_TIMESTAMP;
+    memcpy(abWriteTimestamp + 0, &uWriteTimestampType, sizeof(uWriteTimestampType));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abWriteTimestamp, sizeof(abWriteTimestamp),
+                                                &cbQueueCommand)
+                  && cbQueueCommand == sizeof(abWriteTimestamp)
+                  && !virtioGpuR3VenusCommandSize(abWriteTimestamp,
+                                                   sizeof(abWriteTimestamp) - 1,
+                                                   &cbQueueCommand));
+    uint8_t abWriteTimestamp2[36] = { 0 };
+    uint32_t uWriteTimestamp2Type = VIRTIOGPU_VK_CMD_WRITE_TIMESTAMP2;
+    memcpy(abWriteTimestamp2 + 0, &uWriteTimestamp2Type, sizeof(uWriteTimestamp2Type));
+    RTTESTI_CHECK(virtioGpuR3VenusCommandSize(abWriteTimestamp2, sizeof(abWriteTimestamp2),
+                                                &cbQueueCommand)
+                  && cbQueueCommand == sizeof(abWriteTimestamp2)
+                  && !virtioGpuR3VenusCommandSize(abWriteTimestamp2,
+                                                   sizeof(abWriteTimestamp2) - 1,
+                                                   &cbQueueCommand));
     uint8_t abStreamResetQuery[32] = { 0 };
     uint32_t uStreamResetQueryType = VIRTIOGPU_VK_CMD_RESET_QUERY_POOL_CMD;
     uint64_t uStreamCommandBuffer = UINT64_C(0x7810);

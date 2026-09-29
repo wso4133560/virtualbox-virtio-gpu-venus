@@ -358,6 +358,7 @@ int main(void)
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer command = VK_NULL_HANDLE;
+    VkQueryPool query_pool = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
     VkResult rc;
     const unsigned workload_seconds = __WORKLOAD_SECONDS__;
@@ -464,6 +465,14 @@ int main(void)
         if (rc != VK_SUCCESS) return fail("vkFlushMappedMemoryRanges", rc);
     }
 
+    VkQueryPoolCreateInfo query_info = {
+        .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+        .queryType = VK_QUERY_TYPE_TIMESTAMP,
+        .queryCount = 1,
+    };
+    rc = vkCreateQueryPool(device, &query_info, NULL, &query_pool);
+    if (rc != VK_SUCCESS) return fail("vkCreateQueryPool", rc);
+
     VkCommandPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
         .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
@@ -479,10 +488,17 @@ int main(void)
     };
     rc = vkAllocateCommandBuffers(device, &command_info, &command);
     if (rc != VK_SUCCESS) return fail("vkAllocateCommandBuffers", rc);
+    fprintf(stderr, "VULKAN_WORKLOAD_HANDLES buffer=%llu query_pool=%llu command=%llu memory=%llu\n",
+            (unsigned long long)buffer, (unsigned long long)query_pool,
+            (unsigned long long)command, (unsigned long long)memory);
     VkCommandBufferBeginInfo begin_info = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     rc = vkBeginCommandBuffer(command, &begin_info);
     if (rc != VK_SUCCESS) return fail("vkBeginCommandBuffer", rc);
-    vkCmdFillBuffer(command, buffer, 0, 4096, UINT32_C(0xa5a5a5a5));
+    vkCmdFillBuffer(command, buffer, 16, 4080, UINT32_C(0xa5a5a5a5));
+    vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, query_pool, 0);
+    vkCmdCopyQueryPoolResults(command, query_pool, 0, 1, buffer, 0, 16,
+                              VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT |
+                              VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
     rc = vkEndCommandBuffer(command);
     if (rc != VK_SUCCESS) return fail("vkEndCommandBuffer", rc);
     VkFenceCreateInfo fence_info = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
@@ -509,7 +525,12 @@ int main(void)
             if (rc != VK_SUCCESS) return fail("vkInvalidateMappedMemoryRanges", rc);
         }
         uint32_t *words = mapped;
-        for (unsigned i = 0; i < 1024; ++i)
+        if (((uint64_t *)mapped)[0] == 0 || words[3] != 1) {
+            fprintf(stderr, "VULKAN_WORKLOAD_FAIL query-result timestamp=%llu availability=%u iteration=%llu\n",
+                    (unsigned long long)((uint64_t *)mapped)[0], words[3], iterations);
+            return 1;
+        }
+        for (unsigned i = 4; i < 1024; ++i)
             if (words[i] != UINT32_C(0xa5a5a5a5)) {
                 fprintf(stderr, "VULKAN_WORKLOAD_FAIL data[%u]=0x%08x iteration=%llu\n",
                         i, words[i], iterations);
@@ -522,6 +543,7 @@ int main(void)
     vkDestroyFence(device, fence, NULL);
     vkFreeCommandBuffers(device, pool, 1, &command);
     vkDestroyCommandPool(device, pool, NULL);
+    vkDestroyQueryPool(device, query_pool, NULL);
     vkUnmapMemory(device, memory);
     vkFreeMemory(device, memory, NULL);
     vkDestroyBuffer(device, buffer, NULL);
