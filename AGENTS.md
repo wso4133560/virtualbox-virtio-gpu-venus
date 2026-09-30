@@ -2,6 +2,13 @@
 
 更新日期：2026-09-30
 
+## 阅读规则
+
+- 本文件前半部分是当前交接状态，优先于文末历史记录。
+- `.build` 下的报告和包是验证产物，不提交到 Git；引用报告时必须同时核对其中的 `runtimeHashes.VBoxDD.dll`。
+- 新工作先执行 `git status --short`，完成后保持工作树干净。
+- 宿主回归、COM 注册或旧 DLL 的客体报告，不能扩大解释为完整 Venus renderer protocol 已完成。
+
 ## 项目目标
 
 在 Windows 宿主上编译 VirtualBox，并通过 VirtIO-GPU/Venus 将宿主机 Vulkan GPU 能力提供给 Linux 客体。方案不使用 PCIe 直通，依赖 VirtIO-GPU、共享显存 BAR 和 Vulkan 命令转发。
@@ -11,8 +18,9 @@
 - 工作目录：`D:\code\virtualbox-virtio-gpu-venus`
 - 分支：`main`
 - 远端：`git@github.com:wso4133560/virtualbox-virtio-gpu-venus.git`
-- 本轮源码验证基于工作树最终 DLL `FD70CB8C435D3FC607FBEFDF1F76249044F25E874E41894018FEEE84DB57CEFF`；提交哈希以 `git HEAD` 和远端分支为准。
-- 前两个相关提交：`e239d8c9`（Replay recorded Venus command buffers on submit）、`81dc9bf9`（Package current Venus guest evidence）；更早提交 `2976c1c5`（ring wrap-around/reply bounds）、`72421ab1`（zero output handles in Venus creates）。
+- 当前 `HEAD`：`504893993efa954ec57ca0b9d3cb5f015d3e7a07`，提交主题 `Fix Venus ring sequence completion semantics`；远端分支应以 `git ls-remote origin refs/heads/main` 为准。
+- 本轮源码验证基于工作树最终 DLL `FD70CB8C435D3FC607FBEFDF1F76249044F25E874E41894018FEEE84DB57CEFF`。
+- 最近相关提交按新到旧：`aa90e1ec`、`d972ca4c`、`a5943f36`、`d5ed23c8`；不要依赖旧的提交清单。
 - 开始新工作先执行 `git status --short`；交接时应保持工作树干净。
 
 ## 2026-09-30 本轮最终交接
@@ -172,7 +180,7 @@ kmk: Failed to create worker threads
 9. `vkSetReplyCommandStreamMESA` 保存 reply resource/offset/size，并初始化 reply cursor。
 10. `vkSeekReplyCommandStreamMESA`（命令类型 `179`）校验并更新 reply cursor；reply 控制命令按当前 cursor 写入共享 reply stream 并推进 4-byte reply slot，拒绝无效 stream/cursor。
 11. `vkExecuteCommandStreamsMESA` 从共享 blob 读取 descriptor/command stream，处理多 stream、显式 reply position 和嵌套 ring 命令，并执行当前支持的 transfer/clear/barrier/blit/fill/update 子集。
-12. ring reply cursor、reply validity、buffer/memory binding、有限 command buffer/fence/binary/timeline semaphore/query pool/descriptor set 生命周期状态、classic/`vkQueueSubmit2` wait-signal、`vkGetSemaphoreCounterValue`/`vkWaitSemaphores`/`vkSignalSemaphore`、idle 回复，以及 saved-state version `24` 的 save/load 和一致性检查。
+12. ring reply cursor、reply validity、buffer/memory binding、有限 command buffer/fence/binary/timeline semaphore/query pool/descriptor set 生命周期状态、classic/`vkQueueSubmit2` wait-signal、`vkGetSemaphoreCounterValue`/`vkWaitSemaphores`/`vkSignalSemaphore`、idle 回复，以及 saved-state version `26` 的 save/load 和一致性检查；version 26 额外保存每个 ring 的 `uCompletedSeqno`。
 13. 对已支持的 transfer/barrier command stream 保存有界命令字节，在 `vkQueueSubmit`/`vkQueueSubmit2` 中按 command-buffer 顺序重放；Begin/Reset/Free 清理旧记录，saved-state 持久化命令流，修复 Mesa fence feedback slot 在 reset 后未被重新写入的问题。
 14. image object handle 到已绑定 host-visible resource 的统一解析；环命令与 `SUBMIT_3D` 的 image/buffer transfer、clear、barrier、copy、blit 路径不再强制截断 64 位 Vulkan handle，并保留旧 resource ID 回退。
 15. `vkGetDeviceMemoryCommitment`、`vkGetImageMemoryRequirements`、`vkGetImageMemoryRequirements2`、`vkBindImageMemory`、`vkBindImageMemory2` 的有界 framing/reply 和 binding-table 状态更新。
@@ -195,12 +203,13 @@ Mesa vn_*_MESA submit/call
 
 ## 未完成项和验证边界
 
-完整 Venus renderer protocol 仍未完成，但当前实现已通过 Linux 客体 `vulkaninfo --summary`、host-visible Vulkan fill/readback workload、saved-state restore 和 reset workload。下一阶段按以下顺序推进：
+完整 Venus renderer protocol 仍未完成，但当前实现已通过 Linux 客体 `vulkaninfo --summary`、host-visible Vulkan fill/readback workload、saved-state restore 和 reset workload。以下边界必须保留，不能以当前 smoke 结果替代：
 
-1. 继续补齐通用 Venus Vulkan object/query/reply dispatcher，尤其是更多 physical-device/device/query、同步和句柄映射路径；当前 command buffer/fence/semaphore 状态仍是有界生命周期表，不等于完整驱动对象后端。跨 ring fence feedback、saved-state restore 和 reset workload 已有最终报告覆盖。
-2. 完善多命令 stream framing、reply payload、返回值和错误码，持续避免仅推进 head/tail/status 的 bring-up 语义。
-3. 对 `vkNotifyRingMESA`、`vkWriteRingExtraMESA`、`vkSubmitVirtqueueSeqnoMESA`、`vkWait*SeqnoMESA` 增加更广泛的 Mesa 版本边界和异常测试。
-4. 扩展真实客户机图形 workload、长时间压力、多 vCPU、桌面显示和性能矩阵；当前标准 smoke 与 saved-state restore 已通过。
+1. 通用 Venus Vulkan object/query/reply dispatcher 仍是有界实现；physical-device/device/query、所有 Vulkan 对象、句柄映射和错误返回并未覆盖完整 Mesa 协议。当前 command buffer/fence/semaphore 状态表不等于完整驱动对象后端。
+2. command stream 只执行当前支持的子集；多命令 framing、reply payload、返回值和错误码仍需按 Mesa 当前协议逐项核对，不能只推进 head/tail/status。
+3. 跨 ring 的私有 fence feedback、query feedback、command-buffer 依赖排序和重试语义仍需真实 guest workload 验证；不要用猜测的 blob、跳过未知 command 或直接写成功反馈来掩盖协议错误。
+4. 对 `vkNotifyRingMESA`、`vkWriteRingExtraMESA`、`vkSubmitVirtqueueSeqnoMESA`、`vkWait*SeqnoMESA` 增加更广泛的 Mesa 版本、wrap-around、异常和并发测试。
+5. 当前最终 DLL 只有单 vCPU smoke/save/reset/30 秒压力/重复启动证据；多 vCPU 长时压力、真实桌面 framebuffer/cursor/任意分辨率、8 小时稳定性、性能矩阵和正式 Windows 安装器尚未完成。
 
 当前 head/tail/status 推进包含 bring-up 逻辑，可防止宿主立即死等，但不等于命令已经完整在宿主 GPU 上执行。
 
@@ -239,6 +248,10 @@ git push origin main
 git rev-parse HEAD
 git ls-remote origin refs/heads/main
 ```
+
+## 历史记录（只用于追溯，不作当前结论）
+
+以下逐轮条目保留实现背景和失败诊断，但其中的 DLL 哈希、测试组数量和客体结果可能与当前 `HEAD` 不同；需要复现时以本文件前半部分和当前工作树为准。
 
 ## 2026-09-28 本轮最终证据
 
