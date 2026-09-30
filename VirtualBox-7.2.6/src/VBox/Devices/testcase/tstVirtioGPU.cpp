@@ -3674,6 +3674,53 @@ int main(int argc, char **argv)
     RTTESTI_CHECK(uObserved == uWrapValue);
     memcpy(&uObserved, pRingRes->pbPixels + uCreateStatus, sizeof(uObserved));
     RTTESTI_CHECK(uObserved == (VIRTIOGPU_VK_RING_STATUS_IDLE | VIRTIOGPU_VK_RING_STATUS_ALIVE));
+    uint8_t abSubmitSeqno[24] = { 0 };
+    uint32_t uSubmitSeqnoType = VIRTIOGPU_VK_CMD_SUBMIT_VIRTQUEUE_SEQNO;
+    uint64_t uSubmitSeqno = 7;
+    memcpy(abSubmitSeqno + 0, &uSubmitSeqnoType, sizeof(uSubmitSeqnoType));
+    memcpy(abSubmitSeqno + 8, &uTestRing, sizeof(uTestRing));
+    memcpy(abSubmitSeqno + 16, &uSubmitSeqno, sizeof(uSubmitSeqno));
+    RT_ZERO(RingResp);
+    RTTESTI_CHECK(virtioGpuR3HandleVenusRingCommand(pGpu, abSubmitSeqno, sizeof(abSubmitSeqno),
+                                                    &RingResp, NULL)
+                  && RingResp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA
+                  && pTestRing->uSubmittedSeqno == uSubmitSeqno
+                  && pTestRing->uCompletedSeqno == uSubmitSeqno);
+    uint8_t abWaitRingSeqno[24] = { 0 };
+    uint32_t uWaitRingSeqnoType = VIRTIOGPU_VK_CMD_WAIT_RING_SEQNO;
+    memcpy(abWaitRingSeqno + 0, &uWaitRingSeqnoType, sizeof(uWaitRingSeqnoType));
+    memcpy(abWaitRingSeqno + 8, &uTestRing, sizeof(uTestRing));
+    memcpy(abWaitRingSeqno + 16, &uSubmitSeqno, sizeof(uSubmitSeqno));
+    RT_ZERO(RingResp);
+    RTTESTI_CHECK(virtioGpuR3HandleVenusRingCommand(pGpu, abWaitRingSeqno,
+                                                    sizeof(abWaitRingSeqno), &RingResp, NULL)
+                  && RingResp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
+    uint8_t abWaitVirtqueueSeqno[16] = { 0 };
+    uint32_t uWaitVirtqueueSeqnoType = VIRTIOGPU_VK_CMD_WAIT_VIRTQUEUE_SEQNO;
+    memcpy(abWaitVirtqueueSeqno + 0, &uWaitVirtqueueSeqnoType, sizeof(uWaitVirtqueueSeqnoType));
+    memcpy(abWaitVirtqueueSeqno + 8, &uSubmitSeqno, sizeof(uSubmitSeqno));
+    RT_ZERO(RingResp);
+    RTTESTI_CHECK(virtioGpuR3HandleVenusRingCommand(pGpu, abWaitVirtqueueSeqno,
+                                                    sizeof(abWaitVirtqueueSeqno), &RingResp, NULL)
+                  && RingResp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
+    /* Ring waits use a 32-bit shared head position; keep a separate
+     * out-of-range value to exercise the invalid/future boundary. */
+    uint64_t uFutureSeqno = UINT64_MAX;
+    memcpy(abWaitRingSeqno + 16, &uFutureSeqno, sizeof(uFutureSeqno));
+    RT_ZERO(RingResp);
+    RTTESTI_CHECK(virtioGpuR3HandleVenusRingCommand(pGpu, abWaitRingSeqno,
+                                                    sizeof(abWaitRingSeqno), &RingResp, NULL)
+                  && RingResp.Hdr.uType == VIRTIOGPU_RESP_ERR_UNSPEC);
+    memcpy(abWaitVirtqueueSeqno + 8, &uFutureSeqno, sizeof(uFutureSeqno));
+    RT_ZERO(RingResp);
+    RTTESTI_CHECK(virtioGpuR3HandleVenusRingCommand(pGpu, abWaitVirtqueueSeqno,
+                                                    sizeof(abWaitVirtqueueSeqno), &RingResp, NULL)
+                  && RingResp.Hdr.uType == VIRTIOGPU_RESP_OK_NODATA);
+    memcpy(abWriteExtra + 16, &uCreateExtraSize, sizeof(uCreateExtraSize));
+    RT_ZERO(RingResp);
+    RTTESTI_CHECK(virtioGpuR3HandleVenusRingCommand(pGpu, abWriteExtra,
+                                                    sizeof(abWriteExtra), &RingResp, pTestRing)
+                  && RingResp.Hdr.uType == VIRTIOGPU_RESP_ERR_INVALID_PARAMETER);
     uSeekReplyPosition = 12;
     memcpy(abSeekReply + 8, &uSeekReplyPosition, sizeof(uSeekReplyPosition));
     RT_ZERO(RingResp);
@@ -3695,7 +3742,9 @@ int main(int argc, char **argv)
                   && pTestRing->cbBuffer == uCreateBufferSize && pTestRing->offExtra == uCreateExtra
                   && pTestRing->cbExtra == uCreateExtraSize && pTestRing->offReply == uReplyOffset
                   && pTestRing->cbReply == uReplySize && pTestRing->fReplyPositionValid
-                  && pTestRing->uReplyPosition == uSeekReplyPosition);
+                  && pTestRing->uReplyPosition == uSeekReplyPosition
+                  && pTestRing->uSubmittedSeqno == uFutureSeqno
+                  && pTestRing->uCompletedSeqno == uFutureSeqno);
     memcpy(&uObserved, pRingRes->pbPixels + uCreateStatus, sizeof(uObserved));
     RTTESTI_CHECK(uObserved == (VIRTIOGPU_VK_RING_STATUS_IDLE | VIRTIOGPU_VK_RING_STATUS_ALIVE));
     memcpy(&uObserved, pRingRes->pbPixels + uCreateExtra + uWriteExtraOffset, sizeof(uObserved));

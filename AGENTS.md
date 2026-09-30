@@ -11,21 +11,34 @@
 - 工作目录：`D:\code\virtualbox-virtio-gpu-venus`
 - 分支：`main`
 - 远端：`git@github.com:wso4133560/virtualbox-virtio-gpu-venus.git`
-- 本轮源码验证基于工作树最终 DLL `FDF6392669098DB1872C1C51036171147E9DB697A27F9DB25DA8EF78EBB651B5`；提交哈希以 `git HEAD` 和远端分支为准。
+- 本轮源码验证基于工作树最终 DLL `FD70CB8C435D3FC607FBEFDF1F76249044F25E874E41894018FEEE84DB57CEFF`；提交哈希以 `git HEAD` 和远端分支为准。
 - 前两个相关提交：`e239d8c9`（Replay recorded Venus command buffers on submit）、`81dc9bf9`（Package current Venus guest evidence）；更早提交 `2976c1c5`（ring wrap-around/reply bounds）、`72421ab1`（zero output handles in Venus creates）。
 - 开始新工作先执行 `git status --short`；交接时应保持工作树干净。
 
 ## 2026-09-30 本轮最终交接
 
 - `DevVirtioGPU.cpp` 已补齐跨 ring 的 Venus 私有 fence feedback 处理：已知可执行 command buffer 后允许最后一个无等待私有 feedback command buffer；缺失 fence 状态按提交顺序惰性创建；恢复后存在多个未被可执行 command stream 引用的共享 feedback blob 时，对有限候选集合写入 `VK_SUCCESS`，避免 saved-state 后 fence 永久等待。
-- 最终 `VBoxDD.dll` SHA256 为 `FDF6392669098DB1872C1C51036171147E9DB697A27F9DB25DA8EF78EBB651B5`，运行时目录为 `VirtualBox-7.2.6\out\win.amd64\release\bin`。
+- 最终 `VBoxDD.dll` SHA256 为 `FD70CB8C435D3FC607FBEFDF1F76249044F25E874E41894018FEEE84DB57CEFF`，运行时目录为 `VirtualBox-7.2.6\out\win.amd64\release\bin`。
 - `.build\windows\virtio-gpu-validation.json`：宿主回归 62 组，退出码 0，包含 registration、ring/reply、Vulkan transfer/clear/barrier/blit/fill/update、同步对象、query、submit/submit2、reset/save-load 检查。
-- `.build\windows\linux-venus-save-final3\report.json`：固定镜像、最终 DLL 哈希为 `FDF6392669098DB1872C1C51036171147E9DB697A27F9DB25DA8EF78EBB651B5`、`vboxSupState=RUNNING`、guest Vulkan/workload 通过，saved-state restore workload 通过，`cleanupErrors=[]`，`passed=true`。
-- `.build\windows\linux-venus-reset-fixed\report.json`：guest Vulkan/workload 通过，reset 后 workload 通过，`cleanupErrors=[]`，`passed=true`。
-- `.build\windows\linux-venus-final-stress30-current\report.json`：最终 DLL 哈希一致，30 秒 guest Vulkan workload 通过 18,965 次迭代，日志无 `stuck`、`expired ring` 或 `ring command rejected`。
-- `.build\windows\linux-venus-final-repeat-current\report.json`：最终 DLL 哈希一致，独立重复启动的 guest Vulkan/workload 通过，`cleanupErrors=[]`、`passed=true`。
-- `.build\windows\virtualbox-virtio-gpu-venus-final-current.zip`：308 个文件，ZIP SHA256 `ADE1F12F3D7E3B3DE4351835EBF5CAFC9D751BCE732291652207DE7478D1DE58`；包内最终 `VBoxDD.dll` 哈希一致，manifest integrity、VBoxManage 版本、VirtIO-GPU/Venus 回归、PE/VMMR0 加载验证全部通过，并包含本轮 saved-state/reset/压力/重复启动报告。
+- `.build\windows\linux-venus-final-head2-save\report.json`：固定镜像、当前 DLL 哈希为 `FD70CB8C435D3FC607FBEFDF1F76249044F25E874E41894018FEEE84DB57CEFF`、`vboxSupState=RUNNING`、guest Vulkan/workload 通过，saved-state restore workload 通过，`cleanupErrors=[]`，`passed=true`。
+- `.build\windows\linux-venus-final-head2-reset\report.json`：当前 DLL guest Vulkan/workload 通过，reset 后 workload 通过，`cleanupErrors=[]`，`passed=true`。
+- `.build\windows\linux-venus-final-head2-stress30\report.json`：当前 DLL 哈希一致，30 秒 guest Vulkan workload 通过 18,345 次迭代，日志无 `stuck`、`expired ring`、`ring command rejected` 或 `queue-submit retry timeout`。
+- `.build\windows\linux-venus-final-head2-repeat\report.json`：当前 DLL 哈希一致，独立重复启动完成 2,438 次 workload，`cleanupErrors=[]`、`passed=true`。
+- `.build\windows\virtualbox-virtio-gpu-venus-final-current.zip`：335 个文件，ZIP SHA256 `213650E0376EFA19020AEBB05031EF0BF461536F0B4BB6D84D581CF48B7E580D`；包内最终 `VBoxDD.dll` 哈希为 `FD70CB8C435D3FC607FBEFDF1F76249044F25E874E41894018FEEE84DB57CEFF`，manifest integrity、VBoxManage 版本、VirtIO-GPU/Venus 回归、PE/VMMR0 加载验证全部通过，并包含本轮 seqno 标准/saved-state/reset/压力/重复启动报告。
 - 本轮仍未宣称完整 Venus renderer protocol、所有 Vulkan 对象/query、桌面 framebuffer/cursor/任意分辨率、长时压力/性能矩阵和正式安装包已经完成；这些仍需独立实现和验证。
+
+## 2026-09-30 seqno 语义追加验证
+
+- `DevVirtioGPU.cpp` 将 ring `uCompletedSeqno` 纳入运行时状态和 saved-state version 26；`WAIT_RING_SEQNO` 只有在目标序号尚未完成时返回未完成，`WAIT_VIRTQUEUE_SEQNO` 保留全局传输 roundtrip 语义，并补齐了提交、等待、越界 extra 和 saved-state 的宿主回归断言。
+- `.build\windows\virtio-gpu-validation.json`：当前 DLL 宿主回归 62 组通过，`missingGroups=[]`，包含 ring seqno 提交/等待/越界边界。
+- `.build\windows\linux-venus-seqno-current2\report.json`：当前 DLL 的客体标准 `vulkaninfo`、5 秒 Vulkan workload（2945 次）通过，`vboxSupState=RUNNING`、`cleanupErrors=[]`、`passed=true`。
+- `.build\windows\linux-venus-seqno-save-current2\report.json`：当前 DLL 的客体 saved-state restore 通过；首次 workload 2619 次，`saveRestoreVerified=true`，恢复日志含 `VULKANINFO_PASS` 与 `VULKAN_WORKLOAD_PASS`，`cleanupErrors=[]`、`passed=true`。
+- `.build\windows\linux-venus-seqno-reset-current\report.json`：当前 DLL 的客体 reset 通过；workload 2537 次，`resetVerified=true`，`cleanupErrors=[]`、`passed=true`。
+- `.build\windows\linux-venus-final-head2\report.json`：当前 DLL 的客体标准 `vulkaninfo`、5 秒 workload（3006 次）通过；`.build\windows\linux-venus-final-head2-reset\report.json` 的 reset workload 为 2708 次。
+- `.build\windows\linux-venus-final-head2-stress30\report.json`：当前 head 修复 DLL 在 30 秒压力中完成 18345 次，`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`cleanupErrors=[]`、`passed=true`，日志无 `stuck`、`expired ring`、`ring command rejected` 或 `queue-submit retry timeout`。
+- `.build\windows\linux-venus-final-head2-repeat\report.json`：当前 head 修复 DLL 独立重复启动完成 2438 次 workload，`guestVulkanVerified=true`、`guestVulkanWorkloadVerified=true`、`cleanupErrors=[]`、`passed=true`。
+- `.build\windows\linux-venus-seqno-cpu2-head-current\report.json` 与 `linux-venus-seqno-head-cpu2-8g\report.json`：双 vCPU 本轮均在 Ubuntu initramfs essential-drivers 阶段未完成 cloud-init/SSH，`guestVulkanVerified=false`，不作为 Venus 协议通过或失败证据；此前 `linux-venus-seqno-cpu2-current900` 曾进入 Vulkan 并暴露 ring head 语义问题，已由本轮修复针对。
+- 当前 head 修复标准/save/reset/压力/重复启动报告的 runtime `VBoxDD.dll` SHA256 均为 `FD70CB8C435D3FC607FBEFDF1F76249044F25E874E41894018FEEE84DB57CEFF`。串口中的 Linux DRM `response 0x1205` 属于当前客体驱动初始化期间的非致命命令回复，JSON 的通过字段和协议失败搜索才是本轮验收依据。
 
 ## Windows 编译环境
 

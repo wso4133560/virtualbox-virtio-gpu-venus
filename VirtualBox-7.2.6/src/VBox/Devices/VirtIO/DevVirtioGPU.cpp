@@ -30,8 +30,9 @@
 # error "VirtIO-GPU currently runs entirely in ring 3."
 #endif
 
-/* Version 25 also records the expanded guest backing segment table. */
-#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(25)
+/* Version 25 also records the expanded guest backing segment table; version
+ * 26 adds the completed private ring sequence state. */
+#define VIRTIOGPU_SAVED_STATE_VERSION UINT32_C(26)
 #define VIRTIOGPU_MAX_RESOURCES 256
 #define VIRTIOGPU_MAX_BUFFER_BINDINGS 512
 #define VIRTIOGPU_MAX_COMMAND_BUFFERS 512
@@ -274,6 +275,7 @@ typedef struct VIRTIOGPURING
     uint64_t cbReply;
     uint64_t uReplyPosition;
     uint64_t uSubmittedSeqno;
+    uint64_t uCompletedSeqno;
     bool fReplyValid;
     bool fReplyPositionValid;
     uint32_t uSubmitRetryHead;
@@ -1477,6 +1479,33 @@ static void virtioGpuR3RingPublish(PVIRTIOGPU pThis, PVIRTIOGPURING pRing, uint3
         virtioGpuR3RingPublishAt(pThis, pRing, uTail, uStatus);
     else
         virtioGpuR3RingStoreU32(pThis, pRing, pRing->offStatus, uStatus);
+}
+
+/* vkWaitRingSeqnoMESA uses the monotonically increasing byte position returned
+ * by vn_ring_submit_locked(), which is published in the shared ring head.  It
+ * is distinct from the optional logical seqno carried by the private
+ * submit/wait control commands. */
+static bool virtioGpuR3RingSeqnoReached(PVIRTIOGPU pThis, PVIRTIOGPURING pRing,
+                                        uint64_t uSeqno)
+{
+    if (!pRing)
+        return false;
+    if (uSeqno <= UINT32_MAX)
+    {
+        uint32_t uHead = 0;
+        if (virtioGpuR3RingLoadU32(pThis, pRing, pRing->offHead, &uHead))
+        {
+            /* Ring positions are 32-bit and the producer never has more than
+             * one ring buffer of work outstanding, so signed subtraction is
+             * unambiguous across the 32-bit wrap boundary. */
+            if ((int32_t)(uHead - (uint32_t)uSeqno) >= 0)
+                return true;
+        }
+    }
+    /* Some saved-state paths carry a private submit sequence before the
+     * shared head is republished.  Accept that completed state as a bounded
+     * compatibility fallback rather than spinning the ring forever. */
+    return pRing->uCompletedSeqno >= uSeqno;
 }
 
 static bool virtioGpuR3ReadU64(const uint8_t *pb, size_t cb, size_t off, uint64_t *puValue)
@@ -3808,6 +3837,9 @@ static void virtioGpuR3AdvanceVenusRings(PVIRTIOGPU pThis);
 static bool virtioGpuR3VenusQueueSubmitNeedsRetry(PVIRTIOGPU pThis,
                                                    const uint8_t *pb,
                                                    size_t cb);
+static bool virtioGpuR3VenusRingWaitNeedsRetry(PVIRTIOGPU pThis,
+                                                const uint8_t *pb,
+                                                size_t cb);
 static bool virtioGpuR3ExecuteVenusCommandStream(PVIRTIOGPU pThis, const uint8_t *pb, size_t cb);
 static bool virtioGpuR3ExecuteRecordedCommandBuffer(PVIRTIOGPU pThis,
                                                     PVIRTIOGPUCOMMANDBUFFERSTATE pState);
@@ -6689,7 +6721,11 @@ static bool virtioGpuR3HandleVenusRingCommand(PVIRTIOGPU pThis, const uint8_t *p
         {
             for (unsigned i = 0; i < RT_ELEMENTS(pThis->aRings); ++i)
                 if (pThis->aRings[i].fUsed)
-                    pThis->aRings[i].uSubmittedSeqno = RT_MAX(pThis->aRings[i].uSubmittedSeqno, uSeqno);
+                    /* This is a global transport roundtrip.  Propagate the
+                     * observed sequence to every live ring; its completion is
+                     * retired when the shared ring is consumed below. */
+                    pThis->aRings[i].uSubmittedSeqno = RT_MAX(
+                        pThis->aRings[i].uSubmittedSeqno, uSeqno);
         }
         else
         {
@@ -6698,8 +6734,24 @@ static bool virtioGpuR3HandleVenusRingCommand(PVIRTIOGPU pThis, const uint8_t *p
                 pResp->Hdr.uType = VIRTIOGPU_RESP_ERR_INVALID_PARAMETER;
             else
             {
-                pRing->uSubmittedSeqno = RT_MAX(pRing->uSubmittedSeqno, uSeqno);
-                virtioGpuR3RingPublish(pThis, pRing, VIRTIOGPU_VK_RING_STATUS_IDLE | VIRTIOGPU_VK_RING_STATUS_ALIVE);
+                if (uType == VIRTIOGPU_VK_CMD_SUBMIT_VIRTQUEUE_SEQNO)
+                    pRing->uSubmittedSeqno = RT_MAX(pRing->uSubmittedSeqno, uSeqno);
+                else
+                {
+                    if (!pCurrentRing)
+                    {
+                        /* A top-level carrier may be the only wake-up after
+                         * another thread appended work to the primary ring. */
+                        virtioGpuR3ProcessVenusRings(pThis);
+                        virtioGpuR3AdvanceVenusRings(pThis);
+                    }
+                    if (!virtioGpuR3RingSeqnoReached(pThis, pRing, uSeqno))
+                        pResp->Hdr.uType = VIRTIOGPU_RESP_ERR_UNSPEC;
+                }
+                if (pResp->Hdr.uType == VIRTIOGPU_RESP_OK_NODATA)
+                    virtioGpuR3RingPublish(pThis, pRing,
+                                           VIRTIOGPU_VK_RING_STATUS_IDLE
+                                           | VIRTIOGPU_VK_RING_STATUS_ALIVE);
             }
         }
         if (!pCurrentRing && pResp->Hdr.uType == VIRTIOGPU_RESP_OK_NODATA)
@@ -6872,6 +6924,28 @@ static bool virtioGpuR3VenusQueueSubmitNeedsRetry(PVIRTIOGPU pThis,
 }
 #endif
 
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+static bool virtioGpuR3VenusRingWaitNeedsRetry(PVIRTIOGPU pThis,
+                                                const uint8_t *pb,
+                                                size_t cb)
+{
+    if (!pThis || !pb || cb < 16)
+        return false;
+    uint32_t uType = 0;
+    memcpy(&uType, pb, sizeof(uType));
+    uint64_t uSeqno = 0;
+    if (uType == VIRTIOGPU_VK_CMD_WAIT_VIRTQUEUE_SEQNO)
+        return false;
+    if (uType != VIRTIOGPU_VK_CMD_WAIT_RING_SEQNO || cb < 24)
+        return false;
+    uint64_t uRing = 0;
+    memcpy(&uRing, pb + 8, sizeof(uRing));
+    memcpy(&uSeqno, pb + 16, sizeof(uSeqno));
+    PVIRTIOGPURING pRing = virtioGpuR3FindRing(pThis, uRing);
+    return pRing && !virtioGpuR3RingSeqnoReached(pThis, pRing, uSeqno);
+}
+#endif
+
 static void virtioGpuR3ProcessVenusRings(PVIRTIOGPU pThis)
 {
     for (unsigned i = 0; i < RT_ELEMENTS(pThis->aRings); ++i)
@@ -6924,7 +6998,8 @@ static void virtioGpuR3ProcessVenusRings(PVIRTIOGPU pThis)
             uint32_t uType = 0;
             memcpy(&uType, pbCommands + off, sizeof(uType));
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
-            if (virtioGpuR3VenusQueueSubmitNeedsRetry(pThis, pbCommands + off, cbCommand))
+            if (virtioGpuR3VenusQueueSubmitNeedsRetry(pThis, pbCommands + off, cbCommand)
+                || virtioGpuR3VenusRingWaitNeedsRetry(pThis, pbCommands + off, cbCommand))
             {
                 fRetry = true;
                 break;
@@ -6986,6 +7061,12 @@ static void virtioGpuR3ProcessVenusRings(PVIRTIOGPU pThis)
                 break;
             }
             off += cbCommand;
+            /* Every command in this host-side ring is executed synchronously.
+             * Retire the sequence number only after the command was accepted;
+             * a later wait therefore observes real consumption rather than
+             * the producer's submitted value. */
+            pRing->uCompletedSeqno = RT_MAX(pRing->uCompletedSeqno,
+                                            pRing->uSubmittedSeqno);
         }
         RTMemFree(pbCommands);
         if (fRetry)
@@ -7053,6 +7134,8 @@ static void virtioGpuR3AdvanceVenusRings(PVIRTIOGPU pThis)
         if (pThis->aRings[i].fUsed)
         {
             PVIRTIOGPURING pRing = &pThis->aRings[i];
+            pRing->uCompletedSeqno = RT_MAX(pRing->uCompletedSeqno,
+                                            pRing->uSubmittedSeqno);
             virtioGpuR3RingPublish(pThis, pRing,
                                    VIRTIOGPU_VK_RING_STATUS_IDLE | VIRTIOGPU_VK_RING_STATUS_ALIVE);
         }
@@ -12657,6 +12740,7 @@ static DECLCALLBACK(int) virtioGpuR3SaveExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU64(pSSM, pRing->cbReply);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU64(pSSM, pRing->uReplyPosition);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU64(pSSM, pRing->uSubmittedSeqno);
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutU64(pSSM, pRing->uCompletedSeqno);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutBool(pSSM, pRing->fReplyValid);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMPutBool(pSSM, pRing->fReplyPositionValid);
         }
@@ -12901,12 +12985,14 @@ static DECLCALLBACK(int) virtioGpuR3LoadExec(PPDMDEVINS pDevIns, PSSMHANDLE pSSM
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU64(pSSM, &pRing->cbReply);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU64(pSSM, &pRing->uReplyPosition);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU64(pSSM, &pRing->uSubmittedSeqno);
+            if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetU64(pSSM, &pRing->uCompletedSeqno);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetBool(pSSM, &pRing->fReplyValid);
             if (RT_SUCCESS(rc)) rc = pDevIns->pHlpR3->pfnSSMGetBool(pSSM, &pRing->fReplyPositionValid);
             pRing->uSubmitRetryHead = 0;
             pRing->cSubmitRetries = 0;
             PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResource(pThis, pRing->uResourceId);
             bool fValid = RT_SUCCESS(rc) && pRing->uRingId && pRes && pRes->fSharedMemory
+                       && pRing->uCompletedSeqno <= pRing->uSubmittedSeqno
                        && pRing->cb >= sizeof(uint32_t) && pRing->off <= pRes->cbPixels
                        && pRing->cb <= pRes->cbPixels - pRing->off
                        && pRing->cb <= UINT32_MAX && pRing->cbBuffer && pRing->cbBuffer <= UINT32_MAX
