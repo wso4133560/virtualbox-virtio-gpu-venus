@@ -1,6 +1,6 @@
 # AGENTS.md - virtualbox-virtio-gpu-venus handoff
 
-更新日期：2026-09-29
+更新日期：2026-09-30
 
 ## 项目目标
 
@@ -11,9 +11,18 @@
 - 工作目录：`D:\code\virtualbox-virtio-gpu-venus`
 - 分支：`main`
 - 远端：`git@github.com:wso4133560/virtualbox-virtio-gpu-venus.git`
-- 本轮源码验证基于工作树最终 DLL `7CEF43BE69538014B4565304F85FBC57E5B47608C742A3FA907D999887227CB7`；提交哈希以 `git HEAD` 和远端分支为准。
+- 本轮源码验证基于工作树最终 DLL `FDF6392669098DB1872C1C51036171147E9DB697A27F9DB25DA8EF78EBB651B5`；提交哈希以 `git HEAD` 和远端分支为准。
 - 前两个相关提交：`e239d8c9`（Replay recorded Venus command buffers on submit）、`81dc9bf9`（Package current Venus guest evidence）；更早提交 `2976c1c5`（ring wrap-around/reply bounds）、`72421ab1`（zero output handles in Venus creates）。
 - 开始新工作先执行 `git status --short`；交接时应保持工作树干净。
+
+## 2026-09-30 本轮最终交接
+
+- `DevVirtioGPU.cpp` 已补齐跨 ring 的 Venus 私有 fence feedback 处理：已知可执行 command buffer 后允许最后一个无等待私有 feedback command buffer；缺失 fence 状态按提交顺序惰性创建；恢复后存在多个未被可执行 command stream 引用的共享 feedback blob 时，对有限候选集合写入 `VK_SUCCESS`，避免 saved-state 后 fence 永久等待。
+- 最终 `VBoxDD.dll` SHA256 为 `FDF6392669098DB1872C1C51036171147E9DB697A27F9DB25DA8EF78EBB651B5`，运行时目录为 `VirtualBox-7.2.6\out\win.amd64\release\bin`。
+- `.build\windows\virtio-gpu-validation.json`：宿主回归 62 组，退出码 0，包含 registration、ring/reply、Vulkan transfer/clear/barrier/blit/fill/update、同步对象、query、submit/submit2、reset/save-load 检查。
+- `.build\windows\linux-venus-save-final3\report.json`：固定镜像、最终 DLL 哈希为 `FDF6392669098DB1872C1C51036171147E9DB697A27F9DB25DA8EF78EBB651B5`、`vboxSupState=RUNNING`、guest Vulkan/workload 通过，saved-state restore workload 通过，`cleanupErrors=[]`，`passed=true`。
+- `.build\windows\linux-venus-reset-fixed\report.json`：guest Vulkan/workload 通过，reset 后 workload 通过，`cleanupErrors=[]`，`passed=true`。
+- 本轮仍未宣称完整 Venus renderer protocol、所有 Vulkan 对象/query、桌面 framebuffer/cursor/任意分辨率、长时压力/性能矩阵和正式安装包已经完成；这些仍需独立实现和验证。
 
 ## Windows 编译环境
 
@@ -57,7 +66,7 @@ kmk: Failed to create worker threads
 .\tools\test-virtio-gpu.ps1 -TimeoutSeconds 60 -IncludeRegistration
 ```
 
-结果：当前报告 `.build\windows\virtio-gpu-validation.json` 退出码 `0`，59 个测试组通过、`missingGroups=[]`。回归包含 blob resource/Vulkan backing、ring metadata/reply/progress、multi-stream framing/reply cursor、ring 尾部 wrap-around 与 reply 越界、Vulkan transfer/clear/barrier/blit/fill/update、binary/timeline semaphore/query pool query/signal/wait、host fence/semaphore/event 生命周期、classic/submit2 wait-signal、对象依赖顺序 save/load，以及从构建产物注册 VBoxDD 的检查。
+结果：当前报告 `.build\windows\virtio-gpu-validation.json` 退出码 `0`，62 个测试组通过、`missingGroups=[]`。回归包含 blob resource/Vulkan backing、ring metadata/reply/progress、multi-stream framing/reply cursor、ring 尾部 wrap-around 与 reply 越界、Vulkan transfer/clear/barrier/blit/fill/update、binary/timeline semaphore/query pool query/signal/wait、host fence/semaphore/event 生命周期、classic/submit2 wait-signal、对象依赖顺序 save/load，以及从构建产物注册 VBoxDD 的检查。
 
 这表示 Windows 用户态传输、设备回调和宿主 Vulkan 路径通过了当前回归边界。
 
@@ -172,7 +181,7 @@ Mesa vn_*_MESA submit/call
 
 完整 Venus renderer protocol 仍未完成，但当前实现已通过 Linux 客体 `vulkaninfo --summary`、host-visible Vulkan fill/readback workload、saved-state restore 和 reset workload。下一阶段按以下顺序推进：
 
-1. 继续补齐通用 Venus Vulkan object/query/reply dispatcher，尤其是更多 physical-device/device/query、同步和句柄映射路径；当前 command buffer/fence/semaphore 状态仍是有界生命周期表，不等于完整驱动对象后端。
+1. 继续补齐通用 Venus Vulkan object/query/reply dispatcher，尤其是更多 physical-device/device/query、同步和句柄映射路径；当前 command buffer/fence/semaphore 状态仍是有界生命周期表，不等于完整驱动对象后端。跨 ring fence feedback、saved-state restore 和 reset workload 已有最终报告覆盖。
 2. 完善多命令 stream framing、reply payload、返回值和错误码，持续避免仅推进 head/tail/status 的 bring-up 语义。
 3. 对 `vkNotifyRingMESA`、`vkWriteRingExtraMESA`、`vkSubmitVirtqueueSeqnoMESA`、`vkWait*SeqnoMESA` 增加更广泛的 Mesa 版本边界和异常测试。
 4. 扩展真实客户机图形 workload、长时间压力、多 vCPU、桌面显示和性能矩阵；当前标准 smoke 与 saved-state restore 已通过。
@@ -199,7 +208,7 @@ rg -n 'stuck|failed|MESA-VIRTIO|SUBMIT_3D|virtio-gpu:' .build\windows\linux-venu
 
 `tools\register-windows-runtime.ps1` 成功只表示 runtime COM 注册验证通过。若 `VBoxManage.exe list hostinfo` 报 `ERROR_FILE_NOT_FOUND`，先确认使用同一 runtime 目录下的 `VBoxManage.exe`、`VBoxSVC.exe`、`VBoxC.dll` 和 `VBoxDD.dll`，不要混用系统安装版 VirtualBox。
 
-`sc.exe query VBoxSup` 返回 `1060` 表示 VBoxSup 服务未安装。驱动测试签名、VBoxSup/VBoxSup-inf 安装和管理员权限属于独立阶段；不要把 COM 注册成功当作驱动已安装。
+`sc.exe query VBoxSup` 返回 `1060` 表示 VBoxSup 服务未安装；本轮管理员已执行 `sc.exe start VBoxSup`，最新客体报告记录 `vboxSupState=RUNNING`、`vboxSupWin32Exit=0x0`。驱动测试签名、VBoxSup/VBoxSup-inf 安装和管理员权限属于独立阶段；不要把 COM 注册成功当作驱动已安装。
 
 ## Git 交接
 

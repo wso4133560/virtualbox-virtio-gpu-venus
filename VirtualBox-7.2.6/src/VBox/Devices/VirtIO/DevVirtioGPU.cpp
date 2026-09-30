@@ -1165,55 +1165,108 @@ static PVIRTIOGPURESOURCE virtioGpuR3ResolveUnboundBufferResource(PVIRTIOGPU pTh
     return pCandidate;
 }
 
-/* vn_queue appends an internal command buffer which fills the fence feedback
- * slot with VK_SUCCESS.  That private command buffer is not serialized on the
- * renderer ring, but its feedback buffer is a normal shared blob immediately
- * following the fence handle in the observed Venus allocation sequence. */
-static bool virtioGpuR3SignalVenusFenceFeedback(PVIRTIOGPU pThis, uint64_t uFence)
+/* The last VkSubmitInfo added by vn_queue for a feedback fence contains the
+ * private command buffer that fills the exact feedback slot.  Resolve that
+ * buffer through the Vulkan memory binding and use the command's offset; no
+ * relationship between opaque fence and buffer ids is part of the protocol. */
+static bool virtioGpuR3FindFenceFeedbackCommand(PVIRTIOGPUCOMMANDBUFFERSTATE pState,
+                                                uint64_t *puBuffer, uint64_t *poffBuffer,
+                                                uint64_t *pcbBuffer)
 {
-    if (!pThis || !uFence || uFence > UINT64_MAX - 1)
+    if (!pState || !pState->fExecutable || !puBuffer || !poffBuffer || !pcbBuffer)
         return false;
-    PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResourceByVkObject(pThis, uFence + 1);
-    if (!pRes)
-        pRes = virtioGpuR3ResolveUnboundBufferResource(pThis, uFence + 1);
-    PVIRTIOGPUBUFFERBINDING const pBinding = virtioGpuR3FindBufferBinding(pThis, uFence + 1);
-    uint64_t offFeedback = pBinding ? pBinding->offMemory : 0;
-    /* The feedback buffer is suballocated into 8-byte slots.  Its private
-     * command buffer is serialized as an ordinary FILL_BUFFER command, so
-     * recover that slot offset instead of assuming that the first slot is
-     * still active. */
-    uint64_t const offFeedbackBase = offFeedback;
+    bool fFound = false;
+    for (uint32_t i = 0; i < pState->cCommands; ++i)
+    {
+        uint8_t const *pbCommand = pState->aCommands[i].pb;
+        if (!pbCommand || pState->aCommands[i].cb != 44)
+            continue;
+        uint32_t uType = 0, uData = 0;
+        uint64_t uBuffer = 0, offBuffer = 0, cbBuffer = 0;
+        memcpy(&uType, pbCommand, sizeof(uType));
+        memcpy(&uBuffer, pbCommand + 16, sizeof(uBuffer));
+        memcpy(&offBuffer, pbCommand + 24, sizeof(offBuffer));
+        memcpy(&cbBuffer, pbCommand + 32, sizeof(cbBuffer));
+        memcpy(&uData, pbCommand + 40, sizeof(uData));
+        if (uType != VIRTIOGPU_VK_CMD_FILL_BUFFER || !uBuffer
+            || cbBuffer != sizeof(uint32_t) || uData != VK_SUCCESS)
+            continue;
+        if (fFound)
+            return false;
+        *puBuffer = uBuffer;
+        *poffBuffer = offBuffer;
+        *pcbBuffer = cbBuffer;
+        fFound = true;
+    }
+    return fFound;
+}
+
+/* The fence feedback command buffer is private to Mesa and is not always
+ * materialized in the renderer command-buffer table.  Its resource can still
+ * be excluded from ordinary work by checking whether any executable command
+ * stream references its mapped shared blob. */
+static bool virtioGpuR3VenusResourceReferencedByCommands(PVIRTIOGPU pThis,
+                                                          PVIRTIOGPURESOURCE pRes)
+{
+    if (!pThis || !pRes)
+        return false;
     for (unsigned i = 0; i < RT_ELEMENTS(pThis->aCommandBuffers); ++i)
     {
-        VIRTIOGPUCOMMANDBUFFERSTATE const *pState = &pThis->aCommandBuffers[i];
+        PVIRTIOGPUCOMMANDBUFFERSTATE pState = &pThis->aCommandBuffers[i];
+        if (!pState->uCommandBuffer || !pState->fExecutable)
+            continue;
         for (uint32_t j = 0; j < pState->cCommands; ++j)
         {
-            uint8_t const *pbCommand = pState->aCommands[j].pb;
-            size_t const cbCommand = pState->aCommands[j].cb;
+            uint8_t const *pb = pState->aCommands[j].pb;
+            size_t const cb = pState->aCommands[j].cb;
             uint32_t uType = 0;
-            uint64_t uBuffer = 0, offCommand = 0, cbCommandBuffer = 0;
-            uint32_t uData = 0;
-            if (!pbCommand || cbCommand != 44)
+            uint64_t auBuffers[2] = { 0, 0 };
+            uint32_t cBuffers = 0;
+            if (!pb || cb < sizeof(uint32_t))
                 continue;
-            memcpy(&uType, pbCommand, sizeof(uType));
-            memcpy(&uBuffer, pbCommand + 16, sizeof(uBuffer));
-            memcpy(&offCommand, pbCommand + 24, sizeof(offCommand));
-            memcpy(&cbCommandBuffer, pbCommand + 32, sizeof(cbCommandBuffer));
-            memcpy(&uData, pbCommand + 40, sizeof(uData));
-            if (uType != VIRTIOGPU_VK_CMD_FILL_BUFFER || uBuffer != uFence + 1
-                || cbCommandBuffer != sizeof(uint32_t) || uData != VK_SUCCESS
-                || offCommand > UINT64_MAX - offFeedbackBase)
-                continue;
-            offFeedback = offFeedbackBase + offCommand;
+            memcpy(&uType, pb, sizeof(uType));
+            if (uType == VIRTIOGPU_VK_CMD_FILL_BUFFER && cb == 44)
+            {
+                memcpy(&auBuffers[0], pb + 16, sizeof(auBuffers[0]));
+                cBuffers = 1;
+            }
+            else if (uType == VIRTIOGPU_VK_CMD_COPY_QUERY_POOL_RESULTS_CMD && cb == 60)
+            {
+                memcpy(&auBuffers[0], pb + 32, sizeof(auBuffers[0]));
+                cBuffers = 1;
+            }
+            else if (uType == VIRTIOGPU_VK_CMD_UPDATE_BUFFER && cb >= 32)
+            {
+                memcpy(&auBuffers[0], pb + 16, sizeof(auBuffers[0]));
+                cBuffers = 1;
+            }
+            else if ((uType == VIRTIOGPU_VK_CMD_COPY_BUFFER
+                      || uType == VIRTIOGPU_VK_CMD_COPY_BUFFER2) && cb >= 40)
+            {
+                memcpy(&auBuffers[0], pb + 16, sizeof(auBuffers[0]));
+                memcpy(&auBuffers[1], pb + 24, sizeof(auBuffers[1]));
+                cBuffers = 2;
+            }
+            for (uint32_t k = 0; k < cBuffers; ++k)
+            {
+                PVIRTIOGPUBUFFERBINDING pBinding = virtioGpuR3FindBufferBinding(pThis, auBuffers[k]);
+                if (pBinding && pBinding->uMemory == pRes->uVkMemoryObjectId)
+                    return true;
+                if (pRes->uVkBufferObjectId && pRes->uVkBufferObjectId == auBuffers[k])
+                    return true;
+            }
         }
     }
-    if (!pRes || !pRes->pbPixels || pRes->cbPixels < sizeof(uint32_t)
-        || offFeedback > pRes->cbPixels - sizeof(uint32_t))
+    return false;
+}
+
+static bool virtioGpuR3SignalVenusFenceFeedbackResource(PVIRTIOGPU pThis,
+                                                         PVIRTIOGPURESOURCE pRes,
+                                                         uint64_t offFeedback)
+{
+    if (!pThis || !pRes || !pRes->pbPixels || offFeedback > pRes->cbPixels - sizeof(uint32_t))
         return false;
     uint32_t const uStatus = VK_SUCCESS;
-    /* Feedback is polled by Mesa through the shared BAR.  Use the same
-     * ordered 32-bit store as ring status publication so a cached host
-     * mapping cannot leave the guest polling an old VK_NOT_READY value. */
     ASMAtomicWriteU32((volatile uint32_t *)(pRes->pbPixels + offFeedback), uStatus);
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
     if (pRes->fVulkanBuffer && pRes->pvVkMapped)
@@ -1224,6 +1277,49 @@ static bool virtioGpuR3SignalVenusFenceFeedback(PVIRTIOGPU pThis, uint64_t uFenc
     }
 #endif
     return true;
+}
+
+static bool virtioGpuR3SignalVenusFenceFeedback(PVIRTIOGPU pThis, uint64_t uBuffer,
+                                                uint64_t offBuffer, uint64_t cbBuffer)
+{
+    if (!pThis || !uBuffer || cbBuffer != sizeof(uint32_t))
+        return false;
+    PVIRTIOGPUBUFFERBINDING const pBinding = virtioGpuR3FindBufferBinding(pThis, uBuffer);
+    if (!pBinding || !pBinding->uMemory || pBinding->offMemory > UINT64_MAX - offBuffer)
+        return false;
+    PVIRTIOGPURESOURCE pRes = virtioGpuR3FindResourceByVkMemory(pThis, pBinding->uMemory);
+    uint64_t const offFeedback = pBinding->offMemory + offBuffer;
+    if (!pRes || !pRes->pbPixels || offFeedback > pRes->cbPixels - sizeof(uint32_t))
+        return false;
+    /* Feedback is polled by Mesa through the shared BAR. */
+    return virtioGpuR3SignalVenusFenceFeedbackResource(pThis, pRes, offFeedback);
+}
+
+/* A restored guest can retain more than one private feedback blob: one from
+ * the pre-save guest lifetime and one created after restore.  The private
+ * command-buffer handle is intentionally absent from the host table, so the
+ * only protocol-safe association available here is the set of mapped shared
+ * blobs that no executable command stream references.  Signal every member
+ * of that bounded set; stale members are no longer observed by the guest and
+ * this keeps the active feedback slot from being stranded by saved state. */
+static bool virtioGpuR3SignalVenusFenceFeedbackResources(PVIRTIOGPU pThis)
+{
+    bool fFound = false;
+    if (!pThis)
+        return false;
+    for (unsigned i = 0; i < RT_ELEMENTS(pThis->aResources); ++i)
+    {
+        PVIRTIOGPURESOURCE pRes = &pThis->aResources[i];
+        if (!pRes->fUsed || !pRes->fBlob || !pRes->fSharedMemory
+            || !pRes->uVkMemoryObjectId || !pRes->pbPixels || pRes->cbPixels < sizeof(uint32_t)
+            || !pRes->fVulkanBuffer || !pRes->pvVkMapped
+            || virtioGpuR3VenusResourceReferencedByCommands(pThis, pRes))
+            continue;
+        if (!virtioGpuR3SignalVenusFenceFeedbackResource(pThis, pRes, 0))
+            return false;
+        fFound = true;
+    }
+    return fFound;
 }
 #endif
 
@@ -4733,12 +4829,16 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
         {
             uint32_t cSubmits = 0;
             uint64_t cEncoded = 0;
+            PVIRTIOGPUCOMMANDBUFFERSTATE pFeedbackState = NULL;
+            bool fPrivateFeedbackSubmit = false;
+            uint64_t uFeedbackBuffer = 0, offFeedbackBuffer = 0, cbFeedbackBuffer = 0;
             if (cb < 28 || !virtioGpuR3VenusReadU64(pb, cb, 20, &cEncoded))
                 return false;
             memcpy(&cSubmits, pb + 16, sizeof(cSubmits));
             if (cSubmits > 64 || cEncoded > cSubmits)
                 return false;
             size_t off = 28;
+            bool fKnownSubmitCommand = false;
             for (uint64_t i = 0; i < cEncoded; ++i)
             {
                 if (off > cb || cb - off < 24)
@@ -4769,19 +4869,32 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                 if (!virtioGpuR3VenusReadU64(pb, cb, off, &cCmdEncoded)) return false;
                 off += 8;
                 if (cCmdEncoded > cCmd || cCmdEncoded > (cb - off) / 8) return false;
+                uint64_t uLastCommandBuffer = 0;
                 for (uint64_t j = 0; j < cCmdEncoded; ++j)
                 {
                     if (!virtioGpuR3VenusReadU64(pb, cb, off + j * 8, &uId)) return false;
+                    uLastCommandBuffer = uId;
                     PVIRTIOGPUCOMMANDBUFFERSTATE pState = virtioGpuR3FindCommandBuffer(pThis, uId);
-                    if (pState && !pState->fExecutable)
+                    bool const fPrivateFeedback = !pState
+                                               && fKnownSubmitCommand
+                                               && i + 1 == cEncoded
+                                               && j + 1 == cCmdEncoded
+                                               && !cWaitEncoded;
+                    if ((!pState && !fPrivateFeedback) || (pState && !pState->fExecutable))
                     {
                         LogRelMax(64, ("virtio-gpu: Venus queue-submit rejected non-executable command-buffer id=%RX64\n", uId));
                         return false;
                     }
-                    if (pState && !virtioGpuR3ExecuteRecordedCommandBuffer(pThis, pState))
+                    if (fPrivateFeedback)
+                        fPrivateFeedbackSubmit = true;
+                    if (pState)
                     {
-                        LogRelMax(64, ("virtio-gpu: Venus queue-submit rejected replay command-buffer id=%RX64\n", uId));
-                        return false;
+                        fKnownSubmitCommand = true;
+                        if (!virtioGpuR3ExecuteRecordedCommandBuffer(pThis, pState))
+                        {
+                            LogRelMax(64, ("virtio-gpu: Venus queue-submit rejected replay command-buffer id=%RX64\n", uId));
+                            return false;
+                        }
                     }
                 }
                 off += (size_t)cCmdEncoded * 8;
@@ -4799,6 +4912,14 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                         || !virtioGpuR3SignalSemaphore(pThis, uId, 0))
                         return false;
                 }
+                if (i + 1 == cEncoded && !cWaitEncoded && cCmdEncoded == 1 && !cSignalEncoded)
+                {
+                    pFeedbackState = virtioGpuR3FindCommandBuffer(pThis, uLastCommandBuffer);
+                    if (!pFeedbackState
+                        || !virtioGpuR3FindFenceFeedbackCommand(pFeedbackState, &uFeedbackBuffer,
+                                                                &offFeedbackBuffer, &cbFeedbackBuffer))
+                        pFeedbackState = NULL;
+                }
                 off += (size_t)cSignalEncoded * 8;
             }
             if (off > cb - sizeof(uint64_t)) return false;
@@ -4808,10 +4929,8 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                 PVIRTIOGPUFENCESTATE pFence = virtioGpuR3FindFence(pThis, uId);
                 if (!pFence)
                 {
-                    /* vkCreateFence may be carried by a synchronous Venus
-                     * call on a different ring.  The submit still carries
-                     * the authoritative opaque fence handle; materialize its
-                     * host state here so completion remains ordered. */
+                    /* A fence create can arrive on another ring.  The submit
+                     * is the ordering point, so create the host state lazily. */
                     pFence = virtioGpuR3GetFence(pThis, uId);
                     if (!pFence)
                         return false;
@@ -4833,8 +4952,15 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
 #endif
                 pFence->fSignaled = true;
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
-                if (!virtioGpuR3SignalVenusFenceFeedback(pThis, uId))
-                    LogRelMax(64, ("virtio-gpu: Venus fence feedback unavailable fence=%RX64\n", uId));
+                if (pFeedbackState
+                    && !virtioGpuR3SignalVenusFenceFeedback(pThis, uFeedbackBuffer,
+                                                            offFeedbackBuffer, cbFeedbackBuffer))
+                    return false;
+                if (fPrivateFeedbackSubmit)
+                {
+                    if (!virtioGpuR3SignalVenusFenceFeedbackResources(pThis))
+                        return false;
+                }
 #endif
             }
             if (!virtioGpuR3VenusPutU32(&Enc, uType)
@@ -4846,12 +4972,16 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
         {
             uint32_t cSubmits = 0;
             uint64_t cEncoded = 0;
+            PVIRTIOGPUCOMMANDBUFFERSTATE pFeedbackState = NULL;
+            bool fPrivateFeedbackSubmit = false;
+            uint64_t uFeedbackBuffer = 0, offFeedbackBuffer = 0, cbFeedbackBuffer = 0;
             if (cb < 28 || !virtioGpuR3VenusReadU64(pb, cb, 20, &cEncoded))
                 return false;
             memcpy(&cSubmits, pb + 16, sizeof(cSubmits));
             if (cSubmits > 64 || cEncoded > cSubmits)
                 return false;
             size_t off = 28;
+            bool fKnownSubmitCommand = false;
             for (uint64_t i = 0; i < cEncoded; ++i)
             {
                 if (off > cb || cb - off < 52)
@@ -4883,18 +5013,33 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                     || cCmd > 64 || cCmdEncoded > cCmd
                     || cCmdEncoded > (cb - off - sizeof(uint64_t)) / 24)
                     return false;
+                uint64_t uLastCommandBuffer = 0;
                 for (uint64_t j = 0; j < cCmdEncoded; ++j)
                 {
                     uint64_t uCommandBuffer = 0;
                     if (!virtioGpuR3VenusReadU64(pb, cb, off + sizeof(uint64_t) + j * 24 + 12,
                                                   &uCommandBuffer))
                         return false;
+                    uLastCommandBuffer = uCommandBuffer;
                     PVIRTIOGPUCOMMANDBUFFERSTATE pState = virtioGpuR3FindCommandBuffer(pThis,
                                                                                           uCommandBuffer);
-                    if (pState && !pState->fExecutable)
+                    bool const fPrivateFeedback = !pState
+                                               && fKnownSubmitCommand
+                                               && i + 1 == cEncoded
+                                               && j + 1 == cCmdEncoded
+                                               && !cWaitEncoded;
+                    if ((!pState && !fPrivateFeedback) || (pState && !pState->fExecutable))
+                    {
                         return false;
-                    if (pState && !virtioGpuR3ExecuteRecordedCommandBuffer(pThis, pState))
-                        return false;
+                    }
+                    if (fPrivateFeedback)
+                        fPrivateFeedbackSubmit = true;
+                    if (pState)
+                    {
+                        fKnownSubmitCommand = true;
+                        if (!virtioGpuR3ExecuteRecordedCommandBuffer(pThis, pState))
+                            return false;
+                    }
                 }
                 off += sizeof(uint64_t) + (size_t)cCmdEncoded * 24;
                 if (off > cb - sizeof(uint32_t) - sizeof(uint64_t)) return false;
@@ -4915,6 +5060,14 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
                         || !virtioGpuR3SignalSemaphore(pThis, uId, uValue))
                         return false;
                 }
+                if (i + 1 == cEncoded && !cWaitEncoded && cCmdEncoded == 1 && !cSignalEncoded)
+                {
+                    pFeedbackState = virtioGpuR3FindCommandBuffer(pThis, uLastCommandBuffer);
+                    if (!pFeedbackState
+                        || !virtioGpuR3FindFenceFeedbackCommand(pFeedbackState, &uFeedbackBuffer,
+                                                                &offFeedbackBuffer, &cbFeedbackBuffer))
+                        pFeedbackState = NULL;
+                }
                 off += sizeof(uint64_t) + (size_t)cSignalEncoded * 40;
             }
             if (off > cb - sizeof(uint64_t) || !virtioGpuR3VenusReadU64(pb, cb, off, &uId))
@@ -4923,12 +5076,34 @@ static bool virtioGpuR3EncodeVenusProtocolReply(PVIRTIOGPU pThis, const uint8_t 
             {
                 PVIRTIOGPUFENCESTATE pFence = virtioGpuR3FindFence(pThis, uId);
                 if (!pFence)
-                    return false;
+                {
+                    pFence = virtioGpuR3GetFence(pThis, uId);
+                    if (!pFence)
+                        return false;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                    if (!virtioGpuR3CreateFenceHost(pThis, pFence, 0))
+                    {
+                        RT_ZERO(*pFence);
+                        return false;
+                    }
+#endif
+                }
 #ifdef VBOX_WITH_VIRTIO_GPU_VENUS
                 if (!virtioGpuR3CompleteFenceHost(pThis, pFence))
                     return false;
 #endif
                 pFence->fSignaled = true;
+#ifdef VBOX_WITH_VIRTIO_GPU_VENUS
+                if (pFeedbackState
+                    && !virtioGpuR3SignalVenusFenceFeedback(pThis, uFeedbackBuffer,
+                                                            offFeedbackBuffer, cbFeedbackBuffer))
+                    return false;
+                if (fPrivateFeedbackSubmit)
+                {
+                    if (!virtioGpuR3SignalVenusFenceFeedbackResources(pThis))
+                        return false;
+                }
+#endif
             }
             if (!virtioGpuR3VenusPutU32(&Enc, uType)
                 || !virtioGpuR3VenusPutResult(&Enc, VK_SUCCESS))
@@ -6579,6 +6754,7 @@ static bool virtioGpuR3VenusQueueSubmitNeedsRetry(PVIRTIOGPU pThis,
         || cSubmits > 64 || cEncoded > cSubmits)
         return false;
     size_t off = 28;
+    bool fKnownSubmitCommand = false;
     for (uint64_t i = 0; i < cEncoded; ++i)
     {
         uint32_t cCmd = 0;
@@ -6617,8 +6793,21 @@ static bool virtioGpuR3VenusQueueSubmitNeedsRetry(PVIRTIOGPU pThis,
                     return false;
                 PVIRTIOGPUCOMMANDBUFFERSTATE pState =
                     virtioGpuR3FindCommandBuffer(pThis, uCommandBuffer);
-                if (pState && !pState->fExecutable)
+                bool const fPrivateFeedback = !pState
+                                           && fKnownSubmitCommand
+                                           && i + 1 == cEncoded
+                                           && j + 1 == cCmdEncoded
+                                           && !cWaitEncoded;
+                if (!pState && !fPrivateFeedback)
+                {
                     return true;
+                }
+                if (pState && !pState->fExecutable)
+                {
+                    return true;
+                }
+                if (pState)
+                    fKnownSubmitCommand = true;
                 off += sizeof(uint64_t);
             }
             if (off > cb - sizeof(uint32_t) - sizeof(uint64_t))
@@ -6657,8 +6846,21 @@ static bool virtioGpuR3VenusQueueSubmitNeedsRetry(PVIRTIOGPU pThis,
                     return false;
                 PVIRTIOGPUCOMMANDBUFFERSTATE pState =
                     virtioGpuR3FindCommandBuffer(pThis, uCommandBuffer);
-                if (pState && !pState->fExecutable)
+                bool const fPrivateFeedback = !pState
+                                           && fKnownSubmitCommand
+                                           && i + 1 == cEncoded
+                                           && j + 1 == cCmdEncoded
+                                           && !cWaitEncoded;
+                if (!pState && !fPrivateFeedback)
+                {
                     return true;
+                }
+                if (pState && !pState->fExecutable)
+                {
+                    return true;
+                }
+                if (pState)
+                    fKnownSubmitCommand = true;
                 off += 24;
             }
             if (off > cb - sizeof(uint32_t) - sizeof(uint64_t))
