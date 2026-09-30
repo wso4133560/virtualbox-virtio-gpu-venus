@@ -22,6 +22,7 @@
 - `.build\windows\virtio-gpu-validation.json`：宿主回归 62 组，退出码 0，包含 registration、ring/reply、Vulkan transfer/clear/barrier/blit/fill/update、同步对象、query、submit/submit2、reset/save-load 检查。
 - `.build\windows\linux-venus-save-final3\report.json`：固定镜像、最终 DLL 哈希为 `FDF6392669098DB1872C1C51036171147E9DB697A27F9DB25DA8EF78EBB651B5`、`vboxSupState=RUNNING`、guest Vulkan/workload 通过，saved-state restore workload 通过，`cleanupErrors=[]`，`passed=true`。
 - `.build\windows\linux-venus-reset-fixed\report.json`：guest Vulkan/workload 通过，reset 后 workload 通过，`cleanupErrors=[]`，`passed=true`。
+- `.build\windows\virtualbox-virtio-gpu-venus-final-current.zip`：298 个文件，ZIP SHA256 `455E251B5AACDD74DA9CDC473BFBEB9FCF9F1CEE0FF1BC54E62A8F3970086636`；包内最终 `VBoxDD.dll` 哈希一致，manifest integrity、VBoxManage 版本、VirtIO-GPU/Venus 回归、PE/VMMR0 加载验证全部通过，并包含本轮 saved-state/reset 报告。
 - 本轮仍未宣称完整 Venus renderer protocol、所有 Vulkan 对象/query、桌面 framebuffer/cursor/任意分辨率、长时压力/性能矩阵和正式安装包已经完成；这些仍需独立实现和验证。
 
 ## Windows 编译环境
