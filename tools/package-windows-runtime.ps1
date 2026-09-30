@@ -136,6 +136,7 @@ foreach ($scenario in @('linux-venus-before', 'linux-venus-final', 'linux-softwa
                         'linux-venus-host-objects-reset7', 'linux-venus-host-sync3', 'linux-venus-host-sync-repeat3',
                         'linux-venus-host-sync-save3', 'linux-venus-host-sync-reset3',
                         'linux-venus-save-final3', 'linux-venus-reset-fixed',
+                        'linux-venus-final-stress30-current', 'linux-venus-final-repeat-current',
                         'linux-venus-final-cpu2-createbuffer5-debug3', 'linux-venus-final-cpu1-save5-fix2',
                         'linux-venus-final-cpu2-ssm-reset30-fix1', 'linux-venus-object-cleanup-cpu1-save5-final',
                         'linux-venus-buffer-view-cpu1-save5-final-pass')) {
